@@ -78,7 +78,7 @@ python -m sourceloom.cli serve
 
 真实规划、生成和审核需要完整的 [中文技术写作技能](https://github.com/AIALRA-0/agent-human-readable-technical-writing)，将其本地目录填入 `writing_skill_dir`
 
-该技能负责写作标准，SourceLoom 负责保存、分工、预算、验证和导入，所用规则快照的摘要随任务记录保存
+该技能负责写作标准，SourceLoom 负责保存、分工、预算、验证和导入，规划、生成和审核的角色输入包含完整规则快照与摘要
 
 首次连接建议使用很短的自有材料，保留默认单篇 0.50 美元、每天 2 美元、每天 80 次调用的限制，逐项检查结果后再调整
 
