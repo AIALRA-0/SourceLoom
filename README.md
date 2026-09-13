@@ -6,7 +6,7 @@
 
 <p>面向 ReadWeave 的内容预处理工作台 · 个人预览版 0.1</p>
 
-[English](README.en.md) · [工作台（需登录）](https://sourceloom.aialra.online) · [完整计划](docs/MASTER_PLAN.md) · [验证报告](reports/IMPLEMENTATION_STATUS.md)
+[English](README.en.md) · [工作台（需登录）](https://sourceloom.aialra.online) · [真实材料的完整改写](https://sourceloom.aialra.online/examples/real/) · [完整计划](docs/MASTER_PLAN.md) · [验证报告](reports/IMPLEMENTATION_STATUS.md)
 
 </div>
 
@@ -15,6 +15,8 @@
 SourceLoom 先保存原件、清点不能丢失的信息，再把规划、生成、审核和局部修复交给独立角色，最后形成能够导入 [ReadWeave](https://github.com/AIALRA-0/ReadWeave) 的学习候选
 
 适合短文、指定章节和论文的内容准备，阅读、追问与知识积累继续在 ReadWeave 中完成
+
+想先判断成文效果，可直接阅读 [论文、网页与 Markdown 三份完整改写](https://sourceloom.aialra.online/examples/real/)，每份都有原文对照和成品下载；这些样章经过本次逐段修订，不代表任意输入已经能够无人干预自动交付，详见 [实际案例说明](docs/REAL_CASES.md)
 
 <div align="center">
 

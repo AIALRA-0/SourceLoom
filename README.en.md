@@ -6,7 +6,7 @@
 
 <p>Content preparation for ReadWeave · Personal preview 0.1</p>
 
-[简体中文](README.md) · [Workspace (login required)](https://sourceloom.aialra.online) · [Master plan](docs/MASTER_PLAN.md) · [Verification report](reports/IMPLEMENTATION_STATUS.md)
+[简体中文](README.md) · [Workspace (login required)](https://sourceloom.aialra.online) · [Complete real-document rewrites](https://sourceloom.aialra.online/examples/real/) · [Master plan](docs/MASTER_PLAN.md) · [Verification report](reports/IMPLEMENTATION_STATUS.md)
 
 </div>
 
@@ -15,6 +15,8 @@
 SourceLoom preserves original files, inventories information before generation, and gives planning, writing, review, and local repair separate tasks. It produces candidate packages for [ReadWeave](https://github.com/AIALRA-0/ReadWeave), where reading and further questions continue.
 
 Its initial scope is short documents, selected chapters, and papers.
+
+Read the [three complete examples](https://sourceloom.aialra.online/examples/real/) to compare an academic PDF, an MDN article, and a Rust Markdown chapter with their rewritten teaching texts. Each includes source comparison and downloads. These examples include direct editorial corrections by the assistant; they do not demonstrate unattended conversion of arbitrary inputs. See [case details](docs/REAL_CASES.md).
 
 <div align="center">
 

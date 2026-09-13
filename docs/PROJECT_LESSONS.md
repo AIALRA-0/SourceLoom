@@ -35,6 +35,10 @@
 
 ## 5 核对入口
 
+真实材料补充验证暴露了另一类问题：代码引用语法未展开会产生空代码块，一次请求生成多个章节可能只返回前几个章节，模型的正常结束标记不等于完整覆盖，长审核也可能消耗全部额度而没有正文
+
+后续生成要按已核对的输入清单保留单节产物，缺节只补缺节；最终交付必须给原文与实际成稿，程序检查数量不能替代用户看到的输出，详见 [真实案例](REAL_CASES.md)
+
 - [ReadWeave](https://github.com/AIALRA-0/ReadWeave)
 - [中文写作技能](https://github.com/AIALRA-0/agent-human-readable-technical-writing)
 - [AEMP 项目仓库](https://github.com/AIALRA-0/project-atlas)

@@ -283,5 +283,8 @@ def create_app(config=None):
     def index():
         return FileResponse(Path(__file__).parent/"static"/"index.html")
 
+    examples=store.root/"examples"
+    examples.mkdir(exist_ok=True)
+    app.mount("/examples",StaticFiles(directory=examples,html=True),name="examples")
     app.mount("/static",StaticFiles(directory=Path(__file__).parent/"static"),name="static")
     return app
