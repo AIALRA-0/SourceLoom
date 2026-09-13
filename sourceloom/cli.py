@@ -16,6 +16,8 @@ def main():
     serve=sub.add_parser("serve")
     serve.add_argument("--port",type=int,default=8765)
     sub.add_parser("demo")
+    worker_parser=sub.add_parser('worker')
+    worker_parser.add_argument('--once',action='store_true')
     export=sub.add_parser("export")
     export.add_argument("project")
     export.add_argument("output")
@@ -27,7 +29,10 @@ def main():
         uvicorn.run(create_app(config),host="127.0.0.1",port=args.port,proxy_headers=False)
     else:
         store=Store(config["data_dir"])
-        if args.command=="demo":
+        if args.command=='worker':
+            from .production import worker
+            worker(store,config,args.once)
+        elif args.command=="demo":
             print(json.dumps({k:v for k,v in create_demo(store).items() if k in {"id","title","state"}},ensure_ascii=False))
         elif args.command=="export":
             path=Path(args.output)

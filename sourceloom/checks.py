@@ -42,6 +42,14 @@ def inspect_draft(inventory, draft, plan=None):
     resources = {r["id"] for r in inventory["resources"]}
     covered, object_coverage, identities = set(), set(), set()
     for b in parsed["blocks"]:
+        if not set(b.get('embedded_object_ids',[])) <= set(b['object_ids']):
+            error('embedded_object','正文内嵌对象没有原对象关系',b['id'])
+        if b.get('embedded_object_ids'):
+            from .writing import protected_objects
+            literals=protected_objects(inventory)
+            for sid in b['embedded_object_ids']:
+                if sid not in literals or literals[sid] not in b['markdown']:
+                    error('embedded_bytes','正文内嵌原对象的字符发生变化',b['id'])
         if b["id"] in identities:
             error("duplicate", "候选段落身份重复", b["id"])
         identities.add(b["id"])
@@ -78,6 +86,12 @@ def inspect_draft(inventory, draft, plan=None):
 
 
 def review_complete(project):
+    production=project.get('production') or {}
+    if production.get('automatic') and production.get('status')=='completed':
+        from .writing import canonical
+        return (production.get('revision')==project['revision'] and production.get('manual_edits')==0
+                and not production.get('issues') and bool(production.get('skill_digest'))
+                and production.get('canonical_digest')==digest(canonical(project['draft']).encode()))
     review = project.get("review")
     if not review or review.get("revision") != project["revision"] or review.get("inventory_digest") != project["inventory"]["digest"]:
         return False

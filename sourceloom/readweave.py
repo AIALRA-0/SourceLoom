@@ -1,6 +1,8 @@
 """Native import with durable identity and independently read attachment bytes."""
 import json
 import time
+import re
+from collections import Counter
 from io import BytesIO
 import zipfile
 import httpx
@@ -19,6 +21,8 @@ def compare_html(expected,actual):
             'anchor_ids':[n.get('data-readweave-anchor-id') for n in a.select('[data-readweave-anchor-id]')]
                          ==[n.get('data-readweave-anchor-id') for n in b.select('[data-readweave-anchor-id]')],
             'image_count':len(a.find_all('img'))==len(b.find_all('img')),
+            'image_descriptions':[n.get('alt','') for n in a.find_all('img')]==[n.get('alt','') for n in b.find_all('img')],
+            'formula_source':[n.get_text() for n in a.select('.math-tex')]==[n.get_text() for n in b.select('.math-tex')],
             'local_fragment_targets':all(b.find(id=n['href'][1:]) is not None for n in b.select('a[href^="#"]') if not n['href'].startswith('#root/')),
             'external_links':[n['href'] for n in a.select('a[href]') if n['href'].startswith(('https://','http://'))]
                              ==[n['href'] for n in b.select('a[href]') if n['href'].startswith(('https://','http://'))]}
@@ -33,6 +37,9 @@ def import_candidate(store,config,pid):
         expected=z.read('material.html').decode()
         meta=json.loads(z.read('!!!meta.json'))
         attachment_hashes={x['title']:digest(z.read(x['dataFileName'])) for x in meta['files'][0]['attachments']}
+        expected_attachments=[(a['title'],a['role'],a['mime'],digest(z.read(a['dataFileName']))) for a in meta['files'][0]['attachments']]
+        image_files={a['dataFileName']:digest(z.read(a['dataFileName'])) for a in meta['files'][0]['attachments'] if a['role']=='image'}
+        expected_images=[image_files.get(n.get('src','')) for n in BeautifulSoup(expected,'html.parser').find_all('img')]
     work=store.root/'readweave';work.mkdir(exist_ok=True)
     record=work/(pid+'-'+str(p['revision'])+'.json')
     previous=json.loads(record.read_text(encoding='utf-8')) if record.exists() else None
@@ -58,12 +65,21 @@ def import_candidate(store,config,pid):
         remote=attachments.json()
         if isinstance(remote,dict):remote=remote.get('results',remote.get('attachments',[]))
         measured={}
+        measured_entities={}
         for a in remote:
             r=c.get('attachments/'+a['attachmentId']+'/content');r.raise_for_status()
             measured[a['title']]=digest(r.content)
+            measured_entities[a['attachmentId']]=(a['title'],a['role'],a['mime'],digest(r.content))
         checks=compare_html(expected,content.text)
         checks['all_attachment_bytes']=all(measured.get(title)==value for title,value in attachment_hashes.items())
-        checks['attachment_count']=len(remote)==len(attachment_hashes)
+        checks['attachment_count']=len(remote)==len(expected_attachments)
+        checks['attachment_identity_role_and_bytes']=Counter(measured_entities.values())==Counter(expected_attachments)
+        images=[]
+        for pic in BeautifulSoup(content.text,'html.parser').find_all('img'):
+            match=re.match(r'^/?api/attachments/([^/]+)/image/',pic.get('src',''))
+            entity=measured_entities.get(match[1]) if match else None
+            images.append(entity[3] if entity and entity[1]=='image' and entity[2].startswith('image/') else None)
+        checks['rendered_image_targets']=None not in images and None not in expected_images and images==expected_images
         # Close and reopen the HTTP client to avoid mistaking a local buffer for readback.
     with httpx.Client(timeout=20,follow_redirects=False) as c:
         second=c.get(config['readweave_url'].rstrip('/')+'/etapi/notes/'+nid+'/content',headers={'Authorization':config['readweave_token']})

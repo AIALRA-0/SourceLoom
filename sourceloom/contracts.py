@@ -56,6 +56,7 @@ class Block(Strict):
     obligation_ids: list[str]
     object_ids: list[str]
     evidence: list[Evidence]
+    embedded_object_ids: list[str] = []
 
 
 class Draft(Strict):

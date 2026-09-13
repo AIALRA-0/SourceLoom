@@ -13,4 +13,9 @@ def test_multidomain_format_intake_preserves_original_and_tail(tmp_path,domain,t
     assert 'Tail exception: all numbers are teaching assumptions.' in actual
     assert text.replace('\n',' ') in actual.replace('\n',' ')
     assert len(inv['obligations'])==len(inv['objects'])
-    if format in {'pdf','docx'}:assert inv['unknown']
+    if format=='pdf':assert inv['unknown']
+    if format=='docx':
+        # This fixture contains ordinary paragraphs only. Rich unsupported Word
+        # constructs have separate tests and must still create explicit gaps.
+        assert not inv['unknown']
+        assert len([o for o in inv['objects'] if 'Tail exception:' in o['text']])==1

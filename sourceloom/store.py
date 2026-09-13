@@ -126,6 +126,11 @@ class Store:
 
     def put_job(self, job):
         with self.connect() as cx:
+            if job.get('worker_owner'):
+                cx.execute('BEGIN IMMEDIATE')
+                row=cx.execute('SELECT owner FROM production_control WHERE id=?',(job['id'],)).fetchone()
+                if not row or row[0]!=job['worker_owner']:
+                    raise Conflict('后台执行权已变化，旧进程不能改写任务记录')
             cx.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,body=excluded.body",
                        (job["id"], job["project"], job["role"], job["status"], job["created"], json.dumps(job, ensure_ascii=False)))
 
@@ -140,7 +145,8 @@ class Store:
         with self.connect() as cx:
             return [json.loads(r[0]) for r in cx.execute("SELECT body FROM jobs WHERE project=? ORDER BY created", (pid,))]
 
-    def reserve(self, pid, call_id, amount, body, daily_budget=None, daily_calls=80):
+    def reserve(self, pid, call_id, amount, body, daily_budget=None, daily_calls=80,
+                total_budget=None, subscription_calls=None):
         if amount < 0:
             raise ValueError("费用预留不能为负数")
         with self.connect() as cx:
@@ -156,6 +162,13 @@ class Store:
             global_total,global_calls=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0),COUNT(*) FROM spending WHERE created>=?',(day,)).fetchone()
             if (daily_budget is not None and global_total+amount>daily_budget+1e-9) or global_calls>=daily_calls:
                 raise Conflict('今日总预算或总调用次数已达上限，其他项目不能绕过额度')
+            all_spending=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0) FROM spending').fetchone()[0]
+            if total_budget is not None and all_spending+amount>total_budget+1e-9:
+                raise Conflict('累计测试预算已达上限，更换日期或项目不能重新获得额度')
+            if subscription_calls is not None and body.get('channel') in {'router','codex-cli'}:
+                used=cx.execute("SELECT COUNT(*) FROM spending WHERE json_extract(body,'$.channel') IN ('router','codex-cli','subscription')").fetchone()[0]
+                if used>=subscription_calls:
+                    raise Conflict('订阅测试请求次数已达累计上限')
             cx.execute("INSERT INTO spending(id,project,reserved,actual,status,body,created) VALUES(?,?,?,?,?,?,?)", (call_id, pid, amount, None, "reserved", json.dumps(body),time.time()))
 
     def settle(self, call_id, actual, body):

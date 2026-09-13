@@ -1,0 +1,28 @@
+[Unit]
+Description=SourceLoom durable content worker
+After=network.target
+
+[Service]
+Type=simple
+User=sourceloom
+Group=sourceloom
+WorkingDirectory=/opt/sourceloom/app
+LoadCredential=config.json:/etc/sourceloom/config.json
+Environment=SOURCELOOM_CONFIG=%d/config.json
+Environment=SOURCELOOM_DATA=/var/lib/sourceloom
+ExecStart=/opt/sourceloom/venv/bin/python -m sourceloom.cli worker
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sourceloom
+MemoryMax=1280M
+TasksMax=40
+CPUQuota=150%
+
+[Install]
+WantedBy=multi-user.target

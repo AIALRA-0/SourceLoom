@@ -9,7 +9,7 @@ import stat
 from urllib.parse import urljoin, urlsplit, unquote
 import zipfile
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag, Comment
 from defusedxml import ElementTree as ET
 from markdown_it import MarkdownIt
 from pypdf import PdfReader
@@ -57,7 +57,7 @@ def decode(raw):
     return raw.decode("utf-8-sig", errors="strict")
 
 
-def intake(store, uploads, source_url=None):
+def intake(store, uploads, source_url=None, asset_aliases=None):
     files = {}
     originals = []
     for name, raw in uploads:
@@ -79,6 +79,7 @@ def intake(store, uploads, source_url=None):
         raise ValueError("本次材料超过展开总量限制")
     objects, resources, unknown = [], [], []
     resource_index = {}
+    document_base=source_url
     for name, raw in files.items():
         key = store.blob(raw)
         resource_index[name] = key
@@ -95,6 +96,9 @@ def intake(store, uploads, source_url=None):
         unknown.append(dict(id=f"gap-{len(unknown)+1}", reason=reason, locator=locator, object_id=object_id))
 
     def resolve_asset(ref, name):
+        linked=(asset_aliases or {}).get(urljoin(document_base or '',ref))
+        if linked in resource_index:
+            return resource_index[linked]
         parsed = urlsplit(ref)
         if parsed.scheme == "data":
             try:
@@ -115,10 +119,16 @@ def intake(store, uploads, source_url=None):
 
     def html_objects(html, name):
         soup = BeautifulSoup(html, "html.parser")
+        nonlocal document_base
+        if document_base and soup.find('base',href=True):
+            document_base=urljoin(document_base,soup.find('base',href=True)['href'])
         root = soup.body or soup
         blocks = {"p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "table", "figcaption", "blockquote", "dt", "dd", "summary"}
 
         def walk(node, locator):
+            if isinstance(node, Comment):
+                add('metadata',str(node),locator,raw='<!--'+str(node)+'-->')
+                return
             if isinstance(node, NavigableString):
                 if str(node).strip():
                     add("text", str(node), locator)
@@ -141,26 +151,36 @@ def intake(store, uploads, source_url=None):
                 gap('MathML 原始结构已保存，教学排版与公式解释需要核对',locator,obj['id'])
                 return
             if node.name in blocks:
-                text = node.get_text("\n", strip=False)
+                text = node.get_text(strip=False)
                 kind = "table" if node.name == "table" else "code" if node.name == "pre" else "heading" if re.fullmatch("h[1-6]", node.name) else "text"
                 if node.get('role')=='doc-footnote' or re.match(r'^(fn|footnote)[-_:]?\d',str(node.get('id','')),re.I):kind='footnote'
                 html_ids=([node['id']] if node.get('id') else [])+[n['id'] for n in node.select('[id]')]
                 obj = add(kind, text, locator, raw=str(node),html_ids=html_ids)
+                if kind=='code':
+                    code=node.find('code')
+                    classes=(code or node).get('class',[])
+                    obj['language']=next((c[9:] for c in classes if c.startswith('language-')),'')
                 if node.name == "table":
                     obj["cells"] = [[dict(text=c.get_text(), rowspan=c.get("rowspan", "1"), colspan=c.get("colspan", "1")) for c in r.find_all(["td", "th"], recursive=False)] for r in node.find_all("tr")]
                 for n, link in enumerate(node.find_all("a")):
                     target = link.get("href", "")
-                    add("link", link.get_text(), f"{locator}/a[{n+1}]", target=urljoin(source_url, target) if source_url else target, parent_id=obj["id"])
+                    add("link", link.get_text(), f"{locator}/a[{n+1}]", original_target=target,target=urljoin(document_base, target) if document_base else target, parent_id=obj["id"])
                 for n, pic in enumerate(node.find_all("img")):
                     walk(pic, f"{locator}/img[{n+1}]")
                 for n,math in enumerate(node.find_all('math')):
                     walk(math,f'{locator}/math[{n+1}]')
+                if kind not in {'code','table'}:
+                    for n,pre in enumerate(node.find_all('pre')):
+                        before=len(objects)
+                        walk(pre,f'{locator}/pre[{n+1}]')
+                        if len(objects)>before:
+                            objects[before]['parent_id']=obj['id']
                 if node.find(["math", "iframe", "svg"]) or node.find(attrs={"hidden":True}) or node.has_attr("hidden"):
                     gap("混合数学、嵌入或隐藏对象需要补充核对", locator, obj["id"])
                 return
             if node.name == "a":
                 target = node.get("href", "")
-                add("link", node.get_text(), locator, target=urljoin(source_url, target) if source_url else target)
+                add("link", node.get_text(), locator, original_target=target,target=urljoin(document_base, target) if document_base else target)
                 return
             for n, child in enumerate(node.children):
                 walk(child, f"{locator}/{getattr(child, 'name', None) or 'text'}[{n+1}]")
@@ -173,6 +193,17 @@ def intake(store, uploads, source_url=None):
         ext = name.lower().rsplit(".", 1)[-1]
         if ext in {"txt", "md", "markdown", "html", "htm"}:
             text = decode(raw)
+            document_base=source_url
+            if ext in {'md','markdown'}:
+                front=re.match(r'\A---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)',text)
+                if front and re.search(r'(?m)^[A-Za-z][\w-]*:',front[1]):
+                    add('metadata',front[0],name+'/frontmatter',raw=front[0],syntax='yaml')
+                    text=text[front.end():]
+                    # MDN content explicitly identifies its published path in slug.
+                    # Keep the retrieval URL and literal href separately as provenance.
+                    slug=re.search(r'(?m)^slug:\s*["\']?([^\r\n"\']+)',front[1])
+                    if slug and source_url and source_url.startswith('https://raw.githubusercontent.com/mdn/content/'):
+                        document_base='https://developer.mozilla.org/en-US/docs/'+slug[1].strip()
             if ext in {"html", "htm", "md", "markdown"}:
                 html = MarkdownIt("commonmark", {"html":True}).enable("table").render(text) if ext in {"md", "markdown"} else text
                 html_objects(html, name)
@@ -218,27 +249,9 @@ def intake(store, uploads, source_url=None):
             finally:
                 pdf.close()
         elif ext == "docx":
+            from .word_intake import read_word
             parts = unpack(raw)
-            for part, data in parts.items():
-                if part.startswith("word/media/"):
-                    key = store.blob(data)
-                    mime = mimetypes.guess_type(part)[0] or "application/octet-stream"
-                    resources.append(dict(id=key, name=part, sha256=key, size=len(data), mime=mime))
-                    add("image" if mime in SAFE_IMAGE else "attachment", part, name+"/"+part, resource_id=key)
-                if part.startswith("word/") and part.endswith(".xml"):
-                    root = ET.fromstring(data)
-                    local = lambda tag: tag.rsplit("}", 1)[-1]
-                    for n, element in enumerate(root.iter()):
-                        tag = local(element.tag)
-                        if tag in {"p", "tbl", "oMath", "comment", "ins", "del"}:
-                            text = "".join(e.text or "" for e in element.iter() if local(e.tag) in {"t", "delText"})
-                            if text:
-                                add("table" if tag=="tbl" else "formula" if tag=="oMath" else "text", text, f"{name}/{part}/{tag}[{n}]", raw=ET.tostring(element, encoding="unicode"))
-                if part.endswith(".rels"):
-                    for rel in ET.fromstring(data):
-                        if rel.get("TargetMode") == "External":
-                            add("link", rel.get("Id", "关系"), name+"/"+part, target=rel.get("Target", ""))
-            gap("DOCX 部件已清点，修订、嵌套表格、批注归属和媒体位置需独立核对", name)
+            read_word(parts,name,store,resources,add,gap,SAFE_IMAGE)
         elif mimetypes.guess_type(name)[0] in SAFE_IMAGE:
             if not any(o.get('resource_id')==resource_index[name] for o in objects):
                 add("image", name, name, resource_id=resource_index[name])

@@ -2,118 +2,105 @@
 
 <h1>AIALRA SourceLoom</h1>
 
-<p><strong>Weave source material into traceable learning content</strong></p>
+<p><strong>Turn source material into traceable learning content</strong></p>
 
-<p>Content preparation for ReadWeave · Personal preview 0.1</p>
+<p>Content preparation for ReadWeave · Automatic production under evaluation</p>
 
-[简体中文](README.md) · [Workspace (login required)](https://sourceloom.aialra.online) · [Complete real-document rewrites](https://sourceloom.aialra.online/examples/real/) · [Master plan](docs/MASTER_PLAN.md) · [Verification report](reports/IMPLEMENTATION_STATUS.md)
+[中文](README.md) · [Actual trials](reports/AUTOMATIC_TRIAL.md) · [Master plan](docs/MASTER_PLAN.md) · [Deployment](deploy/README.md)
 
 </div>
 
-## 1 Prepare material for learning
+## 1 Current results
 
-SourceLoom preserves original files, inventories information before generation, and gives planning, writing, review, and local repair separate tasks. It produces candidate packages for [ReadWeave](https://github.com/AIALRA-0/ReadWeave), where reading and further questions continue.
+SourceLoom preserves originals and separates inventory, planning, writing, review, and local repair before preparing material for ReadWeave
 
-Its initial scope is short documents, selected chapters, and papers.
+Nine real inputs produced one complete automatic draft and one partial automatic draft, with **zero formally accepted automatic outputs**. The complete draft still has writing defects, and the designated independent conversation did not return its final comparison. See [individual results and costs](reports/AUTOMATIC_TRIAL.md)
 
-Read the [three complete examples](https://sourceloom.aialra.online/examples/real/) to compare an academic PDF, an MDN article, and a Rust Markdown chapter with their rewritten teaching texts. Each includes source comparison and downloads. These examples include direct editorial corrections by the assistant; they do not demonstrate unattended conversion of arbitrary inputs. See [case details](docs/REAL_CASES.md).
+Earlier manually revised examples remain [historical examples](docs/REAL_CASES.md), not evidence of unattended automatic quality
 
 <div align="center">
 
-<img src="docs/assets/readme/workspace-desktop.png" width="1120" alt="The running SourceLoom workspace with upload controls, a three-step explanation, and an original synthetic example">
+<img src="docs/assets/readme/library-desktop.png" width="1120" alt="Actual SourceLoom document tree and source comparison using synthetic material only">
 
-Figure 1.1 Actual local workspace using synthetic material only
-
-</div>
-
-## 2 Current capabilities
-
-- Preserve original bytes and inventory text, images, tables, formula source, code, links, and footnotes
-- Freeze preservation obligations before generation and check source quotes, coverage mappings, and protected objects
-- Execute independent inventory, planning, generation, review, repair, and research-planning roles
-- Apply exact-text patches against a specific revision, with a two-round repair limit
-- Archive the complete old state before adding missing material or obligations, then generate only additional units
-- Use manual task packages, local Codex, compatible APIs, or an existing durable task router
-- Enforce per-document reservations, daily totals, call limits, and uncertainty without automatic replay
-- Export native ReadWeave packages, add candidates under a configured parent, and read back content and attachments
-
-<div align="center">
-
-<img src="docs/assets/readme/omission-check.png" width="1000" alt="A removed condition paragraph produces an actual missing-obligation finding">
-
-Figure 2.1 The running omission check after removing a condition paragraph
+Figure 1.1 The actual library interface, using synthetic material to demonstrate document management and object rendering
 
 </div>
 
-## 3 First result in five minutes
+## 2 Using the library
 
-Use Python 3.11 or later. Download this repository and open a terminal in its root directory, then use an isolated environment.
+1. Import a paper, webpage, document, or archive containing its assets
+2. Save it in a folder and inspect the original
+3. Configure a provider and start generation; the server keeps processing after the page closes
+4. Reopen the material to compare its source and available output; stopped jobs keep any drafts already produced
+5. Download the text or send an eligible candidate archive to ReadWeave
 
-Create a virtual environment.
+Rename, move, duplicate, trash, and restore documents. Editing saves a new version and invalidates previous acceptance
+
+## 3 Run locally
+
+Requires Python 3.11 or later
 
 ```bash
+# Create an isolated environment
 python -m venv .venv
 ```
 
-Activate it with `.venv\Scripts\Activate.ps1` on Windows or `source .venv/bin/activate` on other systems. Then install and start the project.
+Activate it with `.venv/Scripts/Activate.ps1` on Windows or `source .venv/bin/activate` elsewhere
 
 ```bash
+# Install the application
 python -m pip install .
+
+# Start the local library, listening on port 8765 by default
 python -m sourceloom.cli serve
 ```
 
-Open the local address printed by the command; the default port is `8765`.
-
-- Select the free synthetic demo
-- Open the coverage and repair view, remove one condition paragraph, and restore it
-- Download the native candidate package from the export view
-- Import it under a test parent in your own ReadWeave instance
-
-The synthetic demo makes no model calls. It demonstrates behavior and structural checks, not model quality.
-
-## 4 Models and writing policy
-
-Copy [the configuration example](config.example.json) to a private location outside Git. Set `SOURCELOOM_CONFIG` to that file and `SOURCELOOM_DATA` to your material directory.
-
-Real planning, writing, and review require the full [human-readable Chinese technical writing skill](https://github.com/AIALRA-0/agent-human-readable-technical-writing). Set `writing_skill_dir` to its local directory.
-
-The skill owns writing standards; SourceLoom owns storage, roles, budgets, verification, and import. Task artifacts identify the policy snapshot used.
-
-Start with a short document and the default limits: USD 0.50 per document, USD 2 per day, and 80 daily calls. DeepSeek thinking behavior should be explicitly configured. See [models and budgets](docs/MODELS_AND_BUDGET.md).
-
-## 5 Evidence and limitations
-
-- 107 deterministic tests, including five format variants of twelve independent synthetic domain seeds
-- 32 browser checks across desktop, tablet, mobile, and light/dark views
-- Native import and actual ReadWeave readback, including repeated images, merged cells, code, and footnote targets
-- Real Sol and DeepSeek calls with measured usage, recorded failures, and unresolved review results
+Open the local address printed by the server. In another terminal with the same configuration and data directory:
 
 ```bash
+# Process persisted jobs independently of the browser
+python -m sourceloom.cli worker
+```
+
+Without a configured provider, the library stores and manages material but explains why generation is unavailable
+
+## 4 Full writing skill and providers
+
+Copy [the example configuration](config.example.json) to a private location. Set `SOURCELOOM_CONFIG` to that file and `SOURCELOOM_DATA` to the material directory
+
+Point `writing_skill_dir` at the complete [Chinese technical writing skill](https://github.com/AIALRA-0/agent-human-readable-technical-writing). Every role receives the unabridged effective instruction files, while the entire package is frozen alongside the job. See [delivery details](docs/SKILL_RUNTIME.md)
+
+Receiving instructions does not prove compliance. Formal output requires writing review and independent source comparison of the same draft revision. Unreviewed output remains a draft
+
+Automatic jobs allow at most 24 calls, 900 seconds, and two local repair rounds per document. The default document budget is $0.20. Trial limits and unknown subscription costs are recorded in [the trial report](reports/AUTOMATIC_TRIAL.md)
+
+## 5 Verified scope and limits
+
+- Deterministic tests cover folders, document management, versions, trash, and persistent job recovery
+- Web intake stores original HTML and bounded raster downloads; missing assets remain explicit gaps, and dynamic pages are not comprehensively supported
+- Ordinary word-processing documents expose text, tables, links, and media; complex equations, tracked changes, and unsupported objects remain explicit gaps
+- One synthetic mixed document completed real ReadWeave import, editing, saving, and reopening with repeated images, tables, code, math, paragraph anchors, and footnote targets preserved
+- The 24-document real and held-out evaluation is incomplete, and a $0.10 average full-pipeline cost has not been demonstrated
+
+```bash
+# Install test dependencies
 python -m pip install ".[test]"
+
+# Run deterministic checks with a 120-second deadline and no paid model calls
 python scripts/verify.py
 ```
 
-The verification runner has a 120-second timeout. See [implementation status](reports/IMPLEMENTATION_STATUS.md) for the exact scope.
+Passing program tests does not establish writing quality or user acceptance
 
-Preserved bytes, structural coverage, semantic fidelity, import stability, and user acceptance are separate claims.
-
-PDF and DOCX extraction retain explicit unresolved items. Automated visual review, complex formula layout, broad real-document quality evaluation, and ReadWeave editor save/reopen verification remain incomplete. Research mode currently provides question planning and specified-source intake.
-
-## 6 Documentation and deployment
+## 6 Further reading
 
 - [Master plan](docs/MASTER_PLAN.md)
-- [Requirement ledger](docs/REQUIREMENTS.md)
-- [Source revisions and task continuation](docs/INCREMENTAL_WORKFLOW.md)
-- [Invariants and proof boundaries](docs/INVARIANTS.md)
-- [Reading preferences and examples](docs/READING_PREFERENCES.md)
-- [Models, resources, and budgets](docs/MODELS_AND_BUDGET.md)
-- [Lessons from existing projects](docs/PROJECT_LESSONS.md)
+- [Requirements](docs/REQUIREMENTS.md)
+- [Full skill delivery](docs/SKILL_RUNTIME.md)
+- [Actual trial results](reports/AUTOMATIC_TRIAL.md)
+- [Project lessons](docs/PROJECT_LESSONS.md)
 - [Deployment and rollback](deploy/README.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)
 
-Production uses an existing authenticated gateway. Public source excludes private attachments, credentials, production configuration, databases, and login records.
-
-## 7 Contributing and security
-
-Use synthetic reproduction material where possible. See [contribution guidance](CONTRIBUTING.md) and [security information](SECURITY.md). Never post credentials or private source documents in public issues.
-
-Licensed under [Apache-2.0](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for dependencies and integrations.
+Private documents, provider credentials, production configuration, login records, and raw model requests are excluded from the public repository

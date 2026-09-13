@@ -26,7 +26,7 @@ class Pipeline:
         self.lock = threading.Lock()
         self.cancelled = set()
         # A restarted process cannot know whether an external request completed.
-        for p in store.list():
+        for p in ([] if config.get('external_worker') else store.list()):
             if p.get("active_job"):
                 job = store.job(p["active_job"])
                 job["status"]="uncertain"
@@ -70,7 +70,7 @@ class Pipeline:
                 'visible_characters_including_latin_numbers_whitespace':len(visible),
                 'count_method':'Unicode U+3400..U+9FFF matches in parsed rendered HTML text, including protected source insertions',
                 'limit_interpretation':'A limit stated as Chinese characters refers to the Han count; do not estimate it by eye'}
-        if role in {"planner","generator","reviewer","repairer"}:
+        if self.config.get('writing_skill_dir'):
             snapshot = writing_snapshot(self.config)
             payload["writing_policy"] = snapshot
             payload["writing_policy_digest"] = digest(snapshot)
@@ -211,8 +211,10 @@ class Pipeline:
                     raise Conflict("已有候选，请使用局部修改或建立新版本")
                 if p.get('incremental_pending') and p['baseline'].get('draft'):
                     old=p['baseline']['draft']['blocks']
-                    if result['blocks'][:len(old)]!=old:
+                    normalized=C.Draft.model_validate({'blocks':old}).model_dump()['blocks']
+                    if result['blocks'][:len(old)]!=normalized:
                         raise Conflict('增量生成改变了原有段落，候选整笔未写入')
+                    result['blocks'][:len(old)]=copy.deepcopy(old)
                 findings=inspect_draft(inv,result,p["plan"])
                 if findings:
                     raise ValueError("候选未通过结构核对："+"；".join(f["message"] for f in findings[:4]))

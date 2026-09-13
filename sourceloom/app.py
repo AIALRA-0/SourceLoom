@@ -16,7 +16,7 @@ from .config import load_config
 from .demo import create_demo
 from .export import export_zip, render
 from .ingest import intake, MAX_FILE, SAFE_IMAGE
-from .network import fetch
+from .network import fetch, fetch_bundle
 from .pipeline import Pipeline, SCHEMAS
 from .parse_worker import isolated_intake
 from .store import Store, Conflict, digest
@@ -28,7 +28,7 @@ class Create(BaseModel):
     title:str=Field(min_length=1,max_length=180)
     goal:str=Field(default="完整保留材料，并从必要前提逐步讲清",max_length=2000)
     mode:str="rewrite"
-    budget_usd:float=Field(default=0.5,ge=0,le=20)
+    budget_usd:float=Field(default=0.2,ge=0,le=20)
 
 
 def create_app(config=None):
@@ -42,6 +42,8 @@ def create_app(config=None):
     app=FastAPI(title="SourceLoom",version="0.1.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.store=store
     app.state.pipeline=pipeline
+    from .library_api import register
+    queue=register(app,store,config)
 
     @app.middleware("http")
     async def security(request:Request,call_next):
@@ -89,6 +91,7 @@ def create_app(config=None):
     @app.get("/api/config")
     def public_config():
         return {"provider":config["provider"],"model":config["model"],"effort":config["effort"],
+                "generation_pause_reason":config.get('generation_pause_reason',''),
                 "writing_policy_ready":bool(config["writing_skill_dir"]),"fetch_enabled":config["fetch_enabled"],
                 "daily_budget_usd":config['daily_budget_usd'],"daily_call_limit":config['daily_call_limit'],
                 "readweave_configured":bool(config["readweave_url"] and config["readweave_token"] and config["readweave_parent"])}
@@ -148,9 +151,10 @@ def create_app(config=None):
     def import_url(pid:str,body:dict):
         if not config["fetch_enabled"]:
             raise Conflict("当前运行配置未启用网页获取，可以上传保存的网页")
-        raw,mime,url=fetch(str(body.get("url", "")))
-        suffix={"text/html":"html","text/plain":"txt","application/pdf":"pdf"}[mime]
-        return assign_inventory(pid,isolated_intake(store,[("snapshot."+suffix,raw)],source_url=url))
+        uploads,url,aliases,failures=fetch_bundle(str(body.get('url','')))
+        inv=isolated_intake(store,uploads,source_url=url,asset_aliases=aliases)
+        inv['web_snapshot']={'asset_aliases':aliases,'fetch_failures':failures,'scope':'complete supplied HTML body'}
+        return assign_inventory(pid,inv)
 
     @app.post("/api/projects/{pid}/freeze")
     def freeze_inventory(pid:str):
@@ -200,14 +204,20 @@ def create_app(config=None):
 
     @app.post("/api/jobs/{jid}/cancel")
     def cancel(jid:str):
+        if store.job(jid)['role']=='production':
+            return queue.cancel(jid)
         return pipeline.cancel(jid)
 
     @app.post('/api/jobs/{jid}/recover')
     def recover(jid:str):
+        if store.job(jid)['role']=='production':
+            return queue.recover_original(jid,config)
         return pipeline.recover(jid)
 
     @app.post('/api/jobs/{jid}/resume')
     def resume(jid:str):
+        if store.job(jid)['role']=='production':
+            return queue.retry_validation(jid)
         return pipeline.resume(jid)
 
     @app.post("/api/projects/{pid}/patch")
@@ -281,7 +291,11 @@ def create_app(config=None):
 
     @app.get("/")
     def index():
-        return FileResponse(Path(__file__).parent/"static"/"index.html")
+        return FileResponse(Path(__file__).parent/"static"/"library.html")
+
+    @app.get('/workbench')
+    def workbench():
+        return FileResponse(Path(__file__).parent/'static'/'index.html')
 
     examples=store.root/"examples"
     examples.mkdir(exist_ok=True)
