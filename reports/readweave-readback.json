@@ -1,0 +1,17 @@
+{
+  "status": "readback_passed",
+  "checks": {
+    "visible_text": true,
+    "table_cells": true,
+    "code_blocks": true,
+    "anchor_ids": true,
+    "image_count": true,
+    "local_fragment_targets": true,
+    "external_links": true,
+    "all_attachment_bytes": true,
+    "attachment_count": true,
+    "new_connection_readback": true
+  },
+  "editor_save_reopen": "not_verified",
+  "user_accepted": false
+}

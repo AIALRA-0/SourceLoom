@@ -1,0 +1,95 @@
+{
+  "provider": "DeepSeek direct API",
+  "model": "deepseek-flash",
+  "synthetic": true,
+  "cap_usd": 0.15,
+  "max_calls": 4,
+  "calls": 4,
+  "roles": [
+    {
+      "role": "inventory",
+      "status": "completed",
+      "seconds": 8.2,
+      "error": null
+    },
+    {
+      "role": "planner",
+      "status": "completed",
+      "seconds": 28.4,
+      "error": null
+    },
+    {
+      "role": "generator",
+      "status": "failed",
+      "seconds": 36.8,
+      "error": "模型输出未正常结束，已保存用量，不接受截断候选"
+    },
+    {
+      "role": "generator",
+      "status": "completed",
+      "seconds": 10.1,
+      "error": null,
+      "configuration": "thinking disabled after known truncation"
+    }
+  ],
+  "elapsed_seconds": 78.4,
+  "retained_unknown_usd": 0,
+  "usage": [
+    {
+      "prompt_tokens": 1344,
+      "completion_tokens": 1867,
+      "total_tokens": 3211,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 1163
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1344
+    },
+    {
+      "prompt_tokens": 13209,
+      "completion_tokens": 6277,
+      "total_tokens": 19486,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 5239
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 13209
+    },
+    {
+      "prompt_tokens": 15163,
+      "completion_tokens": 8000,
+      "total_tokens": 23163,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 8000
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 15163
+    },
+    {
+      "prompt_tokens": 15138,
+      "completion_tokens": 2141,
+      "total_tokens": 17279,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 15138
+    }
+  ],
+  "semantic_review_complete": false,
+  "mechanical_findings": [],
+  "user_accepted": false,
+  "draft_created": true,
+  "review_status": "Not called because the four-call ceiling was reached",
+  "cost_method": "Token usage multiplied by peak rates; not supplier invoiced charges",
+  "estimated_usd_at_peak_rates": 0.0353982
+}

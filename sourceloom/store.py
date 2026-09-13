@@ -1,0 +1,169 @@
+"""SQLite transactions coordinate immutable revisions and spending reservations."""
+
+import hashlib
+import json
+from pathlib import Path
+import sqlite3
+import time
+import uuid
+from contextlib import contextmanager
+
+
+class Conflict(ValueError):
+    pass
+
+
+def digest(value):
+    raw = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def identity():
+    return uuid.uuid4().hex
+
+
+class Store:
+    def __init__(self, root):
+        self.root = Path(root).resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.db = self.root / "state.sqlite3"
+        with self.connect() as cx:
+            cx.executescript("""
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS revisions(project TEXT, revision INTEGER, body TEXT NOT NULL,
+                    PRIMARY KEY(project, revision));
+                CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, project TEXT, role TEXT, status TEXT,
+                    created REAL, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS spending(id TEXT PRIMARY KEY, project TEXT, reserved REAL,
+                    actual REAL, status TEXT, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project TEXT, created REAL, kind TEXT, body TEXT);
+            """)
+            if 'created' not in {r[1] for r in cx.execute('PRAGMA table_info(spending)')}:
+                cx.execute('ALTER TABLE spending ADD COLUMN created REAL NOT NULL DEFAULT 0')
+
+    @contextmanager
+    def connect(self):
+        cx = sqlite3.connect(self.db, timeout=20)
+        cx.row_factory = sqlite3.Row
+        try:
+            with cx:
+                yield cx
+        finally:
+            cx.close()
+
+    def create(self, title, mode="rewrite", budget=0.5):
+        pid = identity()
+        body = dict(id=pid, title=title, mode=mode, created=time.time(), revision=0,
+                    state="collecting", inventory=None, plan=None, draft=None, review=None,
+                    accepted_revision=None, repair_rounds=0, budget_usd=budget, max_calls=12,
+                    active_job=None, goal="完整保留材料，并按必要前提循序讲清", research=None)
+        with self.connect() as cx:
+            cx.execute("INSERT INTO projects VALUES(?,?)", (pid, json.dumps(body, ensure_ascii=False)))
+        return body
+
+    def get(self, pid):
+        with self.connect() as cx:
+            row = cx.execute("SELECT body FROM projects WHERE id=?", (pid,)).fetchone()
+        if not row:
+            raise KeyError(pid)
+        return json.loads(row[0])
+
+    def list(self):
+        with self.connect() as cx:
+            return [json.loads(r[0]) for r in cx.execute("SELECT body FROM projects ORDER BY rowid DESC")]
+
+    def change(self, pid, update, expected=None):
+        with self.connect() as cx:
+            cx.execute("BEGIN IMMEDIATE")
+            row = cx.execute("SELECT body FROM projects WHERE id=?", (pid,)).fetchone()
+            if not row:
+                raise KeyError(pid)
+            p = json.loads(row[0])
+            if expected is not None and p["revision"] != expected:
+                raise Conflict("版本已变化，已拒绝覆盖")
+            update(p)
+            cx.execute("UPDATE projects SET body=? WHERE id=?", (json.dumps(p, ensure_ascii=False), pid))
+            if p.get("draft"):
+                cx.execute("INSERT OR IGNORE INTO revisions VALUES(?,?,?)",
+                           (pid, p["revision"], json.dumps(p["draft"], ensure_ascii=False)))
+        return p
+
+    def event(self, pid, kind, body):
+        with self.connect() as cx:
+            cx.execute("INSERT INTO events(project,created,kind,body) VALUES(?,?,?,?)",
+                       (pid, time.time(), kind, json.dumps(body, ensure_ascii=False)))
+
+    def events(self, pid):
+        with self.connect() as cx:
+            return [dict(r) | {"body": json.loads(r["body"])} for r in
+                    cx.execute("SELECT * FROM events WHERE project=? ORDER BY id DESC LIMIT 120", (pid,))]
+
+    def put_job(self, job):
+        with self.connect() as cx:
+            cx.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,body=excluded.body",
+                       (job["id"], job["project"], job["role"], job["status"], job["created"], json.dumps(job, ensure_ascii=False)))
+
+    def job(self, jid):
+        with self.connect() as cx:
+            r = cx.execute("SELECT body FROM jobs WHERE id=?", (jid,)).fetchone()
+        if not r:
+            raise KeyError(jid)
+        return json.loads(r[0])
+
+    def jobs(self, pid):
+        with self.connect() as cx:
+            return [json.loads(r[0]) for r in cx.execute("SELECT body FROM jobs WHERE project=? ORDER BY created", (pid,))]
+
+    def reserve(self, pid, call_id, amount, body, daily_budget=None, daily_calls=80):
+        if amount < 0:
+            raise ValueError("费用预留不能为负数")
+        with self.connect() as cx:
+            cx.execute("BEGIN IMMEDIATE")
+            p = json.loads(cx.execute("SELECT body FROM projects WHERE id=?", (pid,)).fetchone()[0])
+            previous = cx.execute("SELECT * FROM spending WHERE id=?", (call_id,)).fetchone()
+            if previous:
+                raise Conflict("已有调用身份，不得重复发送")
+            total, count = cx.execute("SELECT COALESCE(SUM(COALESCE(actual,reserved)),0), COUNT(*) FROM spending WHERE project=?", (pid,)).fetchone()
+            if total + amount > p["budget_usd"] + 1e-9 or count >= p["max_calls"]:
+                raise Conflict("预算或调用次数已达上限，已有产物保留")
+            day=int(time.time()//86400)*86400
+            global_total,global_calls=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0),COUNT(*) FROM spending WHERE created>=?',(day,)).fetchone()
+            if (daily_budget is not None and global_total+amount>daily_budget+1e-9) or global_calls>=daily_calls:
+                raise Conflict('今日总预算或总调用次数已达上限，其他项目不能绕过额度')
+            cx.execute("INSERT INTO spending(id,project,reserved,actual,status,body,created) VALUES(?,?,?,?,?,?,?)", (call_id, pid, amount, None, "reserved", json.dumps(body),time.time()))
+
+    def settle(self, call_id, actual, body):
+        if actual is not None and actual < 0:
+            raise ValueError("费用不能为负数")
+        with self.connect() as cx:
+            row = cx.execute("SELECT status,body FROM spending WHERE id=?", (call_id,)).fetchone()
+            if not row or row[0] == "settled":
+                raise Conflict("费用记录不存在或已结算")
+            cx.execute("UPDATE spending SET actual=?,status=?,body=? WHERE id=?",
+                       (actual, "settled" if actual is not None else "unknown", json.dumps(json.loads(row[1])|body), call_id))
+
+    def costs(self, pid):
+        with self.connect() as cx:
+            return [dict(r) | {"body": json.loads(r["body"])} for r in cx.execute("SELECT * FROM spending WHERE project=?", (pid,))]
+
+    def blob(self, raw):
+        key = digest(raw)
+        path = self.root / "blobs" / key
+        path.parent.mkdir(exist_ok=True)
+        if path.exists():
+            if digest(path.read_bytes()) != key:
+                raise Conflict("原件摘要冲突")
+        else:
+            with path.open("xb") as f:
+                f.write(raw)
+        return key
+
+    def read_blob(self, key):
+        if len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
+            raise ValueError("无效资源身份")
+        raw = (self.root / "blobs" / key).read_bytes()
+        if digest(raw) != key:
+            raise Conflict("原件字节已经变化")
+        return raw

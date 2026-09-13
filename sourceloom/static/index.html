@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>SourceLoom · 源织</title><link rel="stylesheet" href="/static/style.css"><script type="module" src="/static/app.js"></script></head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="源织首页"><span class="mark" aria-hidden="true">▤</span><span>SourceLoom<small>AIALRA · 源织</small></span></a>
+    <button id="new-project" class="primary">＋ 新建材料</button>
+    <p class="nav-label">工作台</p>
+    <nav id="navigation" aria-label="工作区"></nav>
+    <div class="sidebar-bottom"><span class="status-dot"></span><span id="channel-status">正在连接</span><button id="theme" class="icon-button" aria-label="切换明暗主题">◐</button></div>
+  </aside>
+  <main>
+    <header class="topbar"><span id="breadcrumb">工作台 / 材料</span><div><span class="small-tag">个人工作台</span><button id="refresh" class="icon-button" aria-label="刷新当前材料">↻</button></div></header>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <div id="content" class="content"></div>
+    <footer>源头完整，组织清楚 <span>原件 · 解释 · 依据</span></footer>
+  </main>
+</div>
+<dialog id="create-dialog"><form id="create-form"><div class="dialog-top"><h2>开始一份新材料</h2><button type="button" id="close-dialog" class="icon-button" aria-label="关闭">×</button></div><label>材料名称<input name="title" required maxlength="180" placeholder="例如：一篇正在学习的论文"></label><label>处理方式<select name="mode"><option value="rewrite">完整保真改写</option><option value="research">围绕问题调查成教材</option></select></label><label>学习目标<textarea name="goal" rows="3" placeholder="读完以后，希望自己能够做什么">完整保留材料，并从必要前提逐步讲清</textarea></label><label>本份材料额外费用上限（美元）<input name="budget" type="number" min="0" max="20" step="0.1" value="0.5"></label><p class="muted">创建项目不会调用模型，原件和候选保存在当前工作台</p><button class="primary" type="submit">创建并接入材料 →</button></form></dialog>
+</body></html>

@@ -1,0 +1,140 @@
+{
+  "model": "gpt-5.6-sol",
+  "effort": "medium",
+  "source": "original synthetic 100 ms task example",
+  "initial_roles": [
+    {
+      "role": "inventory",
+      "status": "completed",
+      "error": null,
+      "seconds": 18.4
+    },
+    {
+      "role": "planner",
+      "status": "completed",
+      "error": null,
+      "seconds": 60.6
+    },
+    {
+      "role": "generator",
+      "status": "completed",
+      "error": null,
+      "seconds": 153.6
+    },
+    {
+      "role": "reviewer",
+      "status": "completed",
+      "error": null,
+      "seconds": 116.7
+    }
+  ],
+  "initial_elapsed_seconds": 354.6,
+  "total_calls": 7,
+  "review_complete": false,
+  "user_accepted": false,
+  "repair_rounds": 1,
+  "final_findings": [
+    {
+      "id": "finding-001",
+      "severity": "warning",
+      "block_id": "unit-00001-extension-01",
+      "obligation_id": "obl-00003",
+      "message": "“k 的单位为倍”把正倍数的读法误写成物理单位；k 表示相对原速度的比值，本身无量纲",
+      "expected": "将 k 说明为大于 0 的无量纲速度倍数；“倍”可作为读法，但不应称为单位"
+    },
+    {
+      "id": "finding-002",
+      "severity": "warning",
+      "block_id": "unit-00001-extension-01",
+      "obligation_id": "obl-add-00002",
+      "message": "结尾“局部提速只改变可加速部分的耗时；整体耗时仍是……”是可独立引用的结论，却没有重申同一工作量、只有可加速部分变速、固定部分不变且没有额外开销等关键条件，不符合写作政策对结论继承适用范围的要求",
+      "expected": "在收束结论中保留决定其成立的条件，或明确限定为“在上述条件下”"
+    },
+    {
+      "id": "finding-003",
+      "severity": "warning",
+      "block_id": "unit-00001-extension-01",
+      "obligation_id": "obl-00003",
+      "message": "来源只给出 k=2 的情形；一般式 20+80÷k 是合理的教学推演，但该块所列来源引文不能单独证明对任意 k>0 的推广",
+      "expected": "把一般式明确标为基于所列假设的演绎延伸，不将来源引文当作一般式已经由材料直接陈述或经验验证的证据"
+    }
+  ],
+  "usage": [
+    {
+      "channel": "subscription",
+      "usage": {
+        "input_tokens": 15815,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 576,
+        "reasoning_output_tokens": 183
+      }
+    },
+    {
+      "channel": "subscription",
+      "usage": {
+        "input_tokens": 28961,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1072,
+        "reasoning_output_tokens": 368
+      }
+    },
+    {
+      "channel": "subscription",
+      "usage": {
+        "input_tokens": 30412,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1370,
+        "reasoning_output_tokens": 389
+      }
+    },
+    {
+      "channel": "subscription",
+      "usage": {
+        "input_tokens": 31020,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 4955,
+        "reasoning_output_tokens": 1034
+      }
+    },
+    {
+      "channel": "subscription",
+      "usage": {
+        "input_tokens": 37694,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 1341,
+        "reasoning_output_tokens": 840
+      }
+    },
+    {
+      "channel": "subscription",
+      "usage": {
+        "input_tokens": 31910,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 5665,
+        "reasoning_output_tokens": 2309
+      }
+    },
+    {
+      "channel": "subscription",
+      "usage": {
+        "input_tokens": 32007,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 4808,
+        "reasoning_output_tokens": 1500
+      }
+    }
+  ],
+  "limitations": [
+    "One small synthetic source",
+    "No paid API comparison",
+    "No end-user learning evaluation",
+    "No assertion of semantic losslessness"
+  ]
+}
