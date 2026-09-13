@@ -30,6 +30,7 @@ Figure 1.1 Actual local workspace using synthetic material only
 - Freeze preservation obligations before generation and check source quotes, coverage mappings, and protected objects
 - Execute independent inventory, planning, generation, review, repair, and research-planning roles
 - Apply exact-text patches against a specific revision, with a two-round repair limit
+- Archive the complete old state before adding missing material or obligations, then generate only additional units
 - Use manual task packages, local Codex, compatible APIs, or an existing durable task router
 - Enforce per-document reservations, daily totals, call limits, and uncertainty without automatic replay
 - Export native ReadWeave packages, add candidates under a configured parent, and read back content and attachments
@@ -80,8 +81,8 @@ Start with a short document and the default limits: USD 0.50 per document, USD 2
 
 ## 5 Evidence and limitations
 
-- 101 deterministic tests, including five format variants of twelve independent synthetic domain seeds
-- 28 browser checks across desktop, tablet, mobile, and light/dark views
+- 107 deterministic tests, including five format variants of twelve independent synthetic domain seeds
+- 32 browser checks across desktop, tablet, mobile, and light/dark views
 - Native import and actual ReadWeave readback, including repeated images, merged cells, code, and footnote targets
 - Real Sol and DeepSeek calls with measured usage, recorded failures, and unresolved review results
 
@@ -100,6 +101,7 @@ PDF and DOCX extraction retain explicit unresolved items. Automated visual revie
 
 - [Master plan](docs/MASTER_PLAN.md)
 - [Requirement ledger](docs/REQUIREMENTS.md)
+- [Source revisions and task continuation](docs/INCREMENTAL_WORKFLOW.md)
 - [Invariants and proof boundaries](docs/INVARIANTS.md)
 - [Reading preferences and examples](docs/READING_PREFERENCES.md)
 - [Models, resources, and budgets](docs/MODELS_AND_BUDGET.md)

@@ -49,6 +49,7 @@ class Provider:
         self.store.reserve(pid, call_id, reserve, dict(role=role,model=c["model"],input_bytes=input_bytes,channel=c["provider"]),
                            c.get('daily_budget_usd',2.0),c.get('daily_call_limit',80))
         job["calls"].append(dict(id=call_id,role=role,status="submitted",channel=c['provider'],
+                                 unit_id=job.get('current_unit_id'),
                                  upstream_base=c['base_url'] if c['provider']=='router' else None))
         self.store.put_job(job)
         headers = {"Authorization":"Bearer "+c["api_key"], "Content-Type":"application/json"}
@@ -183,6 +184,11 @@ class Provider:
             result=body['output']
             if isinstance(result,dict):result=result.get('structured',result.get('text',result))
             if isinstance(result,str):result=parse_json(result)
+        elif channel=='openai-compatible' and call.get('response_blob'):
+            body=json.loads(self.store.read_blob(call['response_blob']))
+            if body['choices'][0].get('finish_reason')!='stop':
+                raise Conflict('原响应已保存但被截断，不能当作完整结果恢复')
+            result=parse_json(body['choices'][0]['message']['content'])
         else:
             raise Conflict('该通道没有任务查询接口，请导回原调用结果或保留暂停状态')
         # Unknown subscription consumption stays unknown even when content is recovered.

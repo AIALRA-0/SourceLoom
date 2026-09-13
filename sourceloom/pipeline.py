@@ -12,6 +12,7 @@ from .checks import apply_patch, freeze, inspect_draft, validate_plan
 from .config import writing_snapshot
 from .providers import Provider, Uncertain
 from .store import Conflict, digest, identity
+from .versions import pending_obligations
 
 SCHEMAS = {"inventory":C.InventoryReview,"planner":C.Plan,"generator":C.Draft,
            "reviewer":C.Review,"repairer":C.Patch,"research":C.ResearchPlan}
@@ -49,6 +50,14 @@ class Pipeline:
                        plan=p["plan"] if role in {"generator","reviewer","repairer"} else None,
                        draft=p["draft"] if role in {"reviewer","repairer"} else None,
                        review=p["review"] if role=="repairer" else None,base_revision=p["revision"])
+        if role=='planner' and p.get('incremental_pending') and p['baseline'].get('draft'):
+            current=copy.deepcopy(inv)
+            current['obligations']=pending_obligations(p)
+            wanted={o['object_id'] for o in current['obligations']}
+            current['objects']=[o for o in current['objects'] if o['id'] in wanted]
+            payload['inventory']=current
+            payload['retained_units']=p['baseline']['plan']['units']
+            payload['incremental_instruction']='Plan only the supplied additional obligations. The application retains existing units and blocks unchanged. Use new unit IDs; explain dependencies on retained units explicitly.'
         if role == "repairer":
             payload["allowed_block_ids"] = list({f["block_id"] for f in p["review"]["body"]["findings"] if f["block_id"]})
         if role in {"reviewer","repairer"}:
@@ -69,10 +78,14 @@ class Pipeline:
 
     def task_pack(self,pid,role):
         p=self.store.get(pid)
+        payload=self.payload(p,role)
+        if role=='generator' and p.get('incremental_pending') and p['baseline'].get('draft'):
+            payload['retained_blocks']=p['baseline']['draft']['blocks']
+            payload['manual_incremental_instruction']='Return these retained blocks exactly unchanged, followed by blocks for only the new units. Existing block IDs, text, metadata, and order are immutable.'
         return dict(schema="sourceloom-task/1",project=pid,role=role,base_revision=p["revision"],
                     inventory_digest=p["inventory"]["digest"] if p.get("inventory") else None,
                     instructions=(Path(__file__).parent/"roles"/f"{role}.md").read_text(encoding="utf-8"),
-                    payload=self.payload(p,role),response_schema=SCHEMAS[role].model_json_schema())
+                    payload=payload,response_schema=SCHEMAS[role].model_json_schema())
 
     def start(self,pid,role):
         if role not in SCHEMAS:
@@ -84,6 +97,8 @@ class Pipeline:
                 return self.store.job(p["active_job"])
             if any(j["status"]=="uncertain" for j in self.store.jobs(pid)):
                 raise Conflict("存在结果不确定的任务，请先查询原任务或导回原结果")
+            if any(j['status']=='paused' for j in self.store.jobs(pid)):
+                raise Conflict('已有部分完成的生成任务，请继续原任务，期间保留原规划与清单')
             if self.config["provider"]=="manual":
                 raise Conflict("当前是人工任务包通道，请下载角色任务包")
             job=dict(id=identity(),project=pid,role=role,status="queued",created=time.time(),calls=[],
@@ -101,8 +116,15 @@ class Pipeline:
             p=self.store.get(pid)
             started=time.monotonic()
             if role=="generator":
-                blocks=[]
+                retained=p.get('baseline',{}).get('draft') if p.get('incremental_pending') else None
+                blocks=copy.deepcopy(job.get('partial_result', retained or {'blocks':[]})['blocks'])
+                completed=set(job.get('completed_unit_ids',[]))
+                if retained:
+                    completed.update(u['id'] for u in p['baseline']['plan']['units'])
+                    job.setdefault('partial_result',copy.deepcopy(retained))
+                job['completed_unit_ids']=list(completed)
                 for unit in p["plan"]["units"]:
+                    if unit['id'] in completed:continue
                     if time.monotonic()-started > self.config["job_timeout"]:
                         raise Conflict("达到整项生成等待上限，已完成单元保存在任务结果中")
                     payload=self.payload(p,role)
@@ -116,9 +138,15 @@ class Pipeline:
                     job['current_unit_id']=unit['id']
                     self.store.put_job(job)
                     result=self.provider.call(pid,role,payload,C.Draft.model_json_schema(),job,lambda:job["id"] in self.cancelled)
-                    blocks.extend(C.Draft.model_validate(result).model_dump()["blocks"])
+                    result=C.Draft.model_validate(result).model_dump()
+                    if inspect_draft(current,result,{'units':[unit]}):
+                        raise ValueError('当前单元存在遗漏或来源错误，已停止后续调用')
+                    if {b['id'] for b in blocks}&{b['id'] for b in result['blocks']}:
+                        raise ValueError('当前单元重复使用已有段落身份，未覆盖旧结果')
+                    blocks.extend(result['blocks'])
                     job["partial_result"]={"blocks":blocks}
                     job.setdefault('completed_unit_ids',[]).append(unit['id'])
+                    completed.add(unit['id'])
                     self.store.put_job(job)
                 result={"blocks":blocks}
             else:
@@ -130,6 +158,8 @@ class Pipeline:
             job["status"]="completed"
         except Exception as exc:
             job["status"]="uncertain" if isinstance(exc,Uncertain) else "cancelled" if job["id"] in self.cancelled else "failed"
+            if job['status'] in {'failed','cancelled'} and role=='generator' and job.get('partial_result') and 'result' not in job:
+                job['status']='paused'
             job["error"]=str(exc)[:500] if isinstance(exc,(ValueError,Conflict,Uncertain)) else "阶段失败，原件与既有产物保留"
         finally:
             job["finished"]=time.time()
@@ -139,6 +169,8 @@ class Pipeline:
 
     def commit(self,pid,role,result,revision,inventory_digest,job_id="manual"):
         result=SCHEMAS[role].model_validate(result).model_dump()
+        if any(j['status']=='paused' and j['id']!=job_id for j in self.store.jobs(pid)):
+            raise Conflict('部分生成任务尚未结束，不能改写其依赖产物')
         def change(p):
             if p["active_job"] and p["active_job"]!=job_id:
                 raise Conflict("另一个角色仍在运行")
@@ -164,17 +196,27 @@ class Pipeline:
                         raise ValueError("未知项指向不存在的对象")
                     inv["unknown"].append(dict(id=identity(),object_id=oid,reason="独立清单审核仍不确定",locator=known[oid]["locator"]))
             elif role=="planner":
-                if p["draft"]:
+                if p["draft"] and not p.get('incremental_pending'):
                     raise Conflict("已有候选，调整规划需要新项目版本")
+                if p.get('incremental_pending') and p['baseline'].get('draft'):
+                    extra=copy.deepcopy(inv)
+                    extra['obligations']=pending_obligations(p)
+                    # A delta plan cannot rewrite old units or claim old obligations.
+                    validate_plan(result,extra)
+                    result['units']=copy.deepcopy(p['baseline']['plan']['units'])+result['units']
                 p["plan"]=validate_plan(result,inv)
                 p["state"]="planned"
             elif role=="generator":
-                if p["draft"]:
+                if p["draft"] and not p.get('incremental_pending'):
                     raise Conflict("已有候选，请使用局部修改或建立新版本")
+                if p.get('incremental_pending') and p['baseline'].get('draft'):
+                    old=p['baseline']['draft']['blocks']
+                    if result['blocks'][:len(old)]!=old:
+                        raise Conflict('增量生成改变了原有段落，候选整笔未写入')
                 findings=inspect_draft(inv,result,p["plan"])
                 if findings:
                     raise ValueError("候选未通过结构核对："+"；".join(f["message"] for f in findings[:4]))
-                p.update(draft=result,revision=p["revision"]+1,review=None,accepted_revision=None,state="generated")
+                p.update(draft=result,revision=p["revision"]+1,review=None,accepted_revision=None,state="generated",incremental_pending=False)
             elif role=="reviewer":
                 source={o["id"]:o["text"] for o in inv["objects"]}
                 block_ids={b["id"] for b in p["draft"]["blocks"]}
@@ -220,6 +262,7 @@ class Pipeline:
                 job['partial_result']={'blocks':blocks}
                 job['completed_unit_ids']=list(completed)
                 if completed!={u['id'] for u in p['plan']['units']}:
+                    job['status']='paused'
                     job['error']='原调用结果已找回，仍有未生成单元，保存的单元不会重发'
                     self.store.put_job(job)
                     return job
@@ -227,4 +270,23 @@ class Pipeline:
             self.commit(p['id'],job['role'],result,job['base_revision'],job['inventory_digest'],job['id'])
             job.update(result=result,status='completed',recovered=True,error=None)
             self.store.put_job(job)
+            return job
+
+    def resume(self,jid):
+        with self.lock:
+            job=self.store.job(jid)
+            if job['status']!='paused' or job['role']!='generator':
+                raise Conflict('仅继续已确认原调用结果的部分生成任务')
+            p=self.store.get(job['project'])
+            if p['active_job'] or p['revision']!=job['base_revision'] or p['inventory']['digest']!=job['inventory_digest']:
+                raise Conflict('任务基线已变化或已有角色执行，保留原结果')
+            if any(j['status']=='uncertain' for j in self.store.jobs(p['id'])):
+                raise Conflict('先核对结果不确定的原调用')
+            if job.get('resume_count',0)>=2:
+                raise Conflict('已达到两次继续上限，请保留候选并核对具体缺口')
+            job.update(status='queued',resume_count=job.get('resume_count',0)+1,error=None)
+            self.cancelled.discard(jid)
+            self.store.put_job(job)
+            self.store.change(p['id'],lambda p:p.update(active_job=jid))
+            self.executor.submit(self.run,job)
             return job

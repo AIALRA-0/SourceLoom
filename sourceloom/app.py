@@ -20,6 +20,7 @@ from .network import fetch
 from .pipeline import Pipeline, SCHEMAS
 from .parse_worker import isolated_intake
 from .store import Store, Conflict, digest
+from .versions import append_intake, append_obligations, pending_obligations
 
 
 class Create(BaseModel):
@@ -119,9 +120,11 @@ def create_app(config=None):
 
     def assign_inventory(pid,inv):
         def update(p):
-            if p["active_job"] or p["inventory"]:
-                raise Conflict("当前材料已接入，追加材料需建立新项目以保留原版本")
-            p.update(inventory=inv,state="inventoried")
+            if p["active_job"]:
+                raise Conflict("角色正在执行，稍后追加材料")
+            if p['inventory']:
+                p.update(inventory=append_intake(p['inventory'],inv),revision=p['revision']+1,state='inventoried')
+            else:p.update(inventory=inv,state="inventoried")
         p=store.change(pid,update)
         store.event(pid,"intake",dict(objects=len(inv["objects"]),unknown=len(inv["unknown"])))
         return p
@@ -154,9 +157,28 @@ def create_app(config=None):
         def update(p):
             if p["active_job"] or not p["inventory"] or p["inventory"]["frozen"]:
                 raise Conflict("清单不存在、已冻结或角色仍在执行")
+            if p.get('incremental_pending') and p['baseline'].get('draft') and not pending_obligations(p):
+                raise Conflict('补漏版本至少需要一项新增材料义务')
             p["inventory"]=freeze(p["inventory"])
             p["state"]="frozen"
         return store.change(pid,update)
+
+    @app.post('/api/projects/{pid}/revise')
+    def revise(pid:str,body:dict):
+        return store.revise_sources(pid,body['revision'],body['inventory_digest'],str(body.get('reason',''))[:2000])
+
+    @app.get('/api/projects/{pid}/source-versions')
+    def source_versions(pid:str):
+        store.get(pid)
+        return store.source_versions(pid)
+
+    @app.post('/api/projects/{pid}/obligations')
+    def add_obligations(pid:str,body:dict):
+        def update(p):
+            if p['active_job'] or not p['inventory']:raise Conflict('先接入材料并等待角色结束')
+            append_obligations(p['inventory'],body['additions'])
+            p['revision']+=1
+        return store.change(pid,update,body['revision'])
 
     @app.post("/api/projects/{pid}/run/{role}")
     def run(pid:str,role:str):
@@ -184,11 +206,15 @@ def create_app(config=None):
     def recover(jid:str):
         return pipeline.recover(jid)
 
+    @app.post('/api/jobs/{jid}/resume')
+    def resume(jid:str):
+        return pipeline.resume(jid)
+
     @app.post("/api/projects/{pid}/patch")
     def patch(pid:str,body:dict):
         allowed=body.get("allowed_block_ids",[])
         def update(p):
-            if p["active_job"]:
+            if p["active_job"] or p.get('incremental_pending'):
                 raise Conflict("角色执行中，稍后再修改")
             draft=apply_patch(p,body["patch"],set(allowed))
             p.update(draft=draft,revision=p["revision"]+1,repair_rounds=p["repair_rounds"]+1,review=None,accepted_revision=None,state="generated")

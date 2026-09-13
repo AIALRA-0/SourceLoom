@@ -33,6 +33,8 @@ class Store:
                 CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS revisions(project TEXT, revision INTEGER, body TEXT NOT NULL,
                     PRIMARY KEY(project, revision));
+                CREATE TABLE IF NOT EXISTS source_versions(project TEXT, version INTEGER, body TEXT NOT NULL,
+                    PRIMARY KEY(project, version));
                 CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, project TEXT, role TEXT, status TEXT,
                     created REAL, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS spending(id TEXT PRIMARY KEY, project TEXT, reserved REAL,
@@ -94,6 +96,28 @@ class Store:
         with self.connect() as cx:
             cx.execute("INSERT INTO events(project,created,kind,body) VALUES(?,?,?,?)",
                        (pid, time.time(), kind, json.dumps(body, ensure_ascii=False)))
+
+    def revise_sources(self, pid, revision, inventory_digest, reason):
+        from .versions import reopen
+        with self.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM projects WHERE id=?',(pid,)).fetchone()
+            if not row:raise KeyError(pid)
+            p=json.loads(row[0])
+            if p['revision']!=revision or not p.get('inventory') or p['inventory']['digest']!=inventory_digest:
+                raise Conflict('补漏基线已变化，原版本未改变')
+            if cx.execute("SELECT 1 FROM jobs WHERE project=? AND status IN ('uncertain','paused')",(pid,)).fetchone():
+                raise Conflict('先处理原任务的未完成结果，再变更源清单')
+            previous=json.dumps(p,ensure_ascii=False)
+            version=p['inventory']['version']
+            reopen(p,reason)
+            cx.execute('INSERT INTO source_versions VALUES(?,?,?)',(pid,version,previous))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),pid))
+        return p
+
+    def source_versions(self, pid):
+        with self.connect() as cx:
+            return [json.loads(r[0]) for r in cx.execute('SELECT body FROM source_versions WHERE project=? ORDER BY version',(pid,))]
 
     def events(self, pid):
         with self.connect() as cx:

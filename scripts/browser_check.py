@@ -49,6 +49,28 @@ def main():
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'),f'overflow {width}/{i}'
                 checks.append(f'width-{width}-tab-{i}')
             page.screenshot(path=str(out/f'export-{width}.png'),full_page=True)
+        current=context.request.get('http://127.0.0.1:18765/api/projects').json()[0]
+        pid=current['id']
+        before=context.request.get('http://127.0.0.1:18765/api/projects/'+pid).json()
+        page.locator('nav [data-tab="1"]').click()
+        page.get_by_text('发现遗漏，建立补漏版本',exact=True).click()
+        page.locator('#revision-form input[name="reason"]').fill('浏览器合成反例：补充遗漏的条件')
+        page.get_by_role('button',name='保存旧版并开始补漏',exact=True).click()
+        page.get_by_role('heading',name='追加遗漏内容',exact=True).wait_for()
+        history=context.request.get(f'http://127.0.0.1:18765/api/projects/{pid}/source-versions').json()
+        assert history[-1]['draft']==before['draft'] and history[-1]['inventory']==before['inventory']
+        checks.append('source-revision-archives-complete-baseline')
+        page.locator('#obligation-form textarea').fill('再次明确原文中的适用条件，不改变原先数字')
+        page.get_by_role('button',name='追加一项保留义务',exact=True).click()
+        page.get_by_text('新增义务已保存，原有义务没有变化',exact=True).wait_for()
+        after=context.request.get(f'http://127.0.0.1:18765/api/projects/{pid}').json()
+        assert after['inventory']['obligations'][:-1]==before['inventory']['obligations']
+        assert after['draft']==before['draft']
+        checks.append('appended-obligation-preserves-old-content')
+        assert after['accepted_revision'] is None and after['review'] is None and not after['inventory']['frozen']
+        checks.append('new-source-version-invalidates-dependent-acceptance')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        checks.append('incremental-controls-fit-mobile')
         page.locator('nav [data-tab="0"]').click()
         page.get_by_role('button',name='返回材料列表').click()
         page.get_by_role('heading',name='把原始资料，织成有据可循的教材').wait_for()

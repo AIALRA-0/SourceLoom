@@ -46,8 +46,9 @@ def render(project, asset_url=lambda key:"assets/"+key):
     inventory = project["inventory"]
     src = {o["id"]:o for o in inventory["objects"]}
     anchor_map={}
+    scope=lambda o:o.get('source_scope',o['locator'].split('/')[0])
     for o in inventory['objects']:
-        for old_id in o.get('html_ids',[]):anchor_map.setdefault(old_id,'loom-source-'+o['id'])
+        for old_id in o.get('html_ids',[]):anchor_map.setdefault((scope(o),old_id),'loom-source-'+o['id'])
     md = MarkdownIt("commonmark", {"html":False}).enable("table")
     parts = []
     inserted={}
@@ -75,7 +76,7 @@ def render(project, asset_url=lambda key:"assets/"+key):
                 parts.append(safe_html(o["raw"]))
             elif o["kind"]=="link":
                 target = o.get("target", "")
-                if target.startswith('#') and target[1:] in anchor_map:target='#'+anchor_map[target[1:]]
+                if target.startswith('#') and (scope(o),target[1:]) in anchor_map:target='#'+anchor_map[(scope(o),target[1:])]
                 if urlsplit(target).scheme in {"http","https","mailto"} or target.startswith("#"):
                     parts.append(f'<p><a href="{html.escape(target,quote=True)}">{html.escape(o["text"] or target)}</a></p>')
                 else:
@@ -94,11 +95,15 @@ def render(project, asset_url=lambda key:"assets/"+key):
     result='\n'.join(parts)
     if anchor_map:
         doc=BeautifulSoup(result,'html.parser')
-        source_url=(inventory.get('source_url') or '').split('#')[0]
+        wrappers={'loom-source-'+o['id']:o for o in inventory['objects']}
         for a in doc.select('a[href]'):
+            wrapper=next((n for n in a.parents if n.get('id','').split('-repeat-')[0] in wrappers),None)
+            if wrapper is None:continue
+            obj=wrappers[wrapper['id'].split('-repeat-')[0]]
+            source_url=(obj.get('source_url') or inventory.get('source_url') or '').split('#')[0]
             target=a['href']
             old=target[1:] if target.startswith('#') else target[len(source_url)+1:] if source_url and target.startswith(source_url+'#') else None
-            if old in anchor_map:a['href']='#'+anchor_map[old]
+            if (scope(obj),old) in anchor_map:a['href']='#'+anchor_map[(scope(obj),old)]
         result=str(doc)
     return result
 
@@ -134,6 +139,7 @@ def export_zip(store, project, release=False):
     audit = dict(schema="sourceloom/1",revision=project["revision"],inventory=project["inventory"],plan=project["plan"],
                  draft=project["draft"],review=project["review"],accepted_revision=project["accepted_revision"],
                  release_issues=release_issues(project),readweave_roundtrip="not_verified")
+    audit['previous_source_versions']=store.source_versions(project['id'])
     audit_raw = json.dumps(audit,ensure_ascii=False,indent=2).encode()
     attach(audit_raw,"sourceloom-audit.json","application/json","file",digest(audit_raw))
     meta = dict(formatVersion=2,appVersion="0.1.0",files=[dict(noteId=root_id,title=project["title"]+" · "+status,
