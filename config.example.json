@@ -9,7 +9,7 @@
   "max_output_tokens": 8000,
   "max_input_bytes": 450000,
   "call_timeout": 180,
-  "job_timeout": 900,
+  "job_timeout": 0,
   "total_budget_usd": 10.0,
   "subscription_call_limit": 40,
   "external_worker": true,

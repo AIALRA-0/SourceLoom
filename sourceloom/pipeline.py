@@ -125,7 +125,7 @@ class Pipeline:
                 job['completed_unit_ids']=list(completed)
                 for unit in p["plan"]["units"]:
                     if unit['id'] in completed:continue
-                    if time.monotonic()-started > self.config["job_timeout"]:
+                    if self.config.get("job_timeout",0)>0 and time.monotonic()-started > self.config["job_timeout"]:
                         raise Conflict("达到整项生成等待上限，已完成单元保存在任务结果中")
                     payload=self.payload(p,role)
                     current=copy.deepcopy(p["inventory"])

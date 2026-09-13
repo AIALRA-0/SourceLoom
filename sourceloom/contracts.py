@@ -36,9 +36,16 @@ class Unit(Strict):
     objective: str
     obligation_ids: list[str] = Field(min_length=1)
     prerequisites: list[str]
-    stages: list[str] = Field(min_length=7, max_length=7)
+    stages: list[str] = Field(min_length=1)
     object_ids: list[str]
     proof_questions: list[str]
+    reader_question: str = ''
+    entry_knowledge: list[str] = []
+    example_thread: str = ''
+    learning_result: str = ''
+    follows_units: list[str] = []
+    bridge_reason: str = ''
+    document_info_ids: list[str] = []
 
 
 class Plan(Strict):
@@ -46,12 +53,23 @@ class Plan(Strict):
     objective: str
     units: list[Unit] = Field(min_length=1)
     research_gaps: list[str]
+    teaching_functions: list['TeachingFunction'] = []
+
+
+class TeachingFunction(Strict):
+    kind: Literal['problem','foundations','concepts','mechanism','example','transfer','extension']
+    treatment: Literal['included','not_needed']
+    unit_ids: list[str]
+    reason: str = Field(min_length=1)
+
+
+Plan.model_rebuild()
 
 
 class Block(Strict):
     id: str
     unit_id: str
-    kind: Literal["source", "explanation", "example", "exercise", "extension", "object"]
+    kind: Literal["source", "explanation", "example", "exercise", "extension", "object", "document_info"]
     markdown: str
     obligation_ids: list[str]
     object_ids: list[str]

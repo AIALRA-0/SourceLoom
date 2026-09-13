@@ -230,11 +230,11 @@ SectionNode.model_rebuild()
 class ComposedBlock(Strict):
     id: str
     unit_id: str
-    kind: Literal['source','explanation','example','exercise','extension','object']
+    kind: Literal['source','explanation','example','exercise','extension','object','document_info']
     content: list[WritingNode] = Field(min_length=1)
-    obligation_ids: list[str]
-    object_ids: list[str]
-    evidence: list[Evidence]
+    obligation_ids: list[str] = Field(default_factory=list)
+    object_ids: list[str] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
 
 
 class ComposedDraft(Strict):

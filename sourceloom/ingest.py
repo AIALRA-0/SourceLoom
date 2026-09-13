@@ -220,8 +220,8 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                         add("text", part, f"{name}/paragraph[{n+1}]")
         elif ext == "pdf":
             reader = PdfReader(BytesIO(raw))
-            if reader.is_encrypted:
-                raise ValueError("加密 PDF 需要先提供可读取副本")
+            if reader.is_encrypted and not reader.decrypt(""):
+                raise ValueError("这份 PDF 需要打开密码，请提供可读取副本")
             if len(reader.pages) > 50:
                 raise ValueError("当前单份 PDF 上限为 50 页")
             import pypdfium2 as pdfium

@@ -137,7 +137,8 @@ class Provider:
                 return [quote_references(x) for x in item]
             if not isinstance(item,dict):
                 return item
-            out={k:quote_references(v) for k,v in item.items()}
+            # Repair roles must see the exact object they are told to preserve.
+            out={k:v if k=='received' else quote_references(v) for k,v in item.items()}
             if out.get('source_id') in source_text and out.get('quote')==source_text[out['source_id']]:
                 out.pop('quote')
                 out['quote_source_id']=out['source_id']
@@ -280,7 +281,9 @@ class Provider:
                     request.update(tools=[dict(type='function',function=dict(name='emit_artifact',strict=True,
                         description='Return the requested artifact as typed data. No action is executed.',
                         parameters=deepseek_schema(schema)))],
-                        tool_choice=dict(type='function',function=dict(name='emit_artifact')))
+                        tool_choice=(dict(type='function',function=dict(name='emit_artifact'))
+                                     if options.get('thinking',{}).get('type')=='disabled' else 'auto'))
+                    messages[0]['content']+='\nReturn the artifact by calling emit_artifact exactly once. No external action is executed.'
                 else:
                     request['response_format']={'type':'json_object'}
                 with httpx.Client(timeout=max(.1,deadline-time.time()),follow_redirects=False) as client:
@@ -452,7 +455,7 @@ class Provider:
             else:
                 result=parse_json(message['content'])
         else:
-            raise Conflict('该通道没有任务查询接口，请导回原调用结果或保留暂停状态')
+            raise Uncertain('该通道没有任务查询接口，原请求结果未知且费用预留保留，不能自动重发')
         # Unknown subscription consumption stays unknown even when content is recovered.
         call['status']='recovered';self.store.put_job(job)
         return result

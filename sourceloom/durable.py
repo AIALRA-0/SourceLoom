@@ -21,6 +21,8 @@ class Queue:
                     id TEXT PRIMARY KEY, project TEXT NOT NULL, created REAL NOT NULL,
                     reason TEXT NOT NULL, body TEXT NOT NULL);
             ''')
+        from .library_store import Library
+        self.library=Library(store)
 
     def enqueue(self, pid, bundle):
         now = time.time()
@@ -45,7 +47,7 @@ class Queue:
             jid = identity()
             job = dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
                        stage='visual_extract' if any(o['kind'] in {'page','image'} and o.get('resource_id') for o in p['inventory']['objects']) else 'inventory',
-                       results={},repair_rounds=0,base_revision=p['revision'],
+                       results={},repair_rounds=0,teaching_version=2,base_revision=p['revision'],
                        source_digest=p['inventory']['digest'],source=p['inventory'],goal=p['goal'],
                        writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')})
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',
@@ -99,6 +101,13 @@ class Queue:
             if job['role']!='production' or job['status']!='failed':
                 raise Conflict('只能继续已经收到完整响应的校验失败任务')
             call=job['calls'][-1] if job['calls'] else {}
+            # Migrate the known old checkpoint bug: the trial circuit rejected
+            # the request before Provider created any call or dispatched bytes.
+            if (job.get('pending') and call.get('step_key')!=job['pending'] and
+                    job.get('error')=='本批同类失败已连续发生两次，先修正原因，未发送新请求'):
+                job.setdefault('preflight_stops',[]).append(dict(key=job['pending'],dispatched=False,
+                    reason='legacy_trial_circuit_before_provider_dispatch'))
+                job.pop('pending',None)
             billing=cx.execute('SELECT actual,body FROM spending WHERE id=?',(call.get('id',''),)).fetchone()
             rejected=bool(billing and billing['actual']==0 and json.loads(billing['body']).get('status')=='rejected')
             if rejected:
@@ -109,7 +118,7 @@ class Queue:
                 if not local_preflight:
                     job.setdefault('rejected_resubmissions',{})[key]=call['id']
                 job.pop('pending',None)
-            returned_invalid=call.get('status')=='invalid' and call.get('finish_reason')=='stop' and bool(call.get('response_blob'))
+            returned_invalid=call.get('status')=='invalid' and call.get('finish_reason') in {'stop','tool_calls'} and bool(call.get('response_blob'))
             if not rejected and ((job.get('pending') and not returned_invalid) or (call.get('status') not in {'completed','recovered'} and not returned_invalid)):
                 raise Conflict('原调用没有完整结果，不能重新发送')
             p=json.loads(cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()[0])
@@ -201,32 +210,36 @@ class Queue:
 
     def tree(self, trash=False):
         with self.store.connect() as cx:
-            folders=[dict(r) for r in cx.execute('SELECT * FROM library_folders ORDER BY name')]
-        projects=[{k:p.get(k) for k in ('id','title','folder','state','active_job','revision','created','trashed')}
+            folders=[dict(r) for r in cx.execute('SELECT * FROM library_folders WHERE trashed=? ORDER BY name',(int(trash),))]
+        projects=[{k:p.get(k) for k in ('id','title','folder','state','active_job','revision','library_revision','created','trashed')}
                   for p in self.store.list() if bool(p.get('trashed'))==trash]
         return {'folders':folders,'documents':projects}
 
-    def folder(self, name, parent=None, fid=None):
+    def folder(self, name, parent=None, fid=None, revision=None):
         if not str(name).strip() or len(name)>180:
             raise ValueError('文件夹名称需为 1 到 180 个字符')
         with self.store.connect() as cx:
             cx.execute('BEGIN IMMEDIATE')
+            if fid and revision is not None:
+                row=cx.execute('SELECT revision,trashed FROM library_folders WHERE id=?',(fid,)).fetchone()
+                if not row or row['revision']!=revision or row['trashed']:
+                    raise Conflict('文件夹已变化，请刷新后再修改')
             ancestors=set()
             current=parent
             while current:
                 if current==fid or current in ancestors:
                     raise Conflict('不能把文件夹移动到自身或其子文件夹中')
                 ancestors.add(current)
-                row=cx.execute('SELECT parent FROM library_folders WHERE id=?',(current,)).fetchone()
+                row=cx.execute('SELECT parent FROM library_folders WHERE id=? AND trashed=0',(current,)).fetchone()
                 if not row:
                     raise KeyError(current)
                 current=row[0]
             if fid:
-                if not cx.execute('UPDATE library_folders SET name=?,parent=? WHERE id=?',(name.strip(),parent,fid)).rowcount:
+                if not cx.execute('UPDATE library_folders SET name=?,parent=?,revision=revision+1 WHERE id=?',(name.strip(),parent,fid)).rowcount:
                     raise KeyError(fid)
             else:
                 fid=identity()
-                cx.execute('INSERT INTO library_folders VALUES(?,?,?)',(fid,parent,name.strip()))
+                cx.execute('INSERT INTO library_folders(id,parent,name) VALUES(?,?,?)',(fid,parent,name.strip()))
         return {'id':fid,'name':name.strip(),'parent':parent}
 
     def delete_folder(self, fid):
@@ -246,7 +259,7 @@ class Queue:
             if move:
                 if folder is not None:
                     with self.store.connect() as cx:
-                        if not cx.execute('SELECT 1 FROM library_folders WHERE id=?',(folder,)).fetchone():
+                        if not cx.execute('SELECT 1 FROM library_folders WHERE id=? AND trashed=0',(folder,)).fetchone():
                             raise KeyError(folder)
                 p['folder']=folder
             if trashed is not None:

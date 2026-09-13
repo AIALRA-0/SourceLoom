@@ -87,6 +87,47 @@ def test_complete_skill_is_frozen_and_each_file_is_checked(tmp_path,skill):
         load_bundle(bundle['root'],bundle['package_digest'])
 
 
+def test_redeploy_frozen_skill_keeps_identical_complete_bundle(tmp_path,skill):
+    first=deploy_skill(skill,tmp_path/'first')
+    again=deploy_skill(first['root'],tmp_path/'first')
+    copied=deploy_skill(first['root'],tmp_path/'second')
+    assert again == first
+    assert copied['files'] == first['files']
+    assert copied['package_digest'] == first['package_digest']
+    assert full_prompt(copied) == full_prompt(first)
+    Path(first['root'],'assets/not-a-prompt.bin').write_bytes(b'tampered')
+    with pytest.raises(ValueError,match='校验失败'):
+        deploy_skill(first['root'],tmp_path/'third')
+
+
+@pytest.mark.parametrize('verdict',['not_error','unknown','confirmed_error'])
+def test_inventory_uncertainty_requires_independent_evidenced_decision(tmp_path,skill,monkeypatch,verdict):
+    from sourceloom.production import Production
+    store,queue,p,bundle=prepared(tmp_path,skill)
+    job=queue.enqueue(p['id'],bundle)
+    source=job['source']['objects'][0]
+    fact=dict(id='f',source_id=source['id'],quote=source['text'],meaning=source['text'],
+        person='first person',pronouns=['We'],referents=['speaker'],conditions=['x positive'],
+        negations=[],quantities=[],modality='assumption',note='')
+    job.update(stage='inventory_audit',inventory_semantic_repairs=2,
+        facts=dict(facts=[fact],assessed_source_ids=[source['id']],unresolved=[]))
+    audit=dict(assessed_source_ids=[source['id']],assessed_fact_ids=['f'],missing_facts=[],errors=[],
+        unresolved=['The source does not identify the speaker by name'],uncertainty_assessments=[])
+    roles=[]
+    def call(job,key,role,payload,schema):
+        roles.append(role)
+        if role=='inventory_audit':return audit
+        assert role=='inventory_decision' and len(payload['claims'])==1
+        return dict(decisions=[dict(claim_index=0,verdict=verdict,
+            evidence=[dict(source_id=source['id'])],reason='The original retains We without naming its speaker')])
+    engine=Production(store,{});monkeypatch.setattr(engine,'_call',call)
+    if verdict=='not_error':
+        assert engine.step(job)=='queued' and job['stage']=='planner'
+    else:
+        with pytest.raises(ValueError,match='独立清单审核'):engine.step(job)
+    assert roles==['inventory_audit','inventory_decision']
+
+
 def test_actual_api_request_contains_unabridged_skill_and_exact_receipt(tmp_path,skill,monkeypatch):
     store,queue,p,bundle=prepared(tmp_path,skill)
     job=queue.enqueue(p['id'],bundle)
@@ -243,7 +284,8 @@ def test_library_http_survives_new_app_instance(tmp_path,skill):
         assert 'library.js' in client.get('/').text
 
 
-def test_deepseek_strict_artifact_channel_never_executes_tools(tmp_path,skill,monkeypatch):
+@pytest.mark.parametrize('thinking',[None,'enabled','disabled'])
+def test_deepseek_strict_artifact_channel_never_executes_tools(tmp_path,skill,monkeypatch,thinking):
     from sourceloom.providers import deepseek_schema
     schema={'type':'object','properties':{'items':{'type':'array','minItems':2,'items':{'type':'string'}}}}
     assert 'minItems' not in deepseek_schema(schema)['properties']['items']
@@ -264,11 +306,16 @@ def test_deepseek_strict_artifact_channel_never_executes_tools(tmp_path,skill,mo
         def post(self,url,**kwargs):captured.append((url,kwargs['json']));return Response()
     monkeypatch.setattr('sourceloom.providers.httpx.Client',Client)
     config=load_config()|dict(provider='openai-compatible',base_url='https://api.deepseek.com/v1',
-        structured_output='deepseek_strict_tool',api_key='test',role_providers={},max_input_bytes=100000)
-    assert Provider(store,config).call(p['id'],'fact_inventory',{},schema,job)=={'items':['one','two']}
+        structured_output='deepseek_strict_tool',api_key='test',role_providers={},max_input_bytes=100000,
+        provider_options={} if thinking is None else {'thinking':{'type':thinking}})
+    payload={'source':{'objects':[{'id':'s','text':'We preserve the condition.'}]},
+             'received':{'evidence':[{'source_id':'s','quote':'We preserve the condition.'}]}}
+    assert Provider(store,config).call(p['id'],'fact_inventory',payload,schema,job)=={'items':['one','two']}
     url,request=captured[0]
     assert url=='https://api.deepseek.com/beta/chat/completions'
     assert request['tools'][0]['function']['strict'] is True
+    assert request['tool_choice']==({'type':'function','function':{'name':'emit_artifact'}} if thinking=='disabled' else 'auto')
+    assert json.loads(request['messages'][1]['content'])['received']==payload['received']
     assert request['tools'][0]['function']['parameters']['required']==['items']
     assert 'response_format' not in request
     assert 'TAIL-format-rules' in request['messages'][0]['content']
@@ -316,5 +363,7 @@ def test_campaign_survives_restarts_and_stops_repeated_failure(tmp_path,skill):
     with store.connect() as cx:
         cx.execute('UPDATE trial_campaigns SET started=?',(time.time()-10801,))
     c['trial_campaign']['batch']='b'
-    with pytest.raises(Conflict,match='180 分钟'):
+    check(Store(store.root),c)  # User rejected the assistant-imposed campaign clock.
+    c['trial_total_seconds']=100
+    with pytest.raises(Conflict,match='明确配置'):
         check(Store(store.root),c)

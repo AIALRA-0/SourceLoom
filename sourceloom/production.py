@@ -12,10 +12,13 @@ from . import production_contracts as P
 from .checks import freeze, inspect_draft, validate_plan
 from .durable import Queue
 from .export import render
+from .ingest import decode
 from .providers import Provider, Uncertain
 from .skills import load_bundle, rule_catalog
 from .store import Conflict, digest, identity
-from .writing import canonical, compose, expand_response, protected_objects, repair, scan
+from .writing import canonical, compose, expand_response, protected_objects, repair, scan, validate_layout_repair
+from .pedagogy import (TeachingReview, validate_teaching_plan, teaching_issues,
+                       arrange_document_info, repair_units, validate_replan, teaching_review_contract)
 
 
 def validate_facts(body, source):
@@ -172,6 +175,10 @@ class Production:
         # kept in the ledger, not injected as competing instructions to the writer.
         return {k:inventory[k] for k in ('id','version','objects','obligations','resources','frozen','digest')}
 
+    def validate_plan(self, job, plan):
+        validator=validate_teaching_plan if job.get('teaching_version',0)>=2 else validate_plan
+        return validator(plan,job['inventory'])
+
     def _call(self, job, key, role, payload, schema):
         if key in job['results']:
             return job['results'][key]
@@ -182,7 +189,7 @@ class Production:
             return result
         if self.queue.cancelled(job['id'],self.owner):
             raise Conflict('后台任务已取消')
-        if time.time()-job['started']>self.config.get('job_timeout',900):
+        if self.config.get('job_timeout',0)>0 and time.time()-job['started']>self.config['job_timeout']:
             raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
         if job.get('pending'):
             if job['pending']!=key:
@@ -199,16 +206,24 @@ class Production:
             job['pending']=key
             job['current_step_key']=key
             self.store.put_job(job)
-            remaining=max(1,int(self.config.get('job_timeout',900)-(time.time()-job['started'])))
             config=self.config|self.config.get('role_providers',{}).get(role,{})
             if role.endswith('__fallback'):
                 config.update(self.config.get('fallback_providers',{}).get(role.removesuffix('__fallback'),{}))
-            config['call_timeout']=min(config['call_timeout'],remaining)
-            config['deadline_at']=min(job['started']+self.config.get('job_timeout',900),time.time()+config['call_timeout'])
+            if self.config.get('job_timeout',0)>0:
+                remaining=max(1,int(self.config['job_timeout']-(time.time()-job['started'])))
+                config['call_timeout']=min(config['call_timeout'],remaining)
+            config['deadline_at']=time.time()+config['call_timeout']
             config['role_providers']={}
             try:
+                prior_calls=len(job['calls'])
                 result=Provider(self.store,config).call(job['project'],role,payload,schema.model_json_schema(),job,
                                lambda:self.queue.cancelled(job['id'],self.owner))
+            except Conflict:
+                if len(job['calls'])==prior_calls:
+                    job.setdefault('preflight_stops',[]).append(dict(key=key,at=time.time(),dispatched=False))
+                    job.pop('pending',None)
+                    self.store.put_job(job)
+                raise
             except json.JSONDecodeError:
                 return self._invalid_response_fallback(job,key,role,payload,schema)
         # Persist raw role result before validation, so failed validation never loses the artifact.
@@ -220,7 +235,7 @@ class Production:
     def _invalid_response_fallback(self,job,key,role,payload,schema):
         call=job['calls'][-1]
         if (role.endswith('__fallback') or role not in self.config.get('fallback_providers',{})
-            or call.get('finish_reason')!='stop' or not call.get('response_blob')):
+            or call.get('finish_reason') not in {'stop','tool_calls'} or not call.get('response_blob')):
             raise ValueError('原响应结构无效，未配置可用的受限备用通道')
         job.setdefault('fallbacks',{})[key]=dict(original_call=call['id'],reason='invalid_json_after_normal_finish')
         job.pop('pending',None)
@@ -232,6 +247,9 @@ class Production:
         source=job['source']
         base=dict(goal=job['goal'],source={'objects':source['objects']},
                   required_source_ids=[o['id'] for o in source['objects']])
+        base['source_contract']='The supplied files define input scope. HTML locator child indexes count text/whitespace nodes too; li[2] is NOT a claim that an earlier list item exists. Never derive content ordinals or omissions from locator numbers. Raw Markdown templates are literal source syntax, not missing rendered webpage content unless rendered expansion was explicitly requested. Preserve them without inventing expansion. Object text, raw markup and complete original text are complementary views of the same retained material. Source code bytes stay authoritative over inventory annotations about layout.'
+        base['original_text_files']=[dict(name=o['name'],text=decode(self.store.read_blob(o['sha256'])))
+            for o in source.get('originals',[]) if Path(o['name']).suffix.lower() in {'.md','.txt','.html','.htm'}]
         stage=job['stage']
         if stage in {'visual_extract','visual_audit'}:
             visual=[o for o in source['objects'] if o['kind'] in {'page','image'} and o.get('resource_id')]
@@ -302,31 +320,36 @@ class Production:
                         invalid_review=result,protocol_error='The review used nonexistent or duplicate uncertainty IDs. Independently recheck the actual source and facts. Return assessments for exactly the supplied inventory_uncertainties IDs; an empty input list requires an empty assessment list. Do not put passing observations into errors. Source raw markup and target fields are already separately retained; semantic meaning need not duplicate their bytes.'),P.InventoryAudit)
                 result=P.InventoryAudit.model_validate(result).model_dump()
             confirmed_errors=list(result['errors'])
-            if confirmed_errors:
-                decisions=self._call(job,f'inventory_decision-{audit_round}','inventory_decision',
-                    base|dict(facts=job['facts'],claims=[dict(claim_index=n,claim=claim) for n,claim in enumerate(confirmed_errors)]),P.InventoryDecisions)
+            confirmed_unresolved=list(result['unresolved'])
+            claims=confirmed_errors+confirmed_unresolved
+            if claims:
+                decision_key=f'inventory_decision-{audit_round}'+('-all-claims' if confirmed_unresolved else '')
+                decisions=self._call(job,decision_key,'inventory_decision',
+                    base|dict(facts=job['facts'],uncertainty_assessments=result['uncertainty_assessments'],
+                        claims=[dict(claim_index=n,claim=claim) for n,claim in enumerate(claims)]),P.InventoryDecisions)
                 decisions=decision_evidence(decisions,source)
                 ids=[d['claim_index'] for d in decisions]
-                if len(ids)!=len(confirmed_errors) or set(ids)!=set(range(len(confirmed_errors))):
+                if len(ids)!=len(claims) or set(ids)!=set(range(len(claims))):
                     raise ValueError('审核争议未逐项得到明确裁决')
                 sources={o['id']:o['text'] for o in source['objects']}
                 if any(e['source_id'] not in sources or e['quote'] not in sources[e['source_id']]
                        for d in decisions for e in d['evidence']):
                     raise ValueError('审核争议裁决缺少与原件匹配的证据')
                 job.setdefault('inventory_decisions',{})[str(audit_round)]=decisions
-                confirmed_errors=[result['errors'][d['claim_index']] for d in decisions if d['verdict']!='not_error']
+                confirmed_errors=[claims[d['claim_index']] for d in decisions if d['verdict']!='not_error']
+                confirmed_unresolved=[] # Every uncertainty above received an explicit independent decision.
             if (set(result['assessed_source_ids'])!={o['id'] for o in source['objects']}
                 or set(result['assessed_fact_ids'])!={f['id'] for f in job['facts']['facts']}
-                or confirmed_errors or result['unresolved']):
-                if not audit_round:
-                    fixed=self._call(job,'inventory_semantic_repair-1','inventory_repair',
-                        base|dict(previous_response=job['facts'],independent_review=result,
+                or confirmed_errors or confirmed_unresolved):
+                if audit_round<2:
+                    fixed=self._call(job,f'inventory_semantic_repair-{audit_round+1}','inventory_repair',
+                        base|dict(previous_response=job['facts'],independent_review=result|dict(errors=confirmed_errors,unresolved=confirmed_unresolved),
                                   validator_error='Resolve the cited inventory errors against the full source, preserving all information. Add actual missing facts. Do not invent facts to satisfy incorrect criticism. Canonical source quotes are substrings of source.objects[*].text, not HTML markup; objects retain raw markup and links separately.'),P.FactInventory)
                     fixed=P.FactInventory.model_validate(fixed).model_dump()
                     fixed=bind_source_quotes(fixed,source)
                     validate_facts(fixed,source)
                     job['facts']=fixed
-                    job['inventory_semantic_repairs']=1
+                    job['inventory_semantic_repairs']=audit_round+1
                     return 'queued'
                 raise ValueError('独立清单审核发现错误或未知项，尚未进入写作')
             assessments=result['uncertainty_assessments']
@@ -353,7 +376,7 @@ class Production:
             result=self._call(job,'planner','planner',dict(goal=job['goal'],inventory=self.teaching_inventory(job['inventory']),
                 facts=job['facts'],max_units=self.config.get('max_units',6),
                 instruction='Use the fewest pedagogically coherent units that fully cover all facts. Each unit must fit one complete response. Do not omit small details to meet the limit.'),C.Plan)
-            job['plan']=validate_plan(result,job['inventory'])
+            job['plan']=self.validate_plan(job,result)
             job['stage']='plan_review'
         elif stage=='plan_review':
             plan_round=job.get('plan_repairs',0)
@@ -365,7 +388,7 @@ class Production:
                     claims=[dict(claim_index=n,claim=x) for n,x in enumerate(first_review['issues'])]),P.InventoryDecisions)
                 if self._decisions_pass(decision,first_review['issues'],source):
                     job['superseded_plan']=job['plan']
-                    job['plan']=validate_plan(job['results']['planner'],job['inventory'])
+                    job['plan']=self.validate_plan(job,job['results']['planner'])
                     job['plan_review']=first_review
                     job['optional_source_limits']=first_review['optional_source_limits']
                     job.update(draft={'blocks':[]},unit_index=0,stage='writer',original_plan_adjudicated=True)
@@ -393,14 +416,22 @@ class Production:
                         if decision['status']=='ready' and not decision['defects'] and decision['selected']!='none':
                             if decision['selected']=='original':
                                 job['superseded_plan']=job['plan']
-                                job['plan']=validate_plan(job['results']['planner'],job['inventory'])
+                                job['plan']=self.validate_plan(job,job['results']['planner'])
                             job['optional_source_limits']=result['optional_source_limits']
                             job.update(draft={'blocks':[]},unit_index=0,stage='writer')
                             return 'queued'
                     raise ValueError('规划修正后仍未满足实际教学目标，已停止后续调用')
                 fixed=self._call(job,'planner_repair-1','planner_repair',base|dict(inventory=job['inventory'],
                                  previous_plan=job['plan'],review=result,max_units=self.config.get('max_units',6)),C.Plan)
-                job['plan']=validate_plan(fixed,job['inventory'])
+                try:
+                    job['plan']=self.validate_plan(job,fixed)
+                except ValueError as exc:
+                    fixed=self._call(job,'planner_contract_repair-1','planner_repair',base|dict(
+                        inventory=self.teaching_inventory(job['inventory']),previous_plan=job['plan'],
+                        invalid_plan=fixed,validator_error=str(exc),review=result,
+                        instruction='Repair the returned plan contract without losing any original fact, metadata, or object. Moving document metadata to the end does NOT remove its required obligation/object assignment. Keep the actual teaching improvements. Return the complete corrected plan once.',
+                        max_units=self.config.get('max_units',6)),C.Plan)
+                    job['plan']=self.validate_plan(job,fixed)
                 job['plan_repairs']=1
                 return 'queued'
             job['optional_source_limits']=result['optional_source_limits']
@@ -421,9 +452,50 @@ class Production:
                 obligation_binding='Each listed obligation_fact_id is the SAME id in facts. Its original object_id is fact.source_id; statement is fact.meaning; conditions/quantities/negations are the fact fields. The complete pre-production ledger remains saved. Use these IDs in every block obligation_ids.',
                 protected_objects=protected_objects(inv),prior_terminology=job.get('terminology',[]),
                 optional_source_limits=job.get('optional_source_limits',[]))
-            result=self._call(job,'writer-'+unit['id'],'writer',payload,P.FlatDraft)
-            draft=compose(bundle,result,inv)
+            payload.update(full_teaching_route=job['plan'],
+                           actual_previous_text=[b for b in job['draft']['blocks'] if b['kind']!='document_info'],
+                           actual_surrounding_text=job.get('regeneration',{}).get('original_draft',{}),
+                           teaching_findings=job.get('regeneration',{}).get('findings',[]))
+            generation=job.get('content_generation',0)
+            key='writer-'+unit['id']+(f'-revision-{generation}' if generation else '')
+            result=self._call(job,key,'writer',payload,P.FlatDraft)
+            result=bind_evidence_layout(result,inv)
+            try:
+                draft=compose(bundle,result,inv)
+            except ValueError as exc:
+                fixed=self._call(job,key+'-layout','layout_repair',
+                    dict(received=result,validator_error=str(exc)),P.FlatDraft)
+                result=validate_layout_repair(result,fixed)
+                draft=compose(bundle,result,inv)
             issues=inspect_draft(inv,draft,{'units':[unit]})
+            if issues and any(i['code']!='omission' for i in issues) and {i['code'] for i in issues}<={'unknown_obligation','unmapped','quote','object','omission'}:
+                from .writing import validate_binding_repair
+                fixed=self._call(job,key+'-bindings','binding_repair',
+                    dict(received=result,rendered_draft=draft,inventory=inv,current_unit=unit,
+                         facts=payload['facts'],validator_issues=issues),P.FlatDraft)
+                result=validate_binding_repair(result,bind_evidence_layout(fixed,inv),inv)
+                draft=compose(bundle,result,inv)
+                issues=inspect_draft(inv,draft,{'units':[unit]})
+            completion_key=key+'-complete'
+            if issues and {i['code'] for i in issues}=={'omission'} and (
+                    completion_key in job.get('unit_completion_attempts',[]) or job['repair_rounds']<2):
+                from .writing import append_unit_completion
+                if completion_key not in job.setdefault('unit_completion_attempts',[]):
+                    job['unit_completion_attempts'].append(completion_key)
+                    job['repair_rounds']+=1
+                    self.store.put_job(job)
+                extra=self._call(job,completion_key,'writer',payload|dict(received=result,
+                    completion_only=True,actual_current_text=draft,
+                    remaining_fact_ids=[i['obligation_id'] for i in issues]),P.FlatDraft)
+                result=append_unit_completion(result,bind_evidence_layout(extra,inv),unit['id'])
+                try:
+                    draft=compose(bundle,result,inv)
+                except ValueError as exc:
+                    fixed=self._call(job,completion_key+'-layout','layout_repair',
+                        dict(received=result,validator_error=str(exc)),P.FlatDraft)
+                    result=validate_layout_repair(result,fixed)
+                    draft=compose(bundle,result,inv)
+                issues=inspect_draft(inv,draft,{'units':[unit]})
             if issues:
                 raise ValueError('单元结构或原对象不完整：'+'；'.join(x['message'] for x in issues[:3]))
             if {b['id'] for b in draft['blocks']} & {b['id'] for b in job['draft']['blocks']}:
@@ -437,9 +509,71 @@ class Production:
                         yield from terms(n['blocks'])
             job.setdefault('terminology',[]).extend(t for b in expand_response(result)['blocks'] for t in terms(b['content']))
             job['unit_index']+=1
+            regeneration=job.get('regeneration')
+            if regeneration:
+                while job['unit_index']<len(job['plan']['units']) and job['plan']['units'][job['unit_index']]['id'] not in regeneration['unit_ids']:
+                    next_id=job['plan']['units'][job['unit_index']]['id']
+                    job['draft']['blocks'].extend(copy.deepcopy([b for b in regeneration['original_draft']['blocks'] if b['unit_id']==next_id]))
+                    job['unit_index']+=1
             if job['unit_index']==len(job['plan']['units']):
-                job['stage']='style'
+                job['draft']=arrange_document_info(job['draft'],job['plan'])
+                if regeneration:
+                    untouched=[b for b in regeneration['original_draft']['blocks'] if b['unit_id'] not in regeneration['unit_ids']]
+                    if untouched!=[b for b in job['draft']['blocks'] if b['unit_id'] not in regeneration['unit_ids']]:
+                        raise ValueError('教学修复改变了未命中的正文')
+                    job.pop('regeneration',None)
+                job['stage']='teaching' if job.get('teaching_version',0)>=2 else 'style'
                 job['initial_draft_blob']=self.store.blob(json.dumps(job['draft'],ensure_ascii=False).encode())
+        elif stage=='teaching':
+            generation=job.get('content_generation',0)
+            result=self._call(job,f"teaching-{generation}-{job['repair_rounds']}",'teaching_review',
+                             base|dict(plan=job['plan'],draft=job['draft']),TeachingReview)
+            result=TeachingReview.model_validate(result).model_dump()
+            contract_errors=teaching_review_contract(result,job['draft'],job['plan'])
+            if contract_errors:
+                result=self._call(job,f"teaching-contract-{generation}-{job['repair_rounds']}",'teaching_review',
+                    base|dict(plan=job['plan'],draft=job['draft'],previous_review=result,
+                              review_contract_errors=contract_errors,
+                              instruction='Re-read actual blocks and correct the review. Quotes must be exact contiguous substrings, never reconstructed summaries. Reconsider substantive judgments using actual evidence. Do not rewrite the draft.'),TeachingReview)
+                result=TeachingReview.model_validate(result).model_dump()
+                contract_errors=teaching_review_contract(result,job['draft'],job['plan'])
+                if contract_errors:
+                    job['quality_issues']=['教学审查证据仍无法核对：'+e for e in contract_errors]
+                    return 'needs_attention'
+            job['teaching_review']=result
+            job['teaching_draft_digest']=digest(canonical(job['draft']).encode())
+            job['quality_issues']=teaching_issues(result,job['draft'],job['plan'])
+            if job['quality_issues']:
+                if job['repair_rounds']>=2 or not result['findings']:
+                    return 'needs_attention'
+                selected=repair_units(result,job['plan'])
+                job['repair_rounds']+=1
+                job['regeneration']=dict(unit_ids=selected,original_plan=copy.deepcopy(job['plan']),
+                    original_draft=copy.deepcopy(job['draft']),findings=result['findings'])
+                job.setdefault('content_history',[]).append(self.store.blob(json.dumps(job['regeneration'],ensure_ascii=False).encode()))
+                job['stage']='teaching_replan'
+            else:
+                job['stage']='style'
+        elif stage=='teaching_replan':
+            regeneration=job['regeneration']
+            result=self._call(job,f"teaching-replan-{job['repair_rounds']}",'teaching_replan',
+                base|dict(inventory=job['inventory'],**regeneration),C.Plan)
+            job['plan']=validate_replan(result,regeneration['original_plan'],regeneration['unit_ids'],job['inventory'])
+            job['stage']='teaching_replan_review'
+        elif stage=='teaching_replan_review':
+            result=self._call(job,f"teaching-replan-review-{job['repair_rounds']}",'plan_review',
+                base|dict(plan=job['plan'],facts=job['facts'],repair_context=job['regeneration']),P.PlanReview)
+            result=P.PlanReview.model_validate(result).model_dump()
+            if result['status']!='ready' or result['issues'] or result['essential_missing_sources']:
+                job['quality_issues']=result['issues']+result['essential_missing_sources'] or ['教学修复规划尚未通过独立检查']
+                return 'needs_attention'
+            regeneration=job['regeneration']
+            start=next(i for i,u in enumerate(job['plan']['units']) if u['id'] in regeneration['unit_ids'])
+            previous={u['id'] for u in job['plan']['units'][:start]}
+            job['draft']={'blocks':[b for b in regeneration['original_draft']['blocks'] if b['unit_id'] in previous]}
+            job.update(unit_index=start,content_generation=job.get('content_generation',0)+1,terminology=[],stage='writer')
+            for key in ('teaching_review','teaching_draft_digest','style','scan','fidelity'):
+                job.pop(key,None)
         elif stage=='fidelity':
             index=job['repair_rounds']
             result=self._call(job,f'fidelity-{index}','fidelity',base|dict(facts=job['facts'],draft=job['draft']),P.FidelityReview)
@@ -489,9 +623,16 @@ class Production:
             job.pop('fidelity',None)
             job.pop('style',None)
             job.pop('scan',None)
-            job['stage']='style'
+            job['stage']='teaching' if job.get('teaching_version',0)>=2 else 'style'
         elif stage=='publish':
             current=digest(canonical(job['draft']).encode())
+            if job.get('teaching_version',0)>=2:
+                if job.get('teaching_draft_digest')!=current or not job.get('teaching_review'):
+                    job['quality_issues']=['当前正文尚未通过同版本的整篇教学审查']
+                    return 'needs_attention'
+                if teaching_review_contract(job['teaching_review'],job['draft'],job['plan']) or teaching_issues(job['teaching_review'],job['draft'],job['plan']):
+                    job['quality_issues']=['当前正文仍有教学缺口']
+                    return 'needs_attention'
             if (not job.get('style') or not job.get('fidelity') or not job.get('scan')
                 or job.get('style_draft_digest')!=current or job.get('fidelity_draft_digest')!=current):
                 job['quality_issues']=['当前正文尚无相同版本的完整写作与独立原文核对']
@@ -533,7 +674,7 @@ class Production:
         try:
             if self.queue.cancelled(job['id'],self.owner):
                 status='cancelled'
-            elif time.time()-job['started']>self.config.get('job_timeout',900):
+            elif self.config.get('job_timeout',0)>0 and time.time()-job['started']>self.config['job_timeout']:
                 raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
             else:
                 status=self.step(job)

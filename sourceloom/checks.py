@@ -47,6 +47,9 @@ def inspect_draft(inventory, draft, plan=None):
         if b.get('embedded_object_ids'):
             from .writing import protected_objects
             literals=protected_objects(inventory)
+            for src in inventory['objects']:
+                if src['kind'] in {'text','heading'}:
+                    literals[src['id']]=''.join('> '+line for line in src['text'].splitlines(keepends=True))
             for sid in b['embedded_object_ids']:
                 if sid not in literals or literals[sid] not in b['markdown']:
                     error('embedded_bytes','正文内嵌原对象的字符发生变化',b['id'])

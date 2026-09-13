@@ -46,9 +46,15 @@ def deploy_skill(source, data_root):
     source = Path(source).resolve()
     if not (source / 'SKILL.md').is_file():
         raise ValueError('真实生成需要指定完整写作技能包')
+    # A deployed bundle already has a generated manifest. Validate that bundle
+    # before copying it, but never include the manifest in its own digest.
+    if (source / 'package-manifest.json').is_file():
+        load_bundle(source)
     files = {}
     for path in sorted(source.rglob('*')):
         relative = path.relative_to(source)
+        if relative.as_posix() == 'package-manifest.json':
+            continue
         if any(part in SKIP for part in relative.parts) or path.is_dir():
             continue
         if path.is_symlink():

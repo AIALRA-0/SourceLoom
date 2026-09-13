@@ -14,7 +14,7 @@
 
 SourceLoom preserves originals and separates inventory, planning, writing, review, and local repair before preparing material for ReadWeave
 
-Nine real inputs produced one complete automatic draft and one partial automatic draft, with **zero formally accepted automatic outputs**. The complete draft still has writing defects, and the designated independent conversation did not return its final comparison. See [individual results and costs](reports/AUTOMATIC_TRIAL.md)
+Teaching planning and the document library have been updated, and 24 real materials have been collected and ingested. There are still **zero formally accepted automatic outputs**; existing automatic drafts have not passed every requirement. See [this iteration's inputs, outputs, and remaining work](reports/TEACHING_ITERATION.md)
 
 Earlier manually revised examples remain [historical examples](docs/REAL_CASES.md), not evidence of unattended automatic quality
 
@@ -35,6 +35,8 @@ Figure 1.1 The actual library interface, using synthetic material to demonstrate
 5. Download the text or send an eligible candidate archive to ReadWeave
 
 Rename, move, duplicate, trash, and restore documents. Editing saves a new version and invalidates previous acceptance
+
+The tree supports context menus, keyboard navigation, multi-selection and nested-folder restoration. The full-document editor autosaves and detects concurrent edits. See [teaching and library changes](docs/TEACHING_AND_LIBRARY.md)
 
 ## 3 Run locally
 
@@ -70,9 +72,9 @@ Copy [the example configuration](config.example.json) to a private location. Set
 
 Point `writing_skill_dir` at the complete [Chinese technical writing skill](https://github.com/AIALRA-0/agent-human-readable-technical-writing). Every role receives the unabridged effective instruction files, while the entire package is frozen alongside the job. See [delivery details](docs/SKILL_RUNTIME.md)
 
-Receiving instructions does not prove compliance. Formal output requires writing review and independent source comparison of the same draft revision. Unreviewed output remains a draft
+Receiving instructions does not prove compliance. Formal output requires teaching review, writing review, and independent source comparison of the same draft revision. Unreviewed output remains a draft
 
-Automatic jobs allow at most 24 calls, 900 seconds, and two local repair rounds per document. The default document budget is $0.20. Trial limits and unknown subscription costs are recorded in [the trial report](reports/AUTOMATIC_TRIAL.md)
+Automatic jobs allow at most 24 calls and two prose repair rounds per document. There is no default document or project elapsed-time limit; individual network requests remain bounded. The default document budget is $0.20. Trial limits and unknown subscription costs are recorded in [the trial report](reports/AUTOMATIC_TRIAL.md)
 
 ## 5 Verified scope and limits
 

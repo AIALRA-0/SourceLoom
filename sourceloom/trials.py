@@ -26,11 +26,11 @@ def check(store, config):
         started=cx.execute('SELECT started FROM trial_campaigns WHERE id=?',(campaign['id'],)).fetchone()[0]
         batch=cx.execute('SELECT * FROM trial_batches WHERE campaign=? AND id=?',
                          (campaign['id'],campaign['batch'])).fetchone()
-        # Settings can lower limits, never raise the approved first-campaign caps.
-        if now-started>=min(config.get('trial_total_seconds',10800),10800):
-            raise Conflict('累计真实测试已达到 180 分钟上限，未发送新请求')
-        if now-batch['started']>=min(config.get('trial_batch_seconds',3600),3600):
-            raise Conflict('本批真实测试已达到 60 分钟上限，未发送新请求')
+        # No assistant-imposed campaign wall clock. Only explicit configured limits apply.
+        if config.get('trial_total_seconds',0)>0 and now-started>=config['trial_total_seconds']:
+            raise Conflict('达到明确配置的试验时间限制，记录保留')
+        if config.get('trial_batch_seconds',0)>0 and now-batch['started']>=config['trial_batch_seconds']:
+            raise Conflict('达到明确配置的批次时间限制，记录保留')
         if batch['consecutive']>=2:
             raise Conflict('本批同类失败已连续发生两次，先修正原因，未发送新请求')
 

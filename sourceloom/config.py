@@ -13,7 +13,7 @@ def load_config():
             "base_url":"https://api.deepseek.com/v1", "api_key":"",
             "codex_executable":"codex", "codex_ignore_user_config":True,
             "input_price":0.30, "output_price":1.20, "max_output_tokens":6000,
-            "call_timeout":180, "job_timeout":900, "max_input_bytes":450000,
+            "call_timeout":180, "job_timeout":0, "max_input_bytes":450000,
             "daily_budget_usd":2.0,"daily_call_limit":80,
             "provider_options":{},"role_options":{},"role_providers":{},
             "total_budget_usd":10.0,"subscription_call_limit":40,

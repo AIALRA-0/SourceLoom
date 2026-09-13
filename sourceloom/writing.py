@@ -29,7 +29,12 @@ def available_draft(job):
     bundle=load_bundle(job['writing_skill']['root'],job['writing_skill']['package_digest'])
     blocks=[]
     for response in received:
-        blocks.extend(compose(bundle,response,job['inventory'])['blocks'])
+        try:
+            blocks.extend(compose(bundle,response,job['inventory'])['blocks'])
+        except ValueError:
+            # Keep a malformed response in the job, without breaking access to
+            # any other already-renderable unit or asserting it is complete.
+            continue
     return {'blocks':blocks} if blocks else None
 
 
@@ -59,6 +64,7 @@ def expand_response(response):
         return response
     raw=FlatDraft.model_validate(response).model_dump(exclude_none=True)
     blocks=[]
+    previous_section=None
     for block in raw['blocks']:
         nodes=[]
         for node in block['content']:
@@ -68,6 +74,56 @@ def expand_response(response):
                     nodes.append(node|dict(text=line,node_id=node['node_id'] if index==0 else node['node_id']+'-line-'+str(index)))
             else:
                 nodes.append(node)
+        normalized=[]
+        for node in nodes:
+            marker=re.match(r'^(?:([-+*])|(1)[.)])\s+(.+)$',node.get('text','')) if node['type']=='paragraph' else None
+            if marker:
+                normalized.append(dict(type='list',node_id=node['node_id'],parent_id=node['parent_id'],ordered=bool(marker[2])))
+                normalized.append(dict(type='list_item',node_id=node['node_id']+'-item',parent_id=node['node_id'],text=marker[3]))
+            else:
+                normalized.append(node)
+        nodes=normalized
+        declared_parents={n['parent_id'] for n in nodes}
+        empty_heading=None
+        for index,node in enumerate(nodes):
+            if node['parent_id']=='':
+                if node['type']=='section':
+                    empty_heading=node['node_id'] if node['node_id'] not in declared_parents else None
+                elif empty_heading:
+                    # Root siblings after a bare heading are its content in
+                    # document order; bind them without changing any words.
+                    nodes[index]=node|{'parent_id':empty_heading}
+        local_ids={n['node_id'] for n in nodes}
+        external={n['parent_id'] for n in nodes if n['parent_id'] and n['parent_id'] not in local_ids}
+        # A continuation of the immediately preceding section is already below
+        # that heading in canonical Markdown. Keep its block identity and text.
+        if (external and previous_section==(block['unit_id'],next(iter(external)))
+                and len(external)==1 and not any(n['type']=='section' for n in nodes)):
+            nodes=[n|{'parent_id':''} if n['parent_id'] in external else n for n in nodes]
+        # The skill's term renderer itself emits one list item. Empty unordered
+        # wrappers around terms must not create a second bullet or lose a term.
+        remove=set();promote={}
+        for n in nodes:
+            if n['type']!='list' or n.get('ordered'):continue
+            items=[x for x in nodes if x['parent_id']==n['node_id']]
+            if not items:continue
+            terms=[]
+            for item in items:
+                children=[x for x in nodes if x['parent_id']==item['node_id']]
+                if item['type']!='list_item' or item.get('text') or len(children)!=1 or children[0]['type']!='term':break
+                if any(x['parent_id']==children[0]['node_id'] for x in nodes):break
+                terms.append(children[0])
+            term_ids=[x['node_id'] for x in terms]
+            if len(terms)==len(items) and [x['node_id'] for x in nodes if x['node_id'] in term_ids]==term_ids:
+                remove.update([n['node_id'],*(x['node_id'] for x in items)])
+                promote.update({x['node_id']:n['parent_id'] for x in terms})
+        nodes=[n|{'parent_id':promote[n['node_id']]} if n['node_id'] in promote else n for n in nodes if n['node_id'] not in remove]
+        while True:
+            parents={n['parent_id'] for n in nodes}
+            empty={n['node_id'] for n in nodes if n['node_id'] not in parents and
+                   (n['type']=='list' or n['type']=='list_item' and n['text']=='')}
+            if not empty:break
+            nodes=[n for n in nodes if n['node_id'] not in empty]
         by_id={n['node_id']:n for n in nodes}
         if len(by_id)!=len(nodes) or '' in by_id:
             raise ValueError('排版节点身份为空或重复')
@@ -77,6 +133,7 @@ def expand_response(response):
         for n in nodes:
             children[n['parent_id']].append(n)
         visited=set()
+        rendered_sections=[]
         def build(node):
             key=node['node_id']
             if key in visited:
@@ -85,6 +142,7 @@ def expand_response(response):
             out={k:v for k,v in node.items() if k not in {'node_id','parent_id'}}
             descendants=children[key]
             if out['type']=='section':
+                rendered_sections.append(key)
                 if any(n['type']=='list_item' for n in descendants):
                     raise ValueError('列表项必须归属于列表')
                 out['blocks']=[build(n) for n in descendants]
@@ -115,7 +173,59 @@ def expand_response(response):
         if visited!=set(by_id):
             raise ValueError('有排版节点无法从根节点到达')
         blocks.append({k:v for k,v in block.items() if k!='content'}|dict(content=content))
+        if rendered_sections:previous_section=(block['unit_id'],rendered_sections[-1])
     return {'blocks':blocks}
+
+
+def validate_layout_repair(original, candidate):
+    """Location-only repair cannot become an unreviewed prose rewrite."""
+    old=FlatDraft.model_validate(original).model_dump(exclude_none=True)
+    new=FlatDraft.model_validate(candidate).model_dump(exclude_none=True)
+    def signature(block):
+        nodes=[{k:v for k,v in n.items() if k not in {'node_id','parent_id'}} for n in block['content']]
+        return {k:v for k,v in block.items() if k!='content'},nodes
+    if len(old['blocks'])!=len(new['blocks']):raise ValueError('结构修复不能增删正文块')
+    for before,after in zip(old['blocks'],new['blocks']):
+        metadata,nodes=signature(before);updated,changed=signature(after)
+        if metadata!=updated:raise ValueError('结构修复不能改变正文身份与来源')
+        i=0
+        for node in changed:
+            if i<len(nodes) and node==nodes[i]:i+=1
+            elif node.get('type')!='list' and node!={'type':'list_item','text':''}:
+                raise ValueError('结构修复不能重写、移动或新增内容')
+        if i!=len(nodes):raise ValueError('结构修复丢失原有内容')
+    return candidate
+
+
+def validate_binding_repair(original, candidate, inventory=None):
+    old=FlatDraft.model_validate(original).model_dump(exclude_none=True)
+    candidate=copy.deepcopy(candidate)
+    texts={o['id']:o['text'] for o in (inventory or {}).get('objects',[])}
+    for block in candidate.get('blocks',[]):
+        for evidence in block.get('evidence',[]):
+            sid=evidence.get('quote_source_id')
+            if sid is not None:
+                if sid!=evidence.get('source_id') or sid not in texts or ('quote' in evidence and evidence['quote']!=texts[sid]):
+                    raise ValueError('来源引用别名与原文不一致')
+                evidence['quote']=texts[sid]
+                evidence.pop('quote_source_id')
+    new=FlatDraft.model_validate(candidate).model_dump(exclude_none=True)
+    fields={'obligation_ids','object_ids','evidence'}
+    unchanged=lambda body:[{k:v for k,v in b.items() if k not in fields} for b in body['blocks']]
+    if unchanged(old)!=unchanged(new):
+        raise ValueError('来源关系修复不能改写正文、对象或段落身份')
+    return candidate
+
+
+def append_unit_completion(original, supplement, unit_id):
+    before=FlatDraft.model_validate(original).model_dump(exclude_none=True)
+    extra=FlatDraft.model_validate(supplement).model_dump(exclude_none=True)
+    ids={b['id'] for b in before['blocks']}
+    for block in extra['blocks']:
+        if block['unit_id']!=unit_id or block['id'] in ids:
+            raise ValueError('补充内容不能覆盖旧段落或改写其他教学单元')
+        ids.add(block['id'])
+    return before|{'blocks':before['blocks']+extra['blocks']}
 
 
 def compose(bundle, response, inventory):
@@ -125,6 +235,10 @@ def compose(bundle, response, inventory):
     module=importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     sources=protected_objects(inventory)
+    protected_ids=set(sources)
+    original_text={o['id']:o['text'] for o in inventory['objects']}
+    original_raw={o['id']:o.get('raw','') for o in inventory['objects']}
+    fact_sources={f['id']:f['object_id'] for f in inventory.get('obligations',[])}
     source_text='\n'.join(o['text'] for o in inventory['objects'])
     normalized_source=re.sub(r'\s+',' ',source_text).casefold()
     lowered_sources=set()
@@ -147,7 +261,10 @@ def compose(bundle, response, inventory):
                                     raise ValueError('列表中的多行原对象尚不能无损排版')
                                 children.append({'text':literal})
                                 lowered_sources.add(sid)
-                            item['children']=children
+                            if not item['text'] and len(children)==1:
+                                item['text']=children[0]['text']
+                            else:
+                                item['children']=children
                         if not item.get('children'):
                             item.pop('children',None)
                             item.pop('children_ordered',None)
@@ -166,7 +283,7 @@ def compose(bundle, response, inventory):
                 node.pop('abbr',None)
             if abbr:
                 en=re.sub(r'\s*[,，;；（(]\s*'+re.escape(abbr)+r'\s*[)）]?\s*$','',en)
-            if en.casefold() not in normalized_source:
+            if not en or en.casefold() not in normalized_source:
                 text=(abbr+' ' if abbr else '')+node['zh']+'：'+'；'.join(node['definition'])
                 node.clear()
                 node.update(type='list',items=[{'text':text}])
@@ -179,8 +296,19 @@ def compose(bundle, response, inventory):
                 yield node['id']
             elif node['type']=='section':
                 yield from placed_sources(node['blocks'])
+    def quoted_text(nodes):
+        for node in nodes:
+            if node['type']=='source' and node['id'] in original_text and node['id'] not in protected_ids:
+                # Exact source text may be explicitly quoted. This does not
+                # turn authored prose into an exempt protected source.
+                node['presentation']='quote'
+                for field in ('language','layout','caption'):node.pop(field,None)
+                sources.setdefault(node['id'],original_text[node['id']])
+            elif node['type']=='section':
+                quoted_text(node['blocks'])
     for b in body['blocks']:
         lowered_sources.clear()
+        quoted_text(b['content'])
         format_terms(b['content'])
         placed=list(placed_sources(b['content']))
         selected={sid:sources[sid] for sid in placed if sid in sources}
@@ -190,7 +318,16 @@ def compose(bundle, response, inventory):
         # Placement is established by actual source nodes, never by a second model
         # list that can disagree with its own authored layout. Raw result is retained.
         embedded=list(dict.fromkeys([*selected,*sorted(lowered_sources)]))
-        blocks.append({k:v for k,v in b.items() if k!='content'}|dict(markdown=text,object_ids=embedded,embedded_object_ids=embedded))
+        evidence=list(b['evidence'])
+        evidence=[e|dict(quote=original_text[e['source_id']])
+                  if e['source_id'] in original_text and e['quote'] and
+                     e['quote'] in (sources.get(e['source_id']),original_raw.get(e['source_id'])) else e
+                  for e in evidence]
+        for fid in b['obligation_ids']:
+            sid=fact_sources.get(fid)
+            if sid in original_text and sid not in {e['source_id'] for e in evidence}:
+                evidence.append(dict(source_id=sid,quote=original_text[sid]))
+        blocks.append({k:v for k,v in b.items() if k!='content'}|dict(markdown=text,object_ids=embedded,embedded_object_ids=embedded,evidence=evidence))
     return {'blocks':blocks}
 
 

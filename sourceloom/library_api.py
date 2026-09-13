@@ -23,13 +23,17 @@ def register(app, store, config):
     def tree(trash:bool=False):
         return queue.tree(trash)
 
+    @app.post('/api/library/actions')
+    def library_action(body:dict):
+        return queue.library.apply(body.get('action'),body.get('items',[]),body.get('destination'),body.get('confirm',False))
+
     @app.post('/api/library/folders')
     def folder(body:dict):
         return queue.folder(str(body.get('name','')),body.get('parent'))
 
     @app.patch('/api/library/folders/{fid}')
     def change_folder(fid:str,body:dict):
-        return queue.folder(str(body.get('name','')),body.get('parent'),fid)
+        return queue.folder(str(body.get('name','')),body.get('parent'),fid,body.get('revision'))
 
     @app.delete('/api/library/folders/{fid}')
     def remove_folder(fid:str):
@@ -62,7 +66,20 @@ def register(app, store, config):
         except ValueError:
             available=None
         return {k:j.get(k) for k in ('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')} | {
-            'call_count':len(j['calls']),'has_output':bool(available),'formal':(p.get('production') or {}).get('status')=='completed'}
+            'call_count':len(j['calls']),'has_output':bool(available),
+            'output_digest':digest(canonical(available).encode()) if available else None,
+            'formal':(p.get('production') or {}).get('status')=='completed'}
+
+    @app.get('/api/projects/{pid}/editable')
+    def editable(pid:str):
+        p=store.get(pid)
+        if not p.get('draft'):
+            jobs=[j for j in store.jobs(pid) if j['role']=='production']
+            if jobs:
+                p=p|dict(draft=available_draft(jobs[-1]),inventory=jobs[-1].get('inventory'),plan=jobs[-1].get('plan'))
+        if not p.get('draft'):
+            raise Conflict('尚无可编辑正文')
+        return {k:p.get(k) for k in ('id','revision','draft','active_job')}
 
     @app.get('/api/projects/{pid}/output')
     def output(pid:str,format:str='html'):
@@ -141,9 +158,16 @@ def register(app, store, config):
             if not row:
                 raise KeyError(pid)
             p=json.loads(row[0])
-            if p['active_job'] or p['revision']!=body['revision'] or not p.get('draft'):
+            if p['active_job'] or p['revision']!=body['revision']:
                 raise Conflict('正文版本已变化或仍在处理中，未覆盖')
+            if not p.get('draft'):
+                last=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
+                j=json.loads(last[0]) if last else {}
+                candidate=available_draft(j) if j else None
+                if not candidate:raise Conflict('尚无可编辑正文')
+                p.update(draft=candidate,inventory=j['inventory'],plan=j['plan'])
             before=json.dumps(p,ensure_ascii=False)
+            existing_issues=inspect_draft(p['inventory'],p['draft'],p['plan'])
             blocks={b['id']:b for b in p['draft']['blocks']}
             if not body.get('edits'):
                 raise ValueError('没有提交修改')
@@ -153,7 +177,9 @@ def register(app, store, config):
                     raise ValueError('修改的正文块不存在或重复')
                 seen.add(e['block_id'])
                 blocks[e['block_id']]['markdown']=str(e['markdown'])
-            if inspect_draft(p['inventory'],p['draft'],p['plan']):
+            # Partial candidates remain editable, but an edit must not create
+            # any new structural or protected-object violation.
+            if any(issue not in existing_issues for issue in inspect_draft(p['inventory'],p['draft'],p['plan'])):
                 raise Conflict('修改破坏了原对象或来源关系，原版本已保留')
             cx.execute('INSERT INTO library_versions VALUES(?,?,?,?,?)',(identity(),pid,time.time(),'手动编辑前',before))
             p.update(revision=p['revision']+1,review=None,accepted_revision=None,state='edited',

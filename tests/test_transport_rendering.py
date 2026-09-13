@@ -55,6 +55,74 @@ def test_invalid_flat_structure_is_rejected_without_dropping_nodes(nodes):
     with pytest.raises(ValueError):expand_response(flat(nodes))
 
 
+def test_adjacent_section_continuation_keeps_blocks_and_source_voice():
+    payload=flat([dict(type='section',node_id='s',parent_id='',heading='条件'),dict(type='paragraph',node_id='p',parent_id='s',text='我们先设置条件')])
+    second=flat([dict(type='paragraph',node_id='q',parent_id='s',text='你可以接着检查结果')])['blocks'][0]
+    second['id']='second';payload['blocks'].append(second);before=copy.deepcopy(payload)
+    expanded=expand_response(payload)
+    assert [b['id'] for b in expanded['blocks']]==['b','second']
+    assert expanded['blocks'][1]['content']==[dict(type='paragraph',text='你可以接着检查结果')]
+    assert payload==before
+    payload['blocks'][1]['unit_id']='another-unit'
+    with pytest.raises(ValueError,match='父节点'):expand_response(payload)
+    payload=before
+    separator=flat([dict(type='section',node_id='new',parent_id='',heading='另一主题')])['blocks'][0]
+    payload['blocks'].insert(1,separator)
+    with pytest.raises(ValueError,match='父节点'):expand_response(payload)
+
+
+def test_bare_section_adopts_following_siblings_only_until_next_heading():
+    response=flat([dict(type='section',node_id='s',parent_id='',heading='第一部分'),
+        dict(type='paragraph',node_id='p',parent_id='',text='我们保留这段'),
+        dict(type='section',node_id='t',parent_id='',heading='第二部分'),
+        dict(type='paragraph',node_id='q',parent_id='',text='你保留下一段')])
+    before=copy.deepcopy(response);out=expand_response(response)['blocks'][0]['content']
+    assert [x['heading'] for x in out]==['第一部分','第二部分']
+    assert [x['blocks'][0]['text'] for x in out]==['我们保留这段','你保留下一段']
+    assert response==before
+
+
+def test_empty_unordered_term_wrappers_preserve_definition_and_reject_ordered_loss():
+    terms=[dict(type='term',node_id='t'+str(i),parent_id='i'+str(i),zh=name,en='',definition=['是什么','怎样用','限制是什么']) for i,name in enumerate(['甲','乙'])]
+    nodes=[dict(type='list',node_id='l',parent_id='',ordered=False)]
+    for i,t in enumerate(terms):nodes.extend([dict(type='list_item',node_id='i'+str(i),parent_id='l',text=''),t])
+    payload=flat(nodes);before=copy.deepcopy(payload)
+    assert [n['zh'] for n in expand_response(payload)['blocks'][0]['content']]==['甲','乙']
+    assert payload==before
+    payload['blocks'][0]['content'][0]['ordered']=True
+    with pytest.raises(ValueError):expand_response(payload)
+
+
+def test_reference_repair_cannot_change_voice_source_nodes_or_block_order():
+    from sourceloom.writing import validate_binding_repair
+    original=flat([dict(type='paragraph',node_id='p',parent_id='',text='我们保留条件')])
+    repaired=copy.deepcopy(original);repaired['blocks'][0]['obligation_ids']=['f1']
+    assert validate_binding_repair(original,repaired)==repaired
+    repaired['blocks'][0]['content'][0]['text']='原文保留条件'
+    with pytest.raises(ValueError,match='不能改写'):validate_binding_repair(original,repaired)
+    repaired=copy.deepcopy(original);repaired['blocks'][0]['unit_id']='other'
+    with pytest.raises(ValueError,match='身份'):validate_binding_repair(original,repaired)
+    repaired=copy.deepcopy(original);repaired['blocks'][0]['evidence']=[dict(source_id='s',quote_source_id='s')]
+    inv={'objects':[dict(id='s',text='We keep the condition.') ]}
+    result=validate_binding_repair(original,repaired,inv)
+    assert result['blocks'][0]['evidence']==[dict(source_id='s',quote='We keep the condition.')]
+    assert 'quote' not in repaired['blocks'][0]['evidence'][0]
+    repaired['blocks'][0]['evidence'][0]['quote_source_id']='other'
+    with pytest.raises(ValueError,match='别名'):validate_binding_repair(original,repaired,inv)
+
+
+def test_completion_appends_new_blocks_without_replacing_existing_voice():
+    from sourceloom.writing import append_unit_completion
+    original=flat([dict(type='paragraph',node_id='p',parent_id='',text='我们已有这一段')])
+    extra=flat([dict(type='paragraph',node_id='q',parent_id='',text='你还需要这个条件')]);extra['blocks'][0]['id']='new'
+    before=copy.deepcopy(original);result=append_unit_completion(original,extra,'u')
+    assert result['blocks'][0]==before['blocks'][0] and len(result['blocks'])==2 and original==before
+    extra['blocks'][0]['id']='b'
+    with pytest.raises(ValueError,match='覆盖'):append_unit_completion(original,extra,'u')
+    extra['blocks'][0].update(id='other',unit_id='v')
+    with pytest.raises(ValueError,match='其他'):append_unit_completion(original,extra,'u')
+
+
 def test_math_preview_keeps_tex_and_readweave_uses_native_editor_storage():
     source=r'$x^2$'+'\n\n'+r'$$\frac{a}{b}$$'
     preview=safe_html(markdown_renderer().render(source))
@@ -144,3 +212,35 @@ def test_visual_checks_do_not_turn_passing_observations_into_failures():
     assert result['status']=='needs_correction' and len(result['discrepancies'])==1
     response['pages'][0]['checks'].pop()
     with pytest.raises(ValueError):visual_decision(response)
+
+
+def test_layout_repair_cannot_smuggle_changed_prose_or_source_bindings():
+    from sourceloom.writing import validate_layout_repair
+    original=flat([dict(type='list_item',node_id='i',parent_id='',text='我们保留两个条件')])
+    candidate=copy.deepcopy(original)
+    candidate['blocks'][0]['content'].insert(0,dict(type='list',node_id='list',parent_id='',ordered=False))
+    candidate['blocks'][0]['content'][1]['parent_id']='list'
+    assert validate_layout_repair(original,candidate)==candidate
+    changed=copy.deepcopy(candidate);changed['blocks'][0]['content'][1]['text']='他们保留一个条件'
+    with pytest.raises(ValueError,match='重写'):validate_layout_repair(original,changed)
+    changed=copy.deepcopy(candidate);changed['blocks'][0]['obligation_ids']=['other']
+    with pytest.raises(ValueError,match='来源'):validate_layout_repair(original,changed)
+
+
+def test_paragraph_list_decode_never_renumbers_source_numbers():
+    out=expand_response(flat([dict(type='paragraph',node_id='p',parent_id='',text='42. 我保留这个编号')]))
+    assert out['blocks'][0]['content'][0]['text']=='42. 我保留这个编号'
+    out=expand_response(flat([dict(type='paragraph',node_id='p',parent_id='',text='- 我们保留两个条件')]))
+    assert out['blocks'][0]['content'][0]['items'][0]['text']=='我们保留两个条件'
+
+
+@pytest.mark.parametrize('newline',['\n','\r\n'])
+def test_quoted_original_keeps_blank_lines_and_changed_pronoun_is_rejected(newline):
+    from sourceloom.checks import inspect_draft
+    inv={'frozen':True,'objects':[dict(id='s',kind='text',text='We use it.\n\nYou keep it.')], 'obligations':[],'resources':[]}
+    b=dict(id='b',unit_id='u',kind='source',markdown='> We use it.\n> \n> You keep it.',obligation_ids=[],object_ids=['s'],embedded_object_ids=['s'],evidence=[])
+    inv['objects'][0]['text']=inv['objects'][0]['text'].replace('\n',newline)
+    b['markdown']=b['markdown'].replace('\n',newline)
+    assert not inspect_draft(inv,{'blocks':[b]})
+    b['markdown']=b['markdown'].replace('We','They')
+    assert any(x['code']=='embedded_bytes' for x in inspect_draft(inv,{'blocks':[b]}))
