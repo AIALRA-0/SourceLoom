@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {"build": "esbuild editor.js --bundle --minify --format=esm --outfile=../sourceloom/static/vendor/editor.js --legal-comments=eof"},
+  "dependencies": {"codemirror": "6.0.2", "@codemirror/lang-markdown": "6.3.3", "@codemirror/search": "6.5.11", "@codemirror/commands": "6.10.2", "@codemirror/state": "6.5.2", "@codemirror/view": "6.38.6"},
+  "devDependencies": {"esbuild": "0.25.10"}
+}

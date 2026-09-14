@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from .checks import apply_patch, freeze, inspect_draft, release_issues, review_complete
@@ -26,7 +27,7 @@ from .versions import append_intake, append_obligations, pending_obligations
 class Create(BaseModel):
     model_config=ConfigDict(extra="forbid")
     title:str=Field(min_length=1,max_length=180)
-    goal:str=Field(default="完整保留材料，并从必要前提逐步讲清",max_length=2000)
+    goal:str=Field(default="保持原文主旨与人称，完整保留信息，改善逻辑与可读性，不自行设计课程或情境",max_length=2000)
     mode:str="rewrite"
     budget_usd:float=Field(default=0.2,ge=0,le=20)
 
@@ -40,6 +41,7 @@ def create_app(config=None):
         yield
         pipeline.executor.shutdown(wait=False,cancel_futures=True)
     app=FastAPI(title="SourceLoom",version="0.1.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app.add_middleware(GZipMiddleware,minimum_size=1000)
     app.state.store=store
     app.state.pipeline=pipeline
     from .library_api import register
@@ -70,7 +72,7 @@ def create_app(config=None):
         response.headers["Cache-Control"]=("private, max-age=0, must-revalidate"
                                            if request.url.path.startswith('/static/') else "no-store")
         if "Content-Security-Policy" not in response.headers:
-            response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
+            response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
         return response
 
     @app.exception_handler(Conflict)

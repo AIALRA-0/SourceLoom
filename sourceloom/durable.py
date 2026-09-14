@@ -61,7 +61,7 @@ class Queue:
             jid = identity()
             job = dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
                        stage='visual_extract' if any(o['kind'] in {'page','image'} and o.get('resource_id') for o in p['inventory']['objects']) else 'inventory',
-                       results={},repair_rounds=0,teaching_version=2,base_revision=p['revision'],
+                       results={},repair_rounds=0,teaching_version=2,transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],
                        source_digest=p['inventory']['digest'],source=p['inventory'],goal=p['goal'],
                        writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')})
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',
@@ -89,9 +89,67 @@ class Queue:
             cx.execute("UPDATE jobs SET status='running',body=? WHERE id=?", (json.dumps(job,ensure_ascii=False),job['id']))
         return job
 
+    def rewrite_existing(self,pid,bundle):
+        """Reuse verified source inventory, while recording a new rewrite of the saved version."""
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM projects WHERE id=?',(pid,)).fetchone()
+            if not row:raise KeyError(pid)
+            p=json.loads(row[0])
+            if p.get('active_job') or p.get('trashed') or not p.get('draft'):
+                raise Conflict('当前材料没有可重新改写的已保存正文，或仍在处理中')
+            prior=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
+            if not prior and p.get('copied_from',{}).get('inventory_job'):
+                prior=cx.execute("SELECT body FROM jobs WHERE id=? AND role='production'",(p['copied_from']['inventory_job'],)).fetchone()
+            old=json.loads(prior[0]) if prior else {}
+            if (old.get('status') in {'uncertain','running','queued'} or not old.get('facts') or
+                    old.get('inventory',{}).get('digest')!=p.get('inventory',{}).get('digest')):
+                raise Conflict('当前原件与已核对清单不一致，需要重新清点')
+            if not p['inventory'].get('frozen') or not p['inventory'].get('inventory_review'):
+                raise Conflict('原件清单尚未完成独立核对')
+            jid=identity();now=time.time()
+            job=dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
+                stage='planner',results={},repair_rounds=0,teaching_version=2,transformation_mode='rewrite',
+                base_revision=p['revision'],source_digest=p['inventory']['digest'],source=old['source'],
+                inventory=p['inventory'],facts=old['facts'],reused_inventory_job=old['id'],
+                goal='保持原文主旨、作者意图与人称，完整保留信息，改善逻辑与可读性，不自行设计课程、情境、练习或拓展',
+                writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')})
+            cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',(jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
+            cx.execute('INSERT INTO production_control(id,project,status,created) VALUES(?,?,?,?)',(jid,pid,'queued',now))
+            p.update(active_job=jid,state='queued')
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),pid))
+        return job
+
     def heartbeat(self, jid, owner, lease=45):
         with self.store.connect() as cx:
             return cx.execute("UPDATE production_control SET lease_until=? WHERE id=? AND owner=? AND status='running'", (time.time()+lease,jid,owner)).rowcount==1
+
+    def continue_after_quota_error(self,jid,execution_channel):
+        """Explicit continuation on a different configured channel after terminal quota rejection."""
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0]);call=job.get('calls',[])[-1] if job.get('calls') else {}
+            response=json.loads(self.store.read_blob(call['response_blob'])) if call.get('response_blob') else {}
+            request=json.loads(self.store.read_blob(call['wire_request_blob'])) if call.get('wire_request_blob') else {}
+            old_channel=request.get('task',{}).get('executionChannel','codex')
+            key=job.get('pending')
+            if (job['status']!='uncertain' or response.get('status')!='failed' or
+                    response.get('errorCode')!='codex_quota_exhausted' or response.get('output') or
+                    execution_channel!='chatgpt_web' or old_channel==execution_channel or not key or
+                    key in job.get('quota_continuations',{})):
+                raise Conflict('只有已明确额度拒绝、没有输出且已另配通道的请求可以继续；未知提交不能重发')
+            p=json.loads(cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()[0])
+            if p.get('active_job') or p.get('trashed') or p['revision']!=job['base_revision']:
+                raise Conflict('原版本已变化或材料不可继续处理')
+            job.setdefault('quota_continuations',{})[key]={'previous_call':call['id'],'from':old_channel,'to':execution_channel}
+            job.pop('pending');job.update(status='queued',error=None)
+            p.update(active_job=jid,state='queued')
+            cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),p['id']))
+        return job
 
     def cancelled(self, jid, owner=None):
         with self.store.connect() as cx:

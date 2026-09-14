@@ -139,10 +139,10 @@ def test_actual_api_request_contains_unabridged_skill_and_exact_receipt(tmp_path
                     'usage':{'prompt_tokens':100,'completion_tokens':10}}
     class Client:
         def __init__(self,**kwargs):pass
-        def __enter__(self):return self
-        def __exit__(self,*args):pass
-        def post(self,*args,**kwargs):captured.append(kwargs['json']);return Response()
-    monkeypatch.setattr('sourceloom.providers.httpx.Client',Client)
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def post(self,*args,**kwargs):captured.append(kwargs['json']);return Response()
+    monkeypatch.setattr('sourceloom.providers.httpx.AsyncClient',Client)
     c=load_config()|{'provider':'openai-compatible','api_key':'test-not-a-secret','writing_skill_dir':str(skill),
                      'role_providers':{},'max_input_bytes':100000,'daily_budget_usd':1,'total_budget_usd':1}
     Provider(store,c).call(p['id'],'fact_inventory',{'source':'the source'},{'type':'object'},job)
@@ -301,10 +301,10 @@ def test_deepseek_strict_artifact_channel_never_executes_tools(tmp_path,skill,mo
                 'usage':{'prompt_tokens':100,'completion_tokens':10}}
     class Client:
         def __init__(self,**kwargs):pass
-        def __enter__(self):return self
-        def __exit__(self,*args):pass
-        def post(self,url,**kwargs):captured.append((url,kwargs['json']));return Response()
-    monkeypatch.setattr('sourceloom.providers.httpx.Client',Client)
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def post(self,url,**kwargs):captured.append((url,kwargs['json']));return Response()
+    monkeypatch.setattr('sourceloom.providers.httpx.AsyncClient',Client)
     config=load_config()|dict(provider='openai-compatible',base_url='https://api.deepseek.com/v1',
         structured_output='deepseek_strict_tool',api_key='test',role_providers={},max_input_bytes=100000,
         provider_options={} if thinking is None else {'thinking':{'type':thinking}})

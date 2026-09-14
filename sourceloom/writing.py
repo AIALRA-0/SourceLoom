@@ -40,7 +40,7 @@ def available_draft(job):
     blocks=[]
     for response in received:
         try:
-            blocks.extend(compose(bundle,response,job['inventory'])['blocks'])
+            blocks.extend(compose(bundle,response,job['inventory']|{'_verified_terminology':job.get('verified_terminology',[])})['blocks'])
         except ValueError:
             # Keep a malformed response in the job, without breaking access to
             # any other already-renderable unit or asserting it is complete.
@@ -265,6 +265,12 @@ def compose(bundle, response, inventory):
     fact_sources={f['id']:f['object_id'] for f in inventory.get('obligations',[])}
     source_text='\n'.join(o['text'] for o in inventory['objects'])
     normalized_source=re.sub(r'\s+',' ',source_text).casefold()
+    verified_names={item['en'].casefold():item['en'] for item in inventory.get('_verified_terminology',[])
+                    if item.get('quote') and item.get('url') and item['en'].casefold() in item['quote'].casefold()}
+    generic_names={'jargon','anonymous function','named function','nested function','recursive function',
+                   'function declaration','function expression','arrow function','first-class function',
+                   'immediately invoked function expression','code snippet','return value','argument',
+                   'variable','function','object','parameter','call stack'}
     lowered_sources=set()
     def format_terms(nodes):
         for node in nodes:
@@ -307,12 +313,12 @@ def compose(bundle, response, inventory):
                 node.pop('abbr',None)
             if abbr:
                 en=re.sub(r'\s*[,，;；（(]\s*'+re.escape(abbr)+r'\s*[)）]?\s*$','',en)
-            if not en or en.casefold() not in normalized_source:
+            if not en or (en.casefold() not in normalized_source and en.casefold() not in verified_names):
                 text=(abbr+' ' if abbr else '')+node['zh']+'：'+'；'.join(node['definition'])
                 node.clear()
                 node.update(type='list',items=[{'text':text}])
             else:
-                node['en']=en
+                node['en']=verified_names.get(en.casefold(),en.title() if en.casefold() in generic_names else en)
     blocks=[]
     def placed_sources(nodes):
         for node in nodes:

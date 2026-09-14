@@ -70,7 +70,7 @@ export function libraryTree(host, hooks){
   if(action==='import')hooks.import(key.slice(2));
   if(action==='new-folder'){const input=document.createElement('input');input.required=true;input.maxLength=180;promptDialog('新建子文件夹','名称',input,async name=>{await hooks.send('/library/folders',{name,parent:key.slice(2)});expanded.add(key.slice(2));save();await hooks.refresh()})}
   if(action==='duplicate'){const n=await hooks.send('/projects/'+key.slice(2)+'/duplicate');await hooks.refresh();await hooks.open(n.id)}
-  if(action==='download')location.href='/api/projects/'+key.slice(2)+'/output?format=markdown';
+  if(action==='download')await hooks.download('/api/projects/'+key.slice(2)+'/output?format=markdown','正文.md');
   if(action==='move'){const select=document.createElement('select');let banned=new Set(keys.filter(isFolder).map(k=>k.slice(2))),n=-1;while(n!==banned.size){n=banned.size;data.folders.filter(f=>banned.has(f.parent)).forEach(f=>banned.add(f.id))}select.innerHTML='<option value="">我的材料</option>'+data.folders.filter(f=>!banned.has(f.id)).map(f=>`<option value="${esc(f.id)}">${esc(path(f.parent)+' / '+f.name)}</option>`).join('');promptDialog('移动所选材料','目标文件夹',select,v=>act('move',keys,v||null))}
   if(['trash','restore'].includes(action))await act(action,keys);
   if(action==='purge')promptDialog('彻底删除所选材料','',null,()=>act('purge',keys,null,true),'材料及历史版本将无法通过本应用恢复，服务器文件与备份不会在此处安全擦除，已有导出和费用记录保留');

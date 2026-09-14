@@ -78,11 +78,11 @@ def plan_review_needs_repair(review, confirmed_issues, unit_count, max_units):
             (review['status']=='needs_repair' and not review['issues']))
 
 
-def unit_limit_for_inventory(inventory, configured_limit):
+def unit_limit_for_inventory(inventory, configured_limit, mode=None):
     """Small text lessons should not consume a six-unit route by default."""
     source_chars=sum(len(o.get('text','')) for o in inventory['objects'])
     has_complex_layout=any(o['kind'] in {'page','image','table','formula'} for o in inventory['objects'])
-    return min(configured_limit,3) if source_chars<=5000 and not has_complex_layout else configured_limit
+    return min(configured_limit,1 if mode=='rewrite' else 3) if source_chars<=5000 and not has_complex_layout else configured_limit
 
 
 def restore_frozen_markdown_fences(unit_inventory, frozen_inventory, store):
@@ -523,8 +523,12 @@ class Production:
             job['inventory']=freeze(inv)
             job['stage']='planner'
         elif stage=='planner':
+            if job.get('transformation_mode')=='rewrite' and 'verified_terminology' not in job:
+                from .terminology import verified_terms
+                job['verified_terminology']=verified_terms(self.store,job['source'])
+                self.store.put_job(job)
             length=sum(len(o.get('text','')) for o in job['inventory']['objects'])
-            job['unit_limit']=unit_limit_for_inventory(job['inventory'],self.config.get('max_units',6))
+            job['unit_limit']=unit_limit_for_inventory(job['inventory'],self.config.get('max_units',6),job.get('transformation_mode'))
             result=self._call(job,'planner','planner',dict(goal=job['goal'],inventory=self.teaching_inventory(job['inventory']),
                 facts=job['facts'],max_units=job['unit_limit'],
                 source_chars=length,working_length_target_chars=round(length*1.8)+400 if length>=500 else None,
@@ -629,6 +633,7 @@ class Production:
             unit=job['plan']['units'][job['unit_index']]
             needed=set(unit['obligation_ids'])
             inv=copy.deepcopy(self.teaching_inventory(job['inventory']))
+            inv['_verified_terminology']=job.get('verified_terminology',[])
             inv['obligations']=[o for o in inv['obligations'] if o['id'] in needed]
             wanted={o['object_id'] for o in inv['obligations']}|set(unit['object_ids'])
             inv['objects']=[o for o in inv['objects'] if o['id'] in wanted]

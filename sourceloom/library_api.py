@@ -15,6 +15,7 @@ from .export import render, safe_html
 from .skills import deploy_skill
 from .store import Conflict, identity, digest
 from .writing import canonical, available_draft
+from .reading import reader_summary, presentation
 
 
 def source_locations(project):
@@ -33,14 +34,16 @@ def source_locations(project):
             if not original:continue
             quote=next((e.get('quote','') for e in block.get('evidence',[]) if e.get('source_id')==sid and e.get('quote')),None)
             quote=quote or source.get('text','')
-            quote=' '.join(quote.split())[:360]
+            quote=' '.join(quote.split())
             page=re.search(r'/page\[(\d+)\]',source['locator'])
-            locations[block['id']]={
+            location={
                 'source_id':sid,'quote':quote,'file':original['name'],
                 'original_key':original['sha256'],'page':int(page[1]) if page else None,
                 'format':Path(original['name']).suffix.lower().lstrip('.'),
             }
-            break
+            if block['id'] not in locations:
+                locations[block['id']]=location|{'alternatives':[]}
+            locations[block['id']]['alternatives'].append(location)
     return locations
 
 
@@ -51,6 +54,17 @@ def register(app, store, config):
         with store.connect() as cx:
             row=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
         return json.loads(row[0]) if row else None
+
+    @app.get('/api/projects/{pid}/reader')
+    def reader(pid:str):
+        return reader_summary(store.get(pid),store.costs(pid))
+
+    @app.patch('/api/projects/{pid}/reading-settings')
+    def reading_settings(pid:str,body:dict):
+        value=body.get('heading_numbering')
+        if value not in {'preserve','numbered','none'}:raise ValueError('标题编号选项无效')
+        p=store.change(pid,lambda p:p.update(heading_numbering=value))
+        return {'heading_numbering':p['heading_numbering']}
 
     @app.get('/api/library')
     def tree(trash:bool=False):
@@ -97,20 +111,38 @@ def register(app, store, config):
     @app.get('/api/projects/{pid}/production')
     def production(pid:str):
         p=store.get(pid)
-        j=latest_production(pid)
+        # A saved readable draft needs status fields only, never raw model history.
+        if p.get('draft'):
+            fields=('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')
+            expression='json_extract(body,'+','.join("'$."+field+"'" for field in fields)+')'
+            with store.connect() as cx:
+                row=cx.execute('SELECT '+expression+",json_array_length(body,'$.calls'),json_extract(body,'$.calls[#-1].error_code') FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
+            j=dict(zip(fields,json.loads(row[0]))) if row else None
+            if j:
+                j['call_count']=row[1]
+                messages={'codex_quota_exhausted':'当前模型订阅额度已耗尽，本次没有返回正文',
+                          'chatgpt_delivery_uncertain':'无法确认聊天消息是否送达，已保留原请求，未自动重发'}
+                if row[2] in messages:j['error']=messages[row[2]]
+        else:j=latest_production(pid)
         if not j:
             return {'status':'not_started'}
         try:
-            available=available_draft(j)
+            available=None if p.get('draft') else available_draft(j)
         except ValueError:
             available=None
         displayed=p.get('draft') or available
         output_text=canonical(displayed) if displayed else ''
         return {k:j.get(k) for k in ('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')} | {
-            'call_count':len(j['calls']),'has_output':bool(displayed),
+            'call_count':j.get('call_count',len(j.get('calls',[]))),'has_output':bool(displayed),
             'output_chars':len(output_text),
             'output_digest':digest(output_text.encode()) if displayed else None,
             'formal':(p.get('production') or {}).get('status')=='completed'}
+
+    @app.post('/api/projects/{pid}/rewrite')
+    def rewrite(pid:str):
+        if config.get('generation_pause_reason'):raise Conflict(config['generation_pause_reason'])
+        if config['provider']=='manual':raise Conflict('尚未配置自动生成通道')
+        return queue.rewrite_existing(pid,deploy_skill(config['writing_skill_dir'],store.root))
 
     @app.get('/api/projects/{pid}/editable')
     def editable(pid:str):
@@ -133,7 +165,7 @@ def register(app, store, config):
         return source_locations(p) if p.get('draft') and p.get('inventory') else {}
 
     @app.get('/api/projects/{pid}/output')
-    def output(pid:str,format:str='html'):
+    def output(pid:str,format:str='html',numbering:str|None=None):
         p=store.get(pid)
         if not p.get('draft'):
             j=latest_production(pid)
@@ -143,6 +175,7 @@ def register(app, store, config):
             if not available:
                 raise Conflict('尚未生成正文')
             p=p|dict(draft=available,inventory=j['inventory'],plan=j['plan'])
+        p=presentation(p,numbering)
         if format=='markdown':
             return Response(canonical(p['draft']).encode(),media_type='text/markdown',
                             headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(p['title']+'.md')})
@@ -162,7 +195,7 @@ def register(app, store, config):
                         headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(original['name'])})
 
     @app.get('/api/projects/{pid}/original-view/{key}')
-    def original_view(pid:str,key:str):
+    def original_view(pid:str,key:str,view:str='original'):
         from markdown_it import MarkdownIt
         from bs4 import BeautifulSoup
         from .ingest import decode
@@ -172,7 +205,7 @@ def register(app, store, config):
             raise KeyError(key)
         raw=store.read_blob(key)
         suffix=Path(original['name']).suffix.lower()
-        if suffix=='.pdf':
+        if suffix=='.pdf' and view!='text':
             return Response(raw,media_type='application/pdf',headers={'Content-Disposition':'inline'})
         if suffix in {'.md','.markdown','.html','.htm','.txt'}:
             text=decode(raw)
@@ -191,14 +224,36 @@ def register(app, store, config):
                 pic['src']=f'/api/projects/{pid}/assets/'+pic['src'][7:]
             content=str(parsed)
         else:
-            content='<p>此格式请下载原文件查看，下面只显示已提取的文字</p>'
-            content+=''.join('<pre>'+html.escape(o['text'])+'</pre>' for o in p['inventory']['objects'])
+            content='<p>下面显示本原件已提取的文字，可点击文字定位改写正文；原始排版请查看原始文件</p>'
+            for o in p['inventory']['objects']:
+                if not (o['locator']==original['name'] or o['locator'].startswith(original['name']+'/')):continue
+                page=re.search(r'/page\[(\d+)\]',o['locator'])
+                if page:content+='<h2>第 '+page[1]+' 页</h2>'
+                content+='<pre data-source-id="'+html.escape(o['id'],quote=True)+'">'+html.escape(o.get('text',''))+'</pre>'
         return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/article.css"></head><body>'+content+'</body></html>',
             headers={'Content-Security-Policy':"sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"})
 
     @app.get('/api/projects/{pid}/versions')
     def versions(pid:str):
         return queue.versions(pid)
+
+    @app.get('/api/projects/{pid}/versions/{vid}')
+    def version(pid:str,vid:str):
+        with store.connect() as cx:
+            row=cx.execute('SELECT body FROM library_versions WHERE id=? AND project=?',(vid,pid)).fetchone()
+        if not row:raise KeyError(vid)
+        old=json.loads(row[0])
+        return {'revision':old['revision'],'draft':old.get('draft'),'title':old['title']}
+
+    @app.post('/api/projects/{pid}/preview-edit')
+    def preview_edit(pid:str,body:dict):
+        p=store.get(pid)
+        if not p.get('draft'):raise Conflict('没有可预览的正文')
+        blocks={b['id']:b for b in p['draft']['blocks']}
+        for edit in body.get('edits',[]):
+            if edit['block_id'] not in blocks:raise ValueError('正文块不存在')
+            blocks[edit['block_id']]['markdown']=str(edit['markdown'])
+        return {'html':render(presentation(p),lambda key:f'/api/projects/{pid}/assets/{key}')}
 
     @app.post('/api/projects/{pid}/edit')
     def edit(pid:str,body:dict):
@@ -264,9 +319,14 @@ def register(app, store, config):
         p=store.get(pid)
         new=store.create(p['title']+' · 副本',p['mode'],p['budget_usd'])
         inv=copy.deepcopy(p.get('inventory'))
-        if inv:
+        if inv and not p.get('draft'):
             inv.update(frozen=False,inventory_review=None)
             inv['digest']=digest({k:v for k,v in inv.items() if k!='digest'})
-        return store.change(new['id'],lambda n:n.update(inventory=inv,goal=p['goal'],folder=p.get('folder'),state='inventoried' if inv else 'collecting'))
+        latest=latest_production(pid)
+        provenance={'project':pid,'revision':p['revision'],'inventory_job':latest['id'] if latest else p.get('copied_from',{}).get('inventory_job')}
+        return store.change(new['id'],lambda n:n.update(inventory=inv,goal=p['goal'],folder=p.get('folder'),
+            draft=copy.deepcopy(p.get('draft')),plan=copy.deepcopy(p.get('plan')),
+            heading_numbering=p.get('heading_numbering','preserve'),copied_from=provenance,
+            state='generated' if p.get('draft') else 'inventoried' if inv else 'collecting'))
 
     return queue

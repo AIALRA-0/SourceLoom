@@ -61,6 +61,8 @@ def safe_html(raw):
 
 
 def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
+    from .reading import presentation
+    project=presentation(project)
     inventory = project["inventory"]
     src = {o["id"]:o for o in inventory["objects"]}
     anchor_map={}
@@ -86,7 +88,8 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
                 image['src']=asset_url(image['src'][7:])
             rendered=str(parsed)
         parts.append(rendered)
-        if b['kind']=='source' and b['object_ids']:
+        quoted_objects=[sid for sid in b['object_ids'] if sid not in embedded]
+        if b['kind']=='source' and quoted_objects:
             parts.append('<blockquote>')
         for sid in b["object_ids"]:
             if sid in embedded:
@@ -120,7 +123,7 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
             elif o["kind"]=="attachment" and o.get("resource_id"):
                 parts.append(f'<p><a href="{html.escape(asset_url(o["resource_id"]),quote=True)}">{html.escape(o["text"])}</a></p>')
             parts.append('</div>')
-        if b['kind']=='source' and b['object_ids']:
+        if b['kind']=='source' and quoted_objects:
             parts.append('</blockquote>')
         parts.append("</section>")
     result='\n'.join(parts)
