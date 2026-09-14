@@ -39,7 +39,7 @@ class TeachingReview(Strict):
     findings: list[TeachingFinding]
 
 
-def validate_teaching_plan(plan, inventory):
+def validate_teaching_plan(plan, inventory, mode=None):
     plan = copy.deepcopy(plan)
     source_objects = {o['id']:o for o in inventory['objects']}
     # Selecting a metadata object for end matter selects its recorded facts too.
@@ -69,12 +69,14 @@ def validate_teaching_plan(plan, inventory):
         seen.add(unit['id'])
     functions = plan['teaching_functions']
     expected = {'problem','foundations','concepts','mechanism','example','transfer','extension'}
-    if len(functions) != 7 or {f['kind'] for f in functions} != expected:
+    if not (mode=='rewrite' and not functions) and (len(functions) != 7 or {f['kind'] for f in functions} != expected):
         raise ValueError('七类教学要求尚未逐项安排，不要求七个固定章节')
     for f in functions:
         if not set(f['unit_ids']) <= seen or (f['treatment']=='included' and not f['unit_ids']):
             raise ValueError('教学要求没有对应实际单元')
-        if f['kind'] in {'problem','foundations','concepts'} and f['treatment'] != 'included':
+        if f['treatment']=='not_needed' and not f['reason'].strip():
+            raise ValueError('不适用的内容安排必须说明原因')
+        if mode!='rewrite' and f['kind'] in {'problem','foundations','concepts'} and f['treatment'] != 'included':
             raise ValueError('理解目标与必要前提不能省略')
     return plan
 
@@ -218,8 +220,8 @@ def repair_units(review, plan):
     return [u for u in order if u in ids]
 
 
-def validate_replan(candidate, original, selected, inventory):
-    candidate = validate_teaching_plan(candidate, inventory)
+def validate_replan(candidate, original, selected, inventory, mode=None):
+    candidate = validate_teaching_plan(candidate, inventory, mode)
     if [u['id'] for u in candidate['units']] != [u['id'] for u in original['units']]:
         raise ValueError('局部教学修复不能增加、删除或移动无关单元')
     for old,new in zip(original['units'],candidate['units']):

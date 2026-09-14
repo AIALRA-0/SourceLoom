@@ -87,6 +87,30 @@ def test_complete_skill_is_frozen_and_each_file_is_checked(tmp_path,skill):
         load_bundle(bundle['root'],bundle['package_digest'])
 
 
+@pytest.mark.parametrize('repaired',[True,False])
+def test_duplicate_plan_verdict_gets_one_protocol_repair(tmp_path,skill,monkeypatch,repaired):
+    from sourceloom.production import Production
+    store,queue,p,bundle=prepared(tmp_path,skill)
+    job=queue.enqueue(p['id'],bundle)
+    job.update(stage='plan_review',plan={'units':[{'id':'u'}]},facts={'facts':[]},unit_limit=1)
+    sid=job['source']['objects'][0]['id']
+    verdict={'claim_index':0,'verdict':'not_error','evidence':[{'source_id':sid}],'reason':'原文保留相同条件'}
+    calls=[]
+    def call(job,key,role,payload,schema):
+        calls.append(key)
+        if role=='plan_review':return {'status':'ready','issues':['条件可能变化'],'optional_source_limits':[],'essential_missing_sources':[]}
+        if key.endswith('-contract'):
+            assert payload['invalid_decision']['decisions']==[verdict,verdict]
+            return {'decisions':[verdict] if repaired else [verdict,verdict]}
+        return {'decisions':[verdict,verdict]}
+    engine=Production(store,{});monkeypatch.setattr(engine,'_call',call)
+    if repaired:
+        assert engine.step(job)=='queued' and job['stage']=='writer'
+    else:
+        with pytest.raises(ValueError,match='逐项'):engine.step(job)
+    assert calls==['plan_review-0','plan_decision-0','plan_decision-0-contract']
+
+
 def test_redeploy_frozen_skill_keeps_identical_complete_bundle(tmp_path,skill):
     first=deploy_skill(skill,tmp_path/'first')
     again=deploy_skill(first['root'],tmp_path/'first')

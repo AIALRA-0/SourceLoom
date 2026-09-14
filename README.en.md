@@ -14,7 +14,7 @@
 
 SourceLoom preserves originals and separates inventory, planning, writing, review, and local repair before preparing material for ReadWeave. Default rewriting keeps the source purpose and improves clarity and transitions, without inventing classroom scenarios, exercises, or extensions
 
-Reading performance, the toolbar, bidirectional navigation and the editor have been updated, and 24 real materials have been collected and ingested. There are still **zero formally accepted automatic outputs**. The new rewrite is blocked by model channels and has no new draft to accept. See [current results and limitations](docs/ITERATION_4.md) and [earlier real trials](reports/AUTOMATIC_TRIAL.md)
+Reading performance, the toolbar, bidirectional navigation and the editor have been updated, and 24 real materials have been collected and ingested. There are still **zero formally accepted automatic outputs**. DeepSeek produced a new real-entry candidate, but writing requirements remain unmet and the independent chat review failed with uncertain delivery. See [the latest real trial](docs/ITERATION_5.md), [workbench updates](docs/ITERATION_4.md), and [earlier real trials](reports/AUTOMATIC_TRIAL.md)
 
 Earlier manually revised examples remain [historical examples](docs/REAL_CASES.md), not evidence of unattended automatic quality
 

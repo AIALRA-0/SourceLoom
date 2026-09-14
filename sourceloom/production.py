@@ -282,8 +282,17 @@ class Production:
         if job.get('teaching_version',0)>=2:
             plan,_=unmark_nonmetadata_document_info(plan,job['inventory'])
             plan,_=mark_known_document_metadata(plan,job['inventory'])
-            return validate_teaching_plan(plan,job['inventory'])
-        return validate_plan(plan,job['inventory'])
+            plan=validate_teaching_plan(plan,job['inventory'],job.get('transformation_mode'))
+        else:
+            plan=validate_plan(plan,job['inventory'])
+        # Every assigned fact already determines its original object exactly.
+        # Bind these IDs before reviews, as the writer's source slice already does.
+        objects={o['id']:o['object_id'] for o in job['inventory']['obligations']}
+        for unit in plan['units']:
+            for fid in unit['obligation_ids']:
+                sid=objects[fid]
+                if sid not in unit['object_ids']:unit['object_ids'].append(sid)
+        return plan
 
     def validated_initial_plan(self,job):
         """Reconstruct the first plan plus its saved contract-only patch."""
@@ -592,9 +601,16 @@ class Production:
                 raise ValueError('教学需要的额外依据尚未取得：'+'；'.join(result['essential_missing_sources']))
             plan_errors=bool(result['issues'])
             if result['issues']:
-                decision=self._call(job,f'plan_decision-{plan_round}','plan_decision',base|dict(plan=job['plan'],
-                    claims=[dict(claim_index=n,claim=x) for n,x in enumerate(result['issues'])]),P.InventoryDecisions)
-                plan_errors=not self._decisions_pass(decision,result['issues'],source)
+                decision_payload=base|dict(plan=job['plan'],
+                    claims=[dict(claim_index=n,claim=x) for n,x in enumerate(result['issues'])])
+                decision=self._call(job,f'plan_decision-{plan_round}','plan_decision',decision_payload,P.InventoryDecisions)
+                try:
+                    plan_errors=not self._decisions_pass(decision,result['issues'],source)
+                except ValueError as error:
+                    decision=self._call(job,f'plan_decision-{plan_round}-contract','plan_decision',
+                        decision_payload|dict(invalid_decision=decision,contract_error=str(error),
+                            instruction='Return exactly one decision per supplied claim_index, no duplicates or extra entries. Put all caveats into that single decision reason. Reassess the source and plan faithfully; do not force a passing verdict. This is the sole protocol repair attempt.'),P.InventoryDecisions)
+                    plan_errors=not self._decisions_pass(decision,result['issues'],source)
             if plan_review_needs_repair(result,plan_errors,len(job['plan']['units']),
                                         job.get('unit_limit',self.config.get('max_units',6))):
                 if plan_round:
@@ -768,7 +784,7 @@ class Production:
             result=self._call(job,f"teaching-replan-{job['repair_rounds']}",'teaching_replan',
                 dict(goal=job['goal'],inventory=self.teaching_inventory(job['inventory']),**repair_view),C.Plan)
             normalized=self.validate_plan(job,result)
-            job['plan']=validate_replan(normalized,regeneration['original_plan'],regeneration['unit_ids'],job['inventory'])
+            job['plan']=validate_replan(normalized,regeneration['original_plan'],regeneration['unit_ids'],job['inventory'],job.get('transformation_mode'))
             job['stage']='teaching_replan_review'
         elif stage=='teaching_replan_repair':
             regeneration=job['regeneration']
@@ -782,7 +798,7 @@ class Production:
                           current_plan=job['plan'],independent_review=job['results'][prior_key],
                           instruction='Return one complete repaired Plan. Address each verified defect in the actual new stages and proof questions, not merely in an intention sentence. Keep every frozen fact and source-object assignment and all unselected units exactly unchanged. Do not write prose.'),C.Plan)
             normalized=self.validate_plan(job,result)
-            job['plan']=validate_replan(normalized,regeneration['original_plan'],regeneration['unit_ids'],job['inventory'])
+            job['plan']=validate_replan(normalized,regeneration['original_plan'],regeneration['unit_ids'],job['inventory'],job.get('transformation_mode'))
             job['stage']='teaching_replan_review'
         elif stage=='teaching_replan_review':
             repair_view={k:job['regeneration'][k] for k in ('unit_ids','original_plan','findings')}

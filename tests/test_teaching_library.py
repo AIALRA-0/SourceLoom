@@ -25,9 +25,41 @@ def test_adaptive_plan_preserves_functions_without_seven_section_template():
     with pytest.raises(ValueError,match='前提引用'):validate_teaching_plan(plan,inv)
 
 
+def test_rewrite_can_omit_invented_teaching_problem_without_losing_source():
+    inv,plan=lesson()
+    plan['teaching_functions'][0].update(treatment='not_needed',unit_ids=[],reason='原文没有教学问题，保留原文目的')
+    original=copy.deepcopy(plan)
+    with pytest.raises(ValueError,match='必要前提'):validate_teaching_plan(plan,inv)
+    validated=validate_teaching_plan(plan,inv,'rewrite')
+    assert validated==original and plan==original
+    assert validate_replan(validated,validated,['u'],inv,'rewrite')==validated
+    extra_source=copy.deepcopy(inv);extra_source['obligations'].append({'id':'unassigned','object_id':'s'})
+    with pytest.raises(ValueError,match='冻结义务'):validate_teaching_plan(plan,extra_source,'rewrite')
+    invalid=copy.deepcopy(plan);invalid['teaching_functions'][0]['reason']=' '
+    with pytest.raises(ValueError,match='说明原因'):validate_teaching_plan(invalid,inv,'rewrite')
+    plain=copy.deepcopy(plan);plain['teaching_functions']=[]
+    assert validate_teaching_plan(plain,inv,'rewrite')==plain
+    with pytest.raises(ValueError,match='七类教学'):validate_teaching_plan(plain,inv)
+    with pytest.raises(ValueError,match='冻结义务'):validate_teaching_plan(plain,extra_source,'rewrite')
+
+
 def test_technical_facts_cannot_be_reclassified_as_document_info():
     inv,plan=lesson();plan['units'][0]['document_info_ids']=['s']
     with pytest.raises(ValueError,match='主题原信息'):validate_teaching_plan(plan,inv)
+
+
+def test_production_binds_original_objects_from_facts_before_review(tmp_path):
+    from sourceloom.production import Production
+    inv,plan=lesson();plan['units'][0]['object_ids']=['m']
+    original=copy.deepcopy(plan)
+    job={'teaching_version':2,'transformation_mode':'rewrite','inventory':inv}
+    engine=Production(Store(tmp_path),{})
+    validated=engine.validate_plan(job,plan)
+    assert validated['units'][0]['object_ids']==['m','s']
+    assert validated['units'][0]['stages']==original['units'][0]['stages']
+    assert validated['units'][0]['obligation_ids']==['f']
+    assert plan==original
+    assert engine.validate_plan(job,validated)==validated
 
 
 def test_invalid_end_matter_flag_is_removed_but_original_fact_remains_assigned():

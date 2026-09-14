@@ -152,6 +152,10 @@ class Provider:
             'after writing and must not be demanded as already demonstrated by a plan. An outline should not be judged '
             'as if it were final prose. Do not confuse observations that say a requirement IS satisfied with errors.\n')
         payload = dict(payload)
+        if isinstance(payload.get('claims'),list) and 'decisions' in schema.get('properties',{}):
+            # Make one-verdict-per-claim cardinality explicit in the transport too.
+            schema=json.loads(json.dumps(schema))
+            schema['properties']['decisions'].update(minItems=len(payload['claims']),maxItems=len(payload['claims']))
         if job.get('transformation_mode')=='rewrite':
             payload['transformation_mode']='faithful_rewrite'
             payload['verified_terminology']=job.get('verified_terminology',[])
@@ -421,7 +425,7 @@ class Provider:
                             job['calls'][-1].update(status='uncertain',error_code=body.get('errorCode'),
                                 response_blob=self.store.blob(json.dumps(body,ensure_ascii=False).encode()))
                             self.store.put_job(job)
-                            messages={'codex_quota_exhausted':'当前模型订阅额度已耗尽，本次没有返回正文',
+                            messages={'codex_quota_exhausted':'转发服务报告本次所用通道额度耗尽，未返回正文；这不代表全部账号或订阅都不可用',
                                       'chatgpt_delivery_uncertain':'无法确认聊天消息是否送达，已保留原请求，未自动重发'}
                             raise Uncertain(messages.get(body.get('errorCode'),"上游未成功完成，状态："+body["status"]))
                         time.sleep(2)

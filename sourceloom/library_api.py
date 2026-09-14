@@ -120,7 +120,7 @@ def register(app, store, config):
             j=dict(zip(fields,json.loads(row[0]))) if row else None
             if j:
                 j['call_count']=row[1]
-                messages={'codex_quota_exhausted':'当前模型订阅额度已耗尽，本次没有返回正文',
+                messages={'codex_quota_exhausted':'转发服务报告本次所用通道额度耗尽，未返回正文；这不代表全部账号或订阅都不可用',
                           'chatgpt_delivery_uncertain':'无法确认聊天消息是否送达，已保留原请求，未自动重发'}
                 if row[2] in messages:j['error']=messages[row[2]]
         else:j=latest_production(pid)
