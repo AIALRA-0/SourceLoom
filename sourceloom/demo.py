@@ -31,8 +31,8 @@ def create_demo(store):
     blocks=[]
     for n,o in enumerate(inv["objects"]):
         blocks.append(dict(id=f"block-{n+1}",unit_id="unit-1",kind="object" if o["kind"]=="table" else "source",
-                           markdown="" if o["kind"]=="table" else o["text"],obligation_ids=[inv["obligations"][n]["id"]],
-                           object_ids=[o["id"]] if o["kind"] in {"table","link","image","formula","code"} else [],
+                           markdown="" if o["kind"]=="table" else ("# "+o["text"] if o["kind"]=="heading" else o["text"]),obligation_ids=[inv["obligations"][n]["id"]],
+                           object_ids=[o["id"]] if o["kind"] in {"table","link","image","formula","code","heading"} else [],
                            evidence=[dict(source_id=o["id"],quote=o["text"])] if o["text"] else []))
     blocks.extend([
         dict(id="example-1",unit_id="unit-1",kind="example",markdown="### 一步一步计算\n\n- 第一步，保留不能加速部分的 20 毫秒\n- 第二步，把可加速部分的 80 毫秒平均分成两份，得到 40 毫秒\n- 第三步，把 20 毫秒与 40 毫秒相加，得到 60 毫秒\n\n只有后一个部分变快，所以整体耗时不会减半",obligation_ids=[],object_ids=[],evidence=[]),

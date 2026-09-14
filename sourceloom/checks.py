@@ -1,6 +1,7 @@
 """Deterministic checks make narrowly scoped claims, never semantic guarantees."""
 
 import copy
+import re
 from .contracts import Draft, Patch, Plan
 from .store import Conflict, digest
 
@@ -23,7 +24,7 @@ def validate_plan(plan, inventory):
     return plan
 
 
-def inspect_draft(inventory, draft, plan=None):
+def inspect_draft(inventory, draft, plan=None, require_heading_structure=False):
     findings = []
     def error(code, message, block_id="", obligation_id=""):
         findings.append(dict(id=f"mechanical-{len(findings)+1}", severity="error", code=code,
@@ -85,6 +86,14 @@ def inspect_draft(inventory, draft, plan=None):
     for sid, src in sources.items():
         if src["kind"] in {"image", "table", "code", "formula", "link", "page", "attachment", "footnote"} and sid not in object_coverage:
             error("protected_object", "受保护对象没有插入候选", obligation_id=next((o["id"] for o in obligations.values() if o["object_id"]==sid), ""))
+        if require_heading_structure and src['kind']=='heading' and not any(
+                sid in b['object_ids'] and (
+                    (b['kind']=='source' and not b['markdown'].strip()) or
+                    any(re.match(r'^ {0,3}#{1,6}\s+\S',line)
+                        for line in b['markdown'].splitlines()))
+                for b in parsed['blocks']):
+            error('heading_structure','原文标题没有关联到改写正文的标题位置',
+                  obligation_id=next((o['id'] for o in obligations.values() if o['object_id']==sid),''))
     return findings
 
 
@@ -112,7 +121,8 @@ def review_complete(project):
 
 
 def release_issues(project):
-    issues = inspect_draft(project["inventory"], project["draft"], project.get("plan"))
+    issues = inspect_draft(project["inventory"], project["draft"], project.get("plan"),
+                           require_heading_structure=(project.get('production') or {}).get('teaching_version',0)>=2)
     if project["inventory"]["unknown"]:
         issues.append(dict(code="unknown",message="仍有接入或对象未知项"))
     if not project["inventory"].get("inventory_review"):

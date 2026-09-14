@@ -79,6 +79,46 @@ def validate_teaching_plan(plan, inventory):
     return plan
 
 
+def unmark_nonmetadata_document_info(plan, inventory):
+    """Remove an invalid end-matter flag without dropping its source or facts."""
+    result = copy.deepcopy(plan)
+    sources = {o['id']: o for o in inventory['objects']}
+    obligations = inventory['obligations']
+    removed = []
+    for unit in result['units']:
+        kept = []
+        for sid in unit.get('document_info_ids', []):
+            if sid not in sources:
+                raise ValueError('规划引用不存在的源对象')
+            if sources[sid]['kind'] == 'metadata':
+                kept.append(sid)
+                continue
+            removed.append(sid)
+            if sid not in unit['object_ids']:
+                unit['object_ids'].append(sid)
+            for fact in obligations:
+                if fact['object_id'] == sid and fact['id'] not in unit['obligation_ids']:
+                    unit['obligation_ids'].append(fact['id'])
+        unit['document_info_ids'] = kept
+    return result, sorted(set(removed))
+
+
+def mark_known_document_metadata(plan, inventory):
+    """Keep parser-identified page furniture in end matter, with its facts."""
+    result=copy.deepcopy(plan)
+    sources={o['id']:o for o in inventory['objects']}
+    fact_sources={f['id']:f['object_id'] for f in inventory['obligations']}
+    marked=[]
+    for unit in result['units']:
+        claimed=set(unit['object_ids'])|{fact_sources[fid] for fid in unit['obligation_ids'] if fid in fact_sources}
+        for sid in sorted(claimed):
+            if sources.get(sid,{}).get('kind')!='metadata' or sid in unit['document_info_ids']:
+                continue
+            unit['document_info_ids'].append(sid)
+            marked.append(sid)
+    return result,sorted(set(marked))
+
+
 def arrange_document_info(draft, plan):
     """Move only explicitly authored info blocks; never move or rewrite source facts."""
     result = copy.deepcopy(draft)
@@ -91,7 +131,15 @@ def arrange_document_info(draft, plan):
     return result
 
 
-def teaching_review_contract(review, draft, plan):
+def teaching_body_blocks(draft, inventory=None):
+    """Page-only source blocks interrupt the draft but not the lesson chain."""
+    metadata={o['id'] for o in inventory['objects'] if o['kind']=='metadata'} if inventory else set()
+    return [b for b in draft['blocks'] if b['kind']!='document_info' and not (
+        b['kind']=='source' and b.get('object_ids') and set(b['object_ids'])<=metadata and
+        {e['source_id'] for e in b.get('evidence',[]) if e.get('source_id')}<=metadata)]
+
+
+def teaching_review_contract(review, draft, plan, inventory=None):
     """Reject invented citations before interpreting a review as teaching feedback."""
     review=TeachingReview.model_validate(review).model_dump()
     blocks={b['id']:b for b in draft['blocks']}
@@ -103,7 +151,7 @@ def teaching_review_contract(review, draft, plan):
     for c in review['checks']:
         if c['status']!='not_applicable' and not exact(c['block_ids'],c['quotes']):
             errors.append('check '+c['category']+' contains a non-verbatim quote or unknown block')
-    body=[b for b in draft['blocks'] if b['kind']!='document_info']
+    body=teaching_body_blocks(draft,inventory)
     pairs={(a['id'],b['id']) for a,b in zip(body,body[1:])}
     actual=[(t['before_id'],t['after_id']) for t in review['transitions']]
     if len(actual)!=len(pairs) or set(actual)!=pairs:
@@ -119,7 +167,7 @@ def teaching_review_contract(review, draft, plan):
     return errors
 
 
-def teaching_issues(review, draft, plan):
+def teaching_issues(review, draft, plan, inventory=None):
     review = TeachingReview.model_validate(review).model_dump()
     blocks = {b['id']: b for b in draft['blocks']}
     issues = []
@@ -138,7 +186,7 @@ def teaching_issues(review, draft, plan):
             issues.append('必要教学检查不能用不适用跳过：'+c['category'])
         if c['status']!='not_applicable' and not evidenced(c['block_ids'],c['quotes']):
             issues.append('教学判断没有对应实际正文证据')
-    body = [b for b in draft['blocks'] if b['kind']!='document_info']
+    body = teaching_body_blocks(draft,inventory)
     pairs = {(a['id'],b['id']) for a,b in zip(body,body[1:])}
     transitions = review['transitions']
     if len(transitions)!=len(pairs) or {(t['before_id'],t['after_id']) for t in transitions}!=pairs:
@@ -163,9 +211,10 @@ def repair_units(review, plan):
     order = [u['id'] for u in plan['units']]
     if not ids:
         raise ValueError('教学审查未提供可定位的修复范围')
-    positions = [order.index(u) for u in ids]
-    if set(range(min(positions),max(positions)+1)) != set(positions):
-        raise ValueError('教学修复范围不连续，不能顺带改写无关主题')
+    if not ids<=set(order):
+        raise ValueError('教学审查引用不存在的教学单元')
+    # Disjoint findings may repair only their cited units. validate_replan and
+    # the writer preserve every intervening unit byte-for-byte.
     return [u for u in order if u in ids]
 
 

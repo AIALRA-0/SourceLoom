@@ -149,6 +149,10 @@ def test_mdn_frontmatter_is_not_a_heading_and_links_keep_original_and_published_
     link=next(o for o in inv['objects'] if o['kind']=='link')
     assert link['original_target']=='/en-US/docs/Test'
     assert link['target']=='https://developer.mozilla.org/en-US/docs/Test'
+    from sourceloom.writing import protected_objects
+    rendered=safe_html(markdown_renderer().render(protected_objects(inv)[link['id']]))
+    assert 'href="https://developer.mozilla.org/en-US/docs/Test"' in rendered
+    assert '原始链接目标：/en-US/docs/Test' in rendered
     assert s.read_blob(inv['originals'][0]['sha256'])==source
 
 

@@ -57,6 +57,33 @@ def decode(raw):
     return raw.decode("utf-8-sig", errors="strict")
 
 
+def attach_markdown_fences(objects, text, tokens=None):
+    """Bind exact fenced source syntax to matching parsed code objects."""
+    tokens=tokens if tokens is not None else MarkdownIt("commonmark", {"html":True}).enable("table").parse(text)
+    lines=text.splitlines(keepends=True)
+    code_objects=[o for o in objects if o['kind']=='code']
+    next_code=0
+    attached=0
+    for token in tokens:
+        if token.type!='fence' or not token.map:
+            continue
+        info=token.info.strip()
+        language=info.split(None,1)[0] if info else ''
+        for index in range(next_code,len(code_objects)):
+            code=code_objects[index]
+            if (code['text'].strip('\n')==token.content.strip('\n') and
+                    code.get('language','')==language):
+                raw=''.join(lines[token.map[0]:token.map[1]])
+                if code.get('fence_raw') and code['fence_raw']!=raw:
+                    raise ValueError('同一代码对象的原始围栏记录不一致')
+                code['fence_raw']=raw
+                code['fence_info']=info
+                next_code=index+1
+                attached+=1
+                break
+    return attached
+
+
 def intake(store, uploads, source_url=None, asset_aliases=None):
     files = {}
     originals = []
@@ -205,8 +232,13 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                     if slug and source_url and source_url.startswith('https://raw.githubusercontent.com/mdn/content/'):
                         document_base='https://developer.mozilla.org/en-US/docs/'+slug[1].strip()
             if ext in {"html", "htm", "md", "markdown"}:
-                html = MarkdownIt("commonmark", {"html":True}).enable("table").render(text) if ext in {"md", "markdown"} else text
+                markdown = MarkdownIt("commonmark", {"html":True}).enable("table") if ext in {"md", "markdown"} else None
+                tokens=markdown.parse(text) if markdown else []
+                html = markdown.render(text) if markdown else text
+                first_object=len(objects)
                 html_objects(html, name)
+                if markdown:
+                    attach_markdown_fences(objects[first_object:],text,tokens)
                 if ext in {"md", "markdown"} and re.search(r"\[\^[^\]]+\]", text):
                     gap("脚注扩展语法以原文保留，需要核对归属", name)
                 if ext in {'md','markdown'}:
@@ -215,9 +247,18 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                     for n,m in enumerate(re.finditer(r'\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|(?<![\\$])\$(?!\$)[^\n$]+?(?<!\\)\$',prose)):
                         add('formula',m.group(),f'{name}/math-source[{n+1}]',syntax='tex')
             else:
+                rfc_layout=bool(re.search(r'(?m)^Request for Comments:\s*\d+\b',text[:1000]))
                 for n, part in enumerate(re.split(r"\n\s*\n", text)):
                     if part.strip():
-                        add("text", part, f"{name}/paragraph[{n+1}]")
+                        lines=[line for line in part.splitlines() if line.strip()]
+                        first_header=(len(lines)<=6 and lines[0].startswith('Network Working Group')
+                                      and any(re.match(r'^Request for Comments:\s*\d+\b',line) for line in lines))
+                        page_footer=(len(lines)==1 and bool(re.search(r'\[Page\s+\d+\]\s*$',lines[0])))
+                        running_header=(len(lines)==1 and bool(re.match(
+                            r'^RFC\s+\d+\s{2,}.+\s{2,}(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\s*$',
+                            lines[0])))
+                        kind='metadata' if rfc_layout and (first_header or page_footer or running_header) else 'text'
+                        add(kind, part, f"{name}/paragraph[{n+1}]")
         elif ext == "pdf":
             reader = PdfReader(BytesIO(raw))
             if reader.is_encrypted and not reader.decrypt(""):

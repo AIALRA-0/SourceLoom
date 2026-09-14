@@ -19,8 +19,18 @@ def canonical(draft):
 
 def available_draft(job):
     """Display received writing even when later processing failed; never publish it."""
+    def display_order(draft):
+        if not job.get('plan'):
+            return draft
+        from .pedagogy import arrange_document_info
+        try:
+            return arrange_document_info(draft,job['plan'])
+        except ValueError:
+            # Keep an invalid partial response visible for diagnosis; the
+            # production audit still rejects its misplaced content.
+            return draft
     if job.get('draft',{}).get('blocks'):
-        return job['draft']
+        return display_order(job['draft'])
     received=[job.get('results',{}).get('writer-'+u['id']) for u in job.get('plan',{}).get('units',[])]
     received=[r for r in received if r is not None]
     if not received:
@@ -35,7 +45,7 @@ def available_draft(job):
             # Keep a malformed response in the job, without breaking access to
             # any other already-renderable unit or asserting it is complete.
             continue
-    return {'blocks':blocks} if blocks else None
+    return display_order({'blocks':blocks}) if blocks else None
 
 
 def protected_objects(inventory):
@@ -48,8 +58,16 @@ def protected_objects(inventory):
             text='<img src="assets/'+o['resource_id']+'" alt="'+html.escape(o['text'] or o['locator'],quote=True)+'">'
         elif kind=='table' and o.get('raw','').lstrip().startswith('<table'):
             text=o['raw']
+        elif kind=='code' and o.get('fence_raw'):
+            text=o['fence_raw']
         elif kind=='link':
-            text='['+(o['text'] or o.get('target','')).replace('[','\\[').replace(']','\\]')+']('+o.get('target','')+')'
+            label=(o['text'] or o.get('target','')).replace('[','\\[').replace(']','\\]')
+            target=o.get('target','')
+            original_target=o.get('original_target',target)
+            raw_label=original_target if original_target else '（空字符串）'
+            title=(' "原始链接目标：'+raw_label.replace('\\','\\\\').replace('"','\\"')+'"'
+                   if original_target!=target else '')
+            text='['+label+']('+target+title+')'
         elif kind=='metadata' and o.get('raw','').startswith('<!--'):
             text=o['raw']
         else:
@@ -64,7 +82,7 @@ def expand_response(response):
         return response
     raw=FlatDraft.model_validate(response).model_dump(exclude_none=True)
     blocks=[]
-    previous_section=None
+    active_sections={}
     for block in raw['blocks']:
         nodes=[]
         for node in block['content']:
@@ -83,6 +101,13 @@ def expand_response(response):
             else:
                 normalized.append(node)
         nodes=normalized
+        local_ids={n['node_id'] for n in nodes}
+        orphaned_lists={n['parent_id'] for n in nodes if n['type']=='list_item' and
+                        n['parent_id'].endswith('-list') and n['parent_id'] not in local_ids}
+        # The model can omit an otherwise referenced list wrapper when returning
+        # a continuation block. Restore only that structural container. The item
+        # text stays byte-for-byte intact and later content review still applies.
+        nodes=[{'type':'list','node_id':key,'parent_id':'','ordered':False} for key in sorted(orphaned_lists)]+nodes
         declared_parents={n['parent_id'] for n in nodes}
         empty_heading=None
         for index,node in enumerate(nodes):
@@ -95,10 +120,9 @@ def expand_response(response):
                     nodes[index]=node|{'parent_id':empty_heading}
         local_ids={n['node_id'] for n in nodes}
         external={n['parent_id'] for n in nodes if n['parent_id'] and n['parent_id'] not in local_ids}
-        # A continuation of the immediately preceding section is already below
-        # that heading in canonical Markdown. Keep its block identity and text.
-        if (external and previous_section==(block['unit_id'],next(iter(external)))
-                and len(external)==1 and not any(n['type']=='section' for n in nodes)):
+        # The active preceding heading is already above this block in canonical
+        # Markdown. A newer heading supersedes it, preventing stale references.
+        if external and external=={active_sections.get(block['unit_id'])}:
             nodes=[n|{'parent_id':''} if n['parent_id'] in external else n for n in nodes]
         # The skill's term renderer itself emits one list item. Empty unordered
         # wrappers around terms must not create a second bullet or lose a term.
@@ -173,7 +197,7 @@ def expand_response(response):
         if visited!=set(by_id):
             raise ValueError('有排版节点无法从根节点到达')
         blocks.append({k:v for k,v in block.items() if k!='content'}|dict(content=content))
-        if rendered_sections:previous_section=(block['unit_id'],rendered_sections[-1])
+        if rendered_sections:active_sections[block['unit_id']]=rendered_sections[-1]
     return {'blocks':blocks}
 
 
@@ -306,9 +330,18 @@ def compose(bundle, response, inventory):
                 sources.setdefault(node['id'],original_text[node['id']])
             elif node['type']=='section':
                 quoted_text(node['blocks'])
+    fenced_codes={o['id'] for o in inventory['objects'] if o['kind']=='code' and o.get('fence_raw')}
+    def restore_fence_syntax(nodes):
+        for node in nodes:
+            if node['type']=='source' and node['id'] in fenced_codes:
+                node['presentation']='raw'
+                for field in ('language','layout','caption'):node.pop(field,None)
+            elif node['type']=='section':
+                restore_fence_syntax(node['blocks'])
     for b in body['blocks']:
         lowered_sources.clear()
         quoted_text(b['content'])
+        restore_fence_syntax(b['content'])
         format_terms(b['content'])
         placed=list(placed_sources(b['content']))
         selected={sid:sources[sid] for sid in placed if sid in sources}

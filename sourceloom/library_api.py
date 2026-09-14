@@ -4,6 +4,7 @@ import copy
 import json
 import time
 import html
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -16,12 +17,51 @@ from .store import Conflict, identity, digest
 from .writing import canonical, available_draft
 
 
+def source_locations(project):
+    """Small, read-only hints for finding draft evidence in the saved original."""
+    inventory=project['inventory']
+    objects={o['id']:o for o in inventory['objects']}
+    originals=inventory['originals']
+    locations={}
+    for block in project['draft']['blocks']:
+        candidates=[e['source_id'] for e in block.get('evidence',[]) if e.get('source_id')]
+        candidates.extend(block.get('object_ids',[]))
+        for sid in dict.fromkeys(candidates):
+            source=objects.get(sid)
+            if not source:continue
+            original=next((o for o in originals if source['locator']==o['name'] or source['locator'].startswith(o['name']+'/')),None)
+            if not original:continue
+            quote=next((e.get('quote','') for e in block.get('evidence',[]) if e.get('source_id')==sid and e.get('quote')),None)
+            quote=quote or source.get('text','')
+            quote=' '.join(quote.split())[:360]
+            page=re.search(r'/page\[(\d+)\]',source['locator'])
+            locations[block['id']]={
+                'source_id':sid,'quote':quote,'file':original['name'],
+                'original_key':original['sha256'],'page':int(page[1]) if page else None,
+                'format':Path(original['name']).suffix.lower().lstrip('.'),
+            }
+            break
+    return locations
+
+
 def register(app, store, config):
     queue=Queue(store)
+
+    def latest_production(pid):
+        with store.connect() as cx:
+            row=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     @app.get('/api/library')
     def tree(trash:bool=False):
         return queue.tree(trash)
+
+    @app.get('/api/projects/{pid}/estimate')
+    def estimate(pid:str):
+        p=store.get(pid)
+        if not p.get('inventory'):
+            raise Conflict('先保存原件才能估算处理规模')
+        return Queue.estimate(p['inventory'])|{'document_budget_usd':p['budget_usd']}
 
     @app.post('/api/library/actions')
     def library_action(body:dict):
@@ -57,38 +97,48 @@ def register(app, store, config):
     @app.get('/api/projects/{pid}/production')
     def production(pid:str):
         p=store.get(pid)
-        jobs=[j for j in store.jobs(pid) if j['role']=='production']
-        if not jobs:
+        j=latest_production(pid)
+        if not j:
             return {'status':'not_started'}
-        j=jobs[-1]
         try:
             available=available_draft(j)
         except ValueError:
             available=None
+        displayed=p.get('draft') or available
+        output_text=canonical(displayed) if displayed else ''
         return {k:j.get(k) for k in ('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')} | {
-            'call_count':len(j['calls']),'has_output':bool(available),
-            'output_digest':digest(canonical(available).encode()) if available else None,
+            'call_count':len(j['calls']),'has_output':bool(displayed),
+            'output_chars':len(output_text),
+            'output_digest':digest(output_text.encode()) if displayed else None,
             'formal':(p.get('production') or {}).get('status')=='completed'}
 
     @app.get('/api/projects/{pid}/editable')
     def editable(pid:str):
         p=store.get(pid)
         if not p.get('draft'):
-            jobs=[j for j in store.jobs(pid) if j['role']=='production']
-            if jobs:
-                p=p|dict(draft=available_draft(jobs[-1]),inventory=jobs[-1].get('inventory'),plan=jobs[-1].get('plan'))
+            j=latest_production(pid)
+            if j:
+                p=p|dict(draft=available_draft(j),inventory=j.get('inventory'),plan=j.get('plan'))
         if not p.get('draft'):
             raise Conflict('尚无可编辑正文')
         return {k:p.get(k) for k in ('id','revision','draft','active_job')}
+
+    @app.get('/api/projects/{pid}/source-locations')
+    def locations(pid:str):
+        p=store.get(pid)
+        if not p.get('draft'):
+            j=latest_production(pid)
+            if j:
+                p=p|dict(draft=available_draft(j))
+        return source_locations(p) if p.get('draft') and p.get('inventory') else {}
 
     @app.get('/api/projects/{pid}/output')
     def output(pid:str,format:str='html'):
         p=store.get(pid)
         if not p.get('draft'):
-            jobs=[j for j in store.jobs(pid) if j['role']=='production']
-            if not jobs:
+            j=latest_production(pid)
+            if not j:
                 raise Conflict('尚未生成正文')
-            j=jobs[-1]
             available=available_draft(j)
             if not available:
                 raise Conflict('尚未生成正文')

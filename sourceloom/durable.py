@@ -1,6 +1,7 @@
 """Persistent work ownership; browser lifetime has no execution authority."""
 
 import json
+import math
 import time
 
 from .store import Conflict, identity
@@ -24,6 +25,16 @@ class Queue:
         from .library_store import Library
         self.library=Library(store)
 
+    @staticmethod
+    def estimate(inventory, max_calls=24):
+        pages=sum(o['kind'] in {'page','image'} and bool(o.get('resource_id')) for o in inventory['objects'])
+        visual_batches=math.ceil(pages/3)
+        minimum_calls=8+visual_batches*2
+        source_chars=sum(len(o.get('text','')) for o in inventory['objects'])
+        return dict(source_chars=source_chars,source_objects=len(inventory['objects']),
+                    visual_batches=visual_batches,minimum_calls=minimum_calls,
+                    max_calls=max_calls,feasible=minimum_calls<=max_calls)
+
     def enqueue(self, pid, bundle):
         now = time.time()
         with self.store.connect() as cx:
@@ -38,6 +49,9 @@ class Queue:
                 return self.store.job(p['active_job'])
             if not p.get('inventory'):
                 raise Conflict('先上传文件或导入网页')
+            estimate=self.estimate(p['inventory'])
+            if not estimate['feasible']:
+                raise Conflict(f"原件至少需要 {estimate['minimum_calls']} 次调用完成基本视觉与正文流程，超过单篇 {estimate['max_calls']} 次上限，请先缩小本次材料范围")
             if p.get('draft'):
                 raise Conflict('已有正文，请建立材料副本或修改当前版本')
             if cx.execute("SELECT 1 FROM production_control WHERE project=? AND status='uncertain'", (pid,)).fetchone():
@@ -103,6 +117,8 @@ class Queue:
             call=job['calls'][-1] if job['calls'] else {}
             # Migrate the known old checkpoint bug: the trial circuit rejected
             # the request before Provider created any call or dispatched bytes.
+            no_call_preflight=(not job['calls'] and
+                job.get('error')=='本批同类失败已连续发生两次，先修正原因，未发送新请求')
             if (job.get('pending') and call.get('step_key')!=job['pending'] and
                     job.get('error')=='本批同类失败已连续发生两次，先修正原因，未发送新请求'):
                 job.setdefault('preflight_stops',[]).append(dict(key=job['pending'],dispatched=False,
@@ -119,7 +135,7 @@ class Queue:
                     job.setdefault('rejected_resubmissions',{})[key]=call['id']
                 job.pop('pending',None)
             returned_invalid=call.get('status')=='invalid' and call.get('finish_reason') in {'stop','tool_calls'} and bool(call.get('response_blob'))
-            if not rejected and ((job.get('pending') and not returned_invalid) or (call.get('status') not in {'completed','recovered'} and not returned_invalid)):
+            if not rejected and not no_call_preflight and ((job.get('pending') and not returned_invalid) or (call.get('status') not in {'completed','recovered'} and not returned_invalid)):
                 raise Conflict('原调用没有完整结果，不能重新发送')
             p=json.loads(cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()[0])
             if p['active_job'] or p.get('trashed') or p['revision']!=job['base_revision']:
@@ -130,6 +146,183 @@ class Queue:
             cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
             cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
             cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),p['id']))
+        return job
+
+    def recheck_plan_review(self, jid):
+        """Re-evaluate a saved repair plan after fixing old-prose review confusion."""
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0])
+            old_key=f"teaching-replan-review-{job.get('repair_rounds')}"
+            if (job.get('role')!='production' or job.get('status')!='needs_attention' or
+                    job.get('stage')!='teaching_replan_review' or old_key not in job.get('results',{}) or
+                    job.get('pending')):
+                raise Conflict('当前没有可按新规则重新核对的已保存修复规划')
+            if job.get('plan_review_rechecks'):
+                result=job['results'].get(old_key+'-route-v2',{})
+                decision_key=old_key.replace('review','decision')
+                if job.get('plan_claim_recheck'):
+                    decisions=job['results'].get(decision_key,{}).get('decisions',[])
+                    if (job.get('plan_original_recheck') or result.get('status')!='ready' or
+                            not decisions or not any(d['verdict']=='unknown' for d in decisions) or
+                            any(d['verdict']=='confirmed_error' for d in decisions) or
+                            f"teaching-replan-original-decision-{job['repair_rounds']}" in job['results']):
+                        raise Conflict('当前没有可对原件字符重新裁决的未知项')
+                    job['plan_original_recheck']={'prior_decision':decision_key,
+                                                 'unknown_indices':[d['claim_index'] for d in decisions if d['verdict']=='unknown']}
+                else:
+                    if (result.get('status')!='ready' or not result.get('issues') or decision_key in job['results']):
+                        raise Conflict('当前没有可逐条裁决的正面审核记录')
+                    job['plan_claim_recheck']={'old_key':old_key+'-route-v2','old_issues':result['issues']}
+            row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            if not row:raise KeyError(job['project'])
+            project=json.loads(row[0])
+            if project.get('active_job') or project.get('trashed') or project['goal']!=job['goal']:
+                raise Conflict('材料已变化，不能重新核对原规划')
+            if project['revision']!=job['base_revision']:
+                receipt=project.get('production') or {}
+                if (project['revision']!=job['base_revision']+1 or receipt.get('job')!=jid or
+                        receipt.get('status')!='needs_attention' or receipt.get('revision')!=project['revision'] or
+                        project.get('draft')!=job.get('draft') or
+                        project.get('inventory',{}).get('digest')!=job.get('inventory',{}).get('digest')):
+                    raise Conflict('已保存候选或原件发生变化，不能继续原任务')
+                continuation=dict(revision=job['base_revision'],candidate_revision=project['revision'],
+                                  original_source_digest=job['source_digest'])
+                job.setdefault('continued_candidate_revisions',[]).append(continuation)
+                job['continued_from_saved_candidate']=continuation
+                job['base_revision']=project['revision']
+                job['source_digest']=project['inventory']['digest']
+            elif project.get('inventory',{}).get('digest')!=job['source_digest']:
+                raise Conflict('原件已变化，不能重新核对原规划')
+            if not job.get('plan_review_rechecks'):
+                job['plan_review_rechecks']=[{'old_key':old_key,'old_issues':job.get('quality_issues',[])}]
+            job['status']='queued'
+            project.update(active_job=jid,state='queued')
+            cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(project,ensure_ascii=False),project['id']))
+        return job
+
+    def recheck_teaching_review(self, jid, fresh=False):
+        """Recheck a saved review, or request one fresh bounded review for invalid evidence."""
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0])
+            key=f"teaching-contract-{job.get('content_generation',0)}-{job.get('repair_rounds',0)}"
+            if (job.get('role')!='production' or job.get('status')!='needs_attention' or
+                    job.get('stage')!='teaching' or key not in job.get('results',{}) or
+                    job.get('pending') or job.get('teaching_contract_rechecks') or
+                    not job.get('quality_issues') or
+                    not all(issue.startswith('教学审查证据仍无法核对：') for issue in job['quality_issues'])):
+                raise Conflict('当前没有可按新证据规则复核的完整教学审核')
+            row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            if not row:raise KeyError(job['project'])
+            project=json.loads(row[0])
+            if project.get('active_job') or project.get('trashed') or project['goal']!=job['goal']:
+                raise Conflict('材料已变化，不能重新核对原审核')
+            if project['revision']!=job['base_revision']:
+                receipt=project.get('production') or {}
+                if (project['revision']!=job['base_revision']+1 or receipt.get('job')!=jid or
+                        receipt.get('status')!='needs_attention' or receipt.get('revision')!=project['revision'] or
+                        project.get('draft')!=job.get('draft') or
+                        project.get('inventory',{}).get('digest')!=job.get('inventory',{}).get('digest')):
+                    raise Conflict('已保存候选或原件发生变化，不能继续原任务')
+                continuation=dict(revision=job['base_revision'],candidate_revision=project['revision'],
+                                  original_source_digest=job['source_digest'])
+                job.setdefault('continued_candidate_revisions',[]).append(continuation)
+                job['continued_from_saved_candidate']=continuation
+                job['base_revision']=project['revision']
+                job['source_digest']=project['inventory']['digest']
+            elif project.get('inventory',{}).get('digest')!=job['source_digest']:
+                raise Conflict('原件已变化，不能重新核对原审核')
+            job['teaching_contract_rechecks']=[{'saved_key':key,'old_issues':job['quality_issues'],
+                                                'fresh':fresh}]
+            if fresh:
+                job['teaching_evidence_retry']=1
+                job.pop('use_saved_teaching_contract',None)
+            else:
+                job['use_saved_teaching_contract']=True
+            job['status']='queued'
+            job['quality_issues']=[]
+            project.update(active_job=jid,state='queued')
+            cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(project,ensure_ascii=False),project['id']))
+        return job
+
+    def repair_teaching_replan(self, jid):
+        """One bounded new plan after a saved independent repair-plan rejection."""
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0])
+            key=f"teaching-replan-review-{job.get('repair_rounds')}-route-v2"
+            if (job.get('role')!='production' or job.get('status')!='needs_attention' or
+                    job.get('stage')!='teaching_replan_review' or
+                    not job.get('regeneration') or not job.get('quality_issues') or
+                    job.get('teaching_replan_attempts') or key not in job.get('results',{}) or
+                    job.get('pending')):
+                raise Conflict('当前没有可按独立意见再次修正的教学规划')
+            row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            if not row:raise KeyError(job['project'])
+            project=json.loads(row[0])
+            if project.get('active_job') or project.get('trashed') or project['goal']!=job['goal']:
+                raise Conflict('材料已变化，不能继续原规划')
+            if project['revision']!=job['base_revision']:
+                receipt=project.get('production') or {}
+                if (project['revision']!=job['base_revision']+1 or receipt.get('job')!=jid or
+                        receipt.get('status')!='needs_attention' or
+                        receipt.get('revision')!=project['revision'] or
+                        project.get('draft')!=job.get('draft') or
+                        project.get('inventory',{}).get('digest')!=job.get('inventory',{}).get('digest')):
+                    raise Conflict('已保存候选或原件发生变化，不能继续原任务')
+                job['base_revision']=project['revision']
+                job['source_digest']=project['inventory']['digest']
+            elif project.get('inventory',{}).get('digest')!=job['source_digest']:
+                raise Conflict('原件已变化，不能继续原规划')
+            job['teaching_replan_attempts']=1
+            job['teaching_replan_repair_issues']=job['quality_issues']
+            job.update(status='queued',stage='teaching_replan_repair',quality_issues=[])
+            project.update(active_job=jid,state='queued')
+            cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(project,ensure_ascii=False),project['id']))
+        return job
+
+    def retry_truncated_inventory(self, jid, new_output_limit):
+        """One revised-cap attempt after a paid, known-truncated inventory call."""
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0])
+            call=job['calls'][-1] if job.get('calls') else {}
+            if (job.get('role')!='production' or job.get('status')!='failed' or
+                    job.get('stage')!='inventory' or job.get('pending')!='inventory' or
+                    job.get('inventory_cap_retry') or call.get('status')!='truncated' or
+                    call.get('finish_reason')!='length' or not call.get('wire_request_blob')):
+                raise Conflict('当前没有可按增大输出上限重试的已知截断清单')
+            previous=json.loads(self.store.read_blob(call['wire_request_blob']))['max_tokens']
+            if new_output_limit<=previous:raise Conflict('新的输出上限必须高于上次截断上限')
+            paid=cx.execute('SELECT actual FROM spending WHERE id=?',(call['id'],)).fetchone()
+            if not paid or paid['actual'] is None:raise Conflict('上次用量尚未结算，不能重新提交')
+            row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            if not row:raise KeyError(job['project'])
+            project=json.loads(row[0])
+            if project.get('active_job') or project.get('trashed') or project['revision']!=job['base_revision']:
+                raise Conflict('材料已变化，不能继续原任务')
+            job['inventory_cap_retry']={'prior_call':call['id'],'prior_limit':previous,'new_limit':new_output_limit}
+            job.pop('pending',None)
+            job.update(status='queued',error=None)
+            project.update(active_job=jid,state='queued')
+            cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(project,ensure_ascii=False),project['id']))
         return job
 
     def recover_original(self, jid, config):
@@ -211,8 +404,12 @@ class Queue:
     def tree(self, trash=False):
         with self.store.connect() as cx:
             folders=[dict(r) for r in cx.execute('SELECT * FROM library_folders WHERE trashed=? ORDER BY name',(int(trash),))]
-        projects=[{k:p.get(k) for k in ('id','title','folder','state','active_job','revision','library_revision','created','trashed')}
-                  for p in self.store.list() if bool(p.get('trashed'))==trash]
+            fields=('id','title','folder','state','active_job','revision','library_revision','created','trashed')
+            # SQLite parses the large project JSON once and returns only the
+            # nine fields needed by the tree. Source objects stay in the project.
+            expression='json_extract(body,'+','.join("'$."+field+"'" for field in fields)+')'
+            rows=cx.execute('SELECT '+expression+' FROM projects WHERE COALESCE(json_extract(body,\'$.trashed\'),0)=? ORDER BY rowid DESC',(int(trash),))
+            projects=[dict(zip(fields,json.loads(row[0]))) for row in rows]
         return {'folders':folders,'documents':projects}
 
     def folder(self, name, parent=None, fid=None, revision=None):

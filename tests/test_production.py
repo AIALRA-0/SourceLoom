@@ -61,7 +61,7 @@ def test_style_review_precedes_independent_fidelity_and_failure_never_publishes(
     job.update(stage='style',draft={'blocks':[block]},inventory=inv,plan={'units':[]})
     report={'format':{'findings':[],'candidates':[]}}
     monkeypatch.setattr('sourceloom.production.scan',lambda *a:report)
-    monkeypatch.setattr('sourceloom.production.inspect_draft',lambda *a:[])
+    monkeypatch.setattr('sourceloom.production.inspect_draft',lambda *a,**kw:[])
     monkeypatch.setattr('sourceloom.production.rule_catalog',lambda *a:{'FMT-001':{}})
     engine=Production(store,{})
     calls=[]

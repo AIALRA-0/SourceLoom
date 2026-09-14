@@ -50,6 +50,23 @@ class PlanReview(Strict):
     essential_missing_sources: list[str]
 
 
+class CoverageAssignment(Strict):
+    fact_id: str
+    unit_id: str
+
+
+class CoverageStageAddition(Strict):
+    unit_id: str
+    after_stage: str
+    new_stage: str = Field(min_length=1)
+
+
+class CoveragePatch(Strict):
+    assignments: list[CoverageAssignment] = Field(min_length=1)
+    stage_additions: list[CoverageStageAddition]
+    rationale: str = Field(min_length=1)
+
+
 class SourceReference(Strict):
     source_id: str
 

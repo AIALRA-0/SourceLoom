@@ -67,7 +67,8 @@ def create_app(config=None):
         response=await call_next(request)
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["Referrer-Policy"]="no-referrer"
-        response.headers["Cache-Control"]="no-store"
+        response.headers["Cache-Control"]=("private, max-age=0, must-revalidate"
+                                           if request.url.path.startswith('/static/') else "no-store")
         if "Content-Security-Policy" not in response.headers:
             response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
         return response
@@ -114,7 +115,8 @@ def create_app(config=None):
     @app.get("/api/projects/{pid}")
     def detail(pid:str):
         p=store.get(pid)
-        p["mechanical_findings"]=inspect_draft(p["inventory"],p["draft"],p["plan"]) if p["draft"] else []
+        p["mechanical_findings"]=inspect_draft(p["inventory"],p["draft"],p["plan"],
+            require_heading_structure=(p.get('production') or {}).get('teaching_version',0)>=2) if p["draft"] else []
         p["release_issues"]=release_issues(p) if p["draft"] else []
         p["costs"]=store.costs(pid)
         p["jobs"]=store.jobs(pid)

@@ -166,7 +166,12 @@ class Store:
             if total_budget is not None and all_spending+amount>total_budget+1e-9:
                 raise Conflict('累计测试预算已达上限，更换日期或项目不能重新获得额度')
             if subscription_calls is not None and body.get('channel') in {'router','codex-cli'}:
-                used=cx.execute("SELECT COUNT(*) FROM spending WHERE json_extract(body,'$.channel') IN ('router','codex-cli','subscription')").fetchone()[0]
+                # A confirmed pre-dispatch rejection did not consume a model
+                # subscription call. Keep its ledger row and zero settlement,
+                # but do not spend one of the user-authorized accepted calls.
+                used=cx.execute("SELECT COUNT(*) FROM spending WHERE json_extract(body,'$.channel') "
+                    "IN ('router','codex-cli','subscription') AND NOT "
+                    "(COALESCE(actual,-1)=0 AND COALESCE(json_extract(body,'$.status'),'')='rejected')").fetchone()[0]
                 if used>=subscription_calls:
                     raise Conflict('订阅测试请求次数已达累计上限')
             cx.execute("INSERT INTO spending(id,project,reserved,actual,status,body,created) VALUES(?,?,?,?,?,?,?)", (call_id, pid, amount, None, "reserved", json.dumps(body),time.time()))

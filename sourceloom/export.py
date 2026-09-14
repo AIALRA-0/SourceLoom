@@ -176,7 +176,8 @@ def editor_storage(raw):
 
 
 def export_zip(store, project, release=False):
-    findings = inspect_draft(project["inventory"], project["draft"], project.get("plan"))
+    findings = inspect_draft(project["inventory"], project["draft"], project.get("plan"),
+        require_heading_structure=(project.get('production') or {}).get('teaching_version',0)>=2)
     if findings:
         raise Conflict("候选仍有结构或来源错误，先修复再导出")
     if release and release_issues(project):

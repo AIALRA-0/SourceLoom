@@ -2,7 +2,7 @@ import copy
 import pytest
 from sourceloom.store import Store, Conflict
 from sourceloom.durable import Queue
-from sourceloom.pedagogy import validate_teaching_plan, teaching_issues, validate_replan, arrange_document_info
+from sourceloom.pedagogy import validate_teaching_plan, unmark_nonmetadata_document_info, mark_known_document_metadata, teaching_issues, validate_replan, arrange_document_info
 
 
 def lesson():
@@ -28,6 +28,30 @@ def test_adaptive_plan_preserves_functions_without_seven_section_template():
 def test_technical_facts_cannot_be_reclassified_as_document_info():
     inv,plan=lesson();plan['units'][0]['document_info_ids']=['s']
     with pytest.raises(ValueError,match='主题原信息'):validate_teaching_plan(plan,inv)
+
+
+def test_invalid_end_matter_flag_is_removed_but_original_fact_remains_assigned():
+    inv,plan=lesson()
+    plan['units'][0]['document_info_ids']=['s','m']
+    plan['units'][0]['object_ids'].remove('s')
+    plan['units'][0]['obligation_ids'].remove('f')
+    repaired,removed=unmark_nonmetadata_document_info(plan,inv)
+    assert removed==['s']
+    assert repaired['units'][0]['document_info_ids']==['m']
+    assert 's' in repaired['units'][0]['object_ids']
+    assert 'f' in repaired['units'][0]['obligation_ids']
+    assert validate_teaching_plan(repaired,inv)
+    assert plan['units'][0]['document_info_ids']==['s','m']
+
+
+def test_page_metadata_is_routed_to_end_matter_even_if_planner_forgets_flag():
+    inv,plan=lesson()
+    plan['units'][0]['document_info_ids']=[]
+    repaired,marked=mark_known_document_metadata(plan,inv)
+    assert marked==['m']
+    assert repaired['units'][0]['document_info_ids']==['m']
+    assert validate_teaching_plan(repaired,inv)
+    assert plan['units'][0]['document_info_ids']==[]
 
 
 def test_end_matter_selection_binds_all_metadata_facts_without_dropping_them():
@@ -122,6 +146,41 @@ def test_review_contract_rejects_invented_quotes_and_false_unit_scope():
     assert any('non-verbatim' in e for e in teaching_review_contract(review,draft,plan))
     review['findings']=[dict(unit_ids=['other'],block_ids=['b'],quotes=['再观察结果'],missing_understanding='没有展示结果',repair_direction='具体展示')]
     assert any('unit_ids' in e for e in teaching_review_contract(review,draft,plan))
+
+
+def test_metadata_source_is_assessed_but_excluded_from_lesson_transitions():
+    from sourceloom.pedagogy import teaching_review_contract,teaching_issues
+    inv,plan=lesson()
+    draft={'blocks':[
+        dict(id='a',unit_id='u',kind='explanation',markdown='先看一次操作',object_ids=[],evidence=[]),
+        dict(id='m',unit_id='u',kind='source',markdown='页面登记信息',object_ids=['m'],
+             evidence=[{'source_id':'m','quote':'页面登记信息'}]),
+        dict(id='b',unit_id='u',kind='explanation',markdown='再观察结果',object_ids=[],evidence=[])]}
+    review=dict(assessed_block_ids=['a','m','b'],checks=[],transitions=[
+        dict(before_id='a',after_id='b',before_quote='先看一次操作',after_quote='再观察结果',
+             relationship='同一操作的结果',status='connected')],findings=[])
+    assert not teaching_review_contract(review,draft,plan,inv)
+    assert '逐一检查前后内容' not in ' '.join(teaching_issues(review,draft,plan,inv))
+    assert teaching_review_contract(review,draft,plan)
+
+
+def test_disjoint_teaching_findings_select_only_cited_units():
+    from sourceloom.pedagogy import repair_units
+    plan={'units':[{'id':'u1'},{'id':'u2'},{'id':'u3'}]}
+    review={'findings':[{'unit_ids':['u1']},{'unit_ids':['u3']}]}
+    assert repair_units(review,plan)==['u1','u3']
+    assert 'u2' not in repair_units(review,plan)
+
+
+def test_partial_draft_displays_approved_page_info_after_the_lesson():
+    from sourceloom.writing import available_draft
+    info={'id':'page','unit_id':'u','kind':'document_info','markdown':'页面路径',
+          'evidence':[{'source_id':'m','quote':'页面路径'}]}
+    lesson={'id':'body','unit_id':'u','kind':'explanation','markdown':'先读主要概念','evidence':[]}
+    job={'plan':{'units':[{'id':'u','document_info_ids':['m']}]},
+         'draft':{'blocks':[info,lesson]}}
+    assert [b['id'] for b in available_draft(job)['blocks']]==['body','page']
+    assert [b['id'] for b in job['draft']['blocks']]==['page','body']
 
 
 @pytest.mark.parametrize('password',['','required-password'])

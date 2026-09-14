@@ -38,7 +38,18 @@ def parse_json(text):
     text = text.strip()
     if text.startswith("```") and text.endswith("```"):
         text = text.split("\n", 1)[1].rsplit("```",1)[0].strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as error:
+        # Some strict-tool responses append one unmatched closing brace after a
+        # complete artifact. Accept only that exact surplus; the caller still
+        # validates every field against the original schema.
+        if error.msg != 'Extra data':
+            raise
+        value, end = json.JSONDecoder().raw_decode(text)
+        if text[end:].strip() != '}':
+            raise
+        return value
 
 
 def deepseek_schema(schema):
@@ -344,7 +355,7 @@ class Provider:
                     if c.get('thinking_depth'):
                         task['chatgptWeb']['thinkingDepth']=c['thinking_depth']
                     task.pop('effort',None)
-                if len(task['objective'])>100000:
+                if len(task['objective'])>c.get('router_max_objective_chars',300000):
                     raise ValueError('完整技能与材料超过转发器输入上限，未截断或发送')
                 submission={"task":task,"metadata":{"project":"sourceloom","role":role,"call":call_id}}
                 if impossible_closed_schema(task['validation']['responseSchema']):

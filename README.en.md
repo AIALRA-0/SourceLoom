@@ -14,7 +14,7 @@
 
 SourceLoom preserves originals and separates inventory, planning, writing, review, and local repair before preparing material for ReadWeave
 
-Teaching planning and the document library have been updated, and 24 real materials have been collected and ingested. There are still **zero formally accepted automatic outputs**; existing automatic drafts have not passed every requirement. See [this iteration's inputs, outputs, and remaining work](reports/TEACHING_ITERATION.md)
+Teaching planning and the document library have been updated, and 24 real materials have been collected and ingested. There are still **zero formally accepted automatic outputs**; existing automatic drafts have not passed every requirement. See [real inputs, outputs, and independent review results](reports/AUTOMATIC_TRIAL.md)
 
 Earlier manually revised examples remain [historical examples](docs/REAL_CASES.md), not evidence of unattended automatic quality
 
@@ -31,12 +31,14 @@ Figure 1.1 The actual library interface, using synthetic material to demonstrate
 1. Import a paper, webpage, document, or archive containing its assets
 2. Save it in a folder and inspect the original
 3. Configure a provider and start generation; the server keeps processing after the page closes
-4. Reopen the material to compare its source and available output; stopped jobs keep any drafts already produced
+4. Reopen the material to compare its source and available output; click a right-hand section to locate its source on the left. Stopped jobs keep any drafts already produced
 5. Download the text or send an eligible candidate archive to ReadWeave
 
 Rename, move, duplicate, trash, and restore documents. Editing saves a new version and invalidates previous acceptance
 
 The tree supports context menus, keyboard navigation, multi-selection and nested-folder restoration. The full-document editor autosaves and detects concurrent edits. See [teaching and library changes](docs/TEACHING_AND_LIBRARY.md)
+
+See [the current iteration](docs/ITERATION_3.md) for long-source preflight, source navigation, and measured performance
 
 ## 3 Run locally
 
