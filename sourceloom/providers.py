@@ -12,6 +12,40 @@ from .store import Conflict, identity, digest
 from .skills import deploy_skill, load_bundle, full_prompt
 
 
+ROUTER_WEB_MAX_PROMPT_CHARACTERS = 4_000
+
+
+def router_task_prompt(task):
+    """Serialize the task fields exactly as Model Router sends them to ChatGPT."""
+    validation=task.get('validation',{})
+    contract={
+        'objective':task['objective'],
+        'required_context':task.get('requiredContext',[]),
+        'constraints':task.get('constraints',[]),
+        'expected_output':task.get('expectedOutput','Return the completed result.'),
+        'validation_checks':validation.get('checks',[]),
+        'acceptance_tests':validation.get('acceptanceTests',[]),
+        'permissions':task.get('permissions',{
+            'filesystem':'read','network':'none','allowedHosts':[],
+            'requireApprovalForWrites':True,'requireApprovalForExternalActions':True}),
+    }
+    return '\n\n'.join([
+        'Complete the following task contract and return only the final deliverable.',
+        'Do not delegate this task to another agent.',
+        json.dumps(contract,ensure_ascii=False,indent=2,separators=(',', ': ')),
+    ])
+
+
+def validate_router_web_prompt(task):
+    """Reject unsafe native browser pastes before any upstream dispatch starts."""
+    actual=len(router_task_prompt(task))
+    if actual>ROUTER_WEB_MAX_PROMPT_CHARACTERS:
+        raise ValueError(
+            f'网页审查的完整任务内容为 {actual} 个字符，超过稳定上限 '
+            f'{ROUTER_WEB_MAX_PROMPT_CHARACTERS}；未发送请求，请改用长输入 API 通道')
+    return actual
+
+
 def literal_chat_packet(text):
     """Deliver the complete original packet without introducing nested display fences."""
     return text
@@ -528,6 +562,7 @@ class Provider:
                     if c.get('thinking_depth'):
                         task['chatgptWeb']['thinkingDepth']=c['thinking_depth']
                     task.pop('effort',None)
+                    validate_router_web_prompt(task)
                 objective_limit=c.get('router_max_objective_chars',300000)
                 if c.get('execution_channel')=='chatgpt_web':objective_limit=min(objective_limit,100000)
                 if len(task['objective'])>objective_limit:
