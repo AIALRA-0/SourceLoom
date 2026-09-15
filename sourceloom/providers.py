@@ -11,6 +11,53 @@ from .store import Conflict, identity, digest
 from .skills import deploy_skill, load_bundle, full_prompt
 
 
+def reference_repeated_text(payload):
+    """Lossless references for repeated data, never for the unabridged skill."""
+    from collections import Counter
+    counts=Counter()
+    collision=False
+    def count(value):
+        nonlocal collision
+        if isinstance(value,str) and len(value)>=100:counts[value]+=1
+        elif isinstance(value,list):
+            for child in value:count(child)
+        elif isinstance(value,dict):
+            if any(key in value for key in ('verbatim_text_ref','verbatim_texts','verbatim_text_reference_rule')):collision=True
+            for child in value.values():count(child)
+    count(payload)
+    if collision:return payload
+    pool={text:'text-'+str(index) for index,(text,n) in enumerate(counts.items(),1) if n>1}
+    if not pool:return payload
+    def replace(value):
+        if isinstance(value,str) and value in pool:return {'verbatim_text_ref':pool[value]}
+        if isinstance(value,list):return [replace(child) for child in value]
+        if isinstance(value,dict):return {key:replace(child) for key,child in value.items()}
+        return value
+    return replace(payload)|{'verbatim_texts':{ref:text for text,ref in pool.items()},
+        'verbatim_text_reference_rule':'Each object with the sole key verbatim_text_ref resolves to the EXACT complete string in verbatim_texts with that ID. This replaces identical duplicate data only, not omissions or summaries. Resolve every reference before reviewing. All full skill files remain unchanged inline in system instructions.'}
+
+
+def compact_review_tables(payload):
+    """Keep every scanner field and row while spelling column names once."""
+    result=dict(payload)
+    if 'review_table_encoding' in result:return payload
+    encoded=[]
+    for key in ('mechanical_findings','mechanical_candidates','facts.facts'):
+        nested=key=='facts.facts'
+        rows=result.get('facts',{}).get('facts') if nested and isinstance(result.get('facts'),dict) else result.get(key)
+        if not isinstance(rows,list) or len(rows)<3 or not all(isinstance(r,dict) for r in rows):continue
+        columns=list(rows[0])
+        if not all(set(r)==set(columns) for r in rows):continue
+        table={'columns':columns,'rows':[[r[c] for c in columns] for r in rows]}
+        if len(json.dumps(table,ensure_ascii=False))>=len(json.dumps(rows,ensure_ascii=False)):continue
+        if nested:result['facts']=dict(result['facts'])|{'facts':table}
+        else:result[key]=table
+        encoded.append(key)
+    if encoded:
+        result['review_table_encoding']='For '+', '.join(encoded)+', each row contains the fields in columns order. Reconstruct every item by pairing columns with that row; all fields, values, IDs and order are retained exactly. Assess every item as usual.'
+    return result
+
+
 class Uncertain(RuntimeError):
     pass
 
@@ -222,6 +269,8 @@ class Provider:
             delivery='unabridged_inline', file_access_available=c['provider']=='codex-cli' and c.get('codex_read_skill_files',True))
         if image_resources:
             payload['image_resources']=image_resources
+        if c['provider']=='router' and c.get('execution_channel')=='chatgpt_web':
+            payload=compact_review_tables(reference_repeated_text(payload))
         prompt = json.dumps(payload, ensure_ascii=False,separators=(',',':'))
         input_bytes = len((instruction+prompt+json.dumps(schema)).encode())
         if input_bytes > c["max_input_bytes"]:
@@ -339,11 +388,17 @@ class Provider:
                 job['calls'][-1].update(dispatch_started=True,deadline_at=deadline);self.store.put_job(job)
                 response=post_before_deadline(endpoint+'/chat/completions',headers,request,deadline)
                 if response.status_code >= 400:
-                    if response.status_code in {400,401,403,422}:
+                    from urllib.parse import urlsplit
+                    job['calls'][-1].update(http_status=response.status_code,response_blob=self.store.blob(response.content))
+                    self.store.put_job(job)
+                    balance_rejected=response.status_code==402 and urlsplit(endpoint).hostname=='api.deepseek.com'
+                    if response.status_code in {400,401,403,422} or balance_rejected:
                         self.store.settle(call_id,0,dict(channel=c['provider'],status='rejected',http_status=response.status_code))
                         job['calls'][-1].update(status='rejected',http_status=response.status_code,
                             response_blob=self.store.blob(response.content))
                         self.store.put_job(job)
+                        if balance_rejected:
+                            raise ValueError('深度求索官方余额不足，本次明确未接单；充值或切换已授权通道后可继续，已有正文与费用记录保留')
                         raise ValueError(f'模型请求被拒绝：{response.status_code}，没有自动重发')
                     raise Uncertain(f"模型请求返回 {response.status_code}，本次未自动重发")
                 body = response.json()
@@ -395,7 +450,9 @@ class Provider:
                     if c.get('thinking_depth'):
                         task['chatgptWeb']['thinkingDepth']=c['thinking_depth']
                     task.pop('effort',None)
-                if len(task['objective'])>c.get('router_max_objective_chars',300000):
+                objective_limit=c.get('router_max_objective_chars',300000)
+                if c.get('execution_channel')=='chatgpt_web':objective_limit=min(objective_limit,100000)
+                if len(task['objective'])>objective_limit:
                     raise ValueError('完整技能与材料超过转发器输入上限，未截断或发送')
                 submission={"task":task,"metadata":{"project":"sourceloom","role":role,"call":call_id}}
                 if impossible_closed_schema(task['validation']['responseSchema']):
@@ -410,6 +467,9 @@ class Provider:
                     if response.status_code >= 400:
                         if response.status_code in {400,401,403,413,422}:
                             self.store.settle(call_id,0,dict(channel='router',status='rejected',http_status=response.status_code))
+                            job['calls'][-1].update(status='rejected',http_status=response.status_code,
+                                response_blob=self.store.blob(response.content))
+                            self.store.put_job(job)
                             try:code=response.json().get('error',{}).get('code','request_rejected')
                             except (ValueError,AttributeError):code='request_rejected'
                             raise ValueError('转发器未接单：'+str(code)[:80])

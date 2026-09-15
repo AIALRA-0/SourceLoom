@@ -152,7 +152,7 @@ def test_inventory_uncertainty_requires_independent_evidenced_decision(tmp_path,
     assert roles==['inventory_audit','inventory_decision']
 
 
-@pytest.mark.parametrize('role',['fact_inventory','writer','planner'])
+@pytest.mark.parametrize('role',['fact_inventory','writer','planner','term_preparation','line_repair','independent_review'])
 def test_actual_api_request_contains_unabridged_skill_and_exact_receipt(tmp_path,skill,monkeypatch,role):
     store,queue,p,bundle=prepared(tmp_path,skill)
     job=queue.enqueue(p['id'],bundle)
@@ -187,6 +187,28 @@ def test_actual_api_request_contains_unabridged_skill_and_exact_receipt(tmp_path
     assert request['payload']['writing_skill_receipt']['deployed_file_count']==6
     assert not job['calls'][0]['file_read_verified']
     assert job['calls'][0]['status']=='completed'
+
+
+@pytest.mark.parametrize('official',[True,False])
+def test_balance_rejection_is_known_only_for_documented_official_provider(tmp_path,skill,monkeypatch,official):
+    from sourceloom.providers import Uncertain
+    store,queue,p,bundle=prepared(tmp_path,skill);job=queue.enqueue(p['id'],bundle)
+    class Response:
+        status_code=402
+        content=b'{"error":{"type":"insufficient_balance"}}'
+    calls=[]
+    def post(*args):calls.append(args);return Response()
+    monkeypatch.setattr('sourceloom.providers.post_before_deadline',post)
+    c=load_config()|{'provider':'openai-compatible','api_key':'test-not-a-secret',
+        'base_url':'https://api.deepseek.com/v1' if official else 'https://example.invalid',
+        'role_providers':{},'max_input_bytes':100000,'daily_budget_usd':1,'total_budget_usd':1}
+    with pytest.raises(ValueError if official else Uncertain):
+        Provider(store,c).call(p['id'],'writer',{}, {'type':'object'},job)
+    assert len(calls)==1
+    assert job['calls'][0]['status']==('rejected' if official else 'uncertain')
+    assert job['calls'][0]['http_status']==402
+    assert store.read_blob(job['calls'][0]['response_blob'])==Response.content
+    assert store.costs(p['id'])[0]['actual']==(0 if official else None)
 
 
 def test_two_workers_cannot_claim_same_document_and_stale_worker_cannot_commit(tmp_path,skill):

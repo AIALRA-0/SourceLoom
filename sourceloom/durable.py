@@ -68,7 +68,7 @@ class Queue:
             jid = identity()
             job = dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
                        stage='visual_extract' if any(o['kind'] in {'page','image'} and o.get('resource_id') for o in p['inventory']['objects']) else 'inventory',
-                       results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,review_order='style_first',transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],
+                       results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,writing_contract_version=7,review_order='style_first',transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],
                        source_digest=p['inventory']['digest'],source=p['inventory'],goal=p['goal'],project_goal=p['goal'],
                        writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')})
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',
@@ -116,7 +116,7 @@ class Queue:
                 raise Conflict('原件清单尚未完成独立核对')
             jid=identity();now=time.time()
             job=dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
-                stage='planner',results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,review_order='style_first',transformation_mode='rewrite',
+                stage='planner',results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,writing_contract_version=7,review_order='style_first',transformation_mode='rewrite',
                 base_revision=p['revision'],source_digest=p['inventory']['digest'],source=old['source'],
                 inventory=p['inventory'],facts=old['facts'],reused_inventory_job=old['id'],
                 project_goal=p['goal'],

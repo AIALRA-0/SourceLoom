@@ -370,6 +370,10 @@ def compose(bundle, response, inventory):
     fenced_codes={o['id'] for o in inventory['objects'] if o['kind']=='code' and o.get('fence_raw')}
     def restore_fence_syntax(nodes):
         for node in nodes:
+            if node['type']=='source' and node.get('presentation','raw')!='code':
+                # A wire-format language hint has no meaning for raw/quoted
+                # objects. It must not invalidate or modify their literal bytes.
+                node.pop('language',None)
             if node['type']=='source' and node['id'] in fenced_codes:
                 node['presentation']='raw'
                 for field in ('language','layout','caption'):node.pop(field,None)
@@ -418,7 +422,7 @@ def compose(bundle, response, inventory):
         # A rewritten heading is related to an original heading, not a literal
         # embedded copy. Keep that explicit relationship only at a real heading.
         heading_ids={o['id'] for o in inventory['objects'] if o['kind']=='heading'}
-        headings=[sid for sid in b['object_ids'] if sid in heading_ids] if any(n['type']=='section' for n in b['content']) else []
+        headings=[sid for sid in [*b['object_ids'],*(e['source_id'] for e in evidence)] if sid in heading_ids] if any(n['type']=='section' for n in b['content']) else []
         blocks.append({k:v for k,v in b.items() if k!='content'}|dict(markdown=text,obligation_ids=obligations,object_ids=list(dict.fromkeys(embedded+headings)),embedded_object_ids=embedded,evidence=evidence))
     return {'blocks':blocks}
 

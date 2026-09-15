@@ -116,10 +116,11 @@ def register(app, store, config):
             fields=('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')
             expression='json_extract(body,'+','.join("'$."+field+"'" for field in fields)+')'
             with store.connect() as cx:
-                row=cx.execute('SELECT '+expression+",json_array_length(body,'$.calls'),json_extract(body,'$.calls[#-1].error_code') FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
+                row=cx.execute('SELECT '+expression+",json_array_length(body,'$.calls'),json_extract(body,'$.calls[#-1].error_code'),json_array_length(body,'$.draft.blocks') FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
             j=dict(zip(fields,json.loads(row[0]))) if row else None
             if j:
                 j['call_count']=row[1]
+                j['has_candidate']=bool(row[3])
                 messages={'codex_quota_exhausted':'转发服务报告本次所用通道额度耗尽，未返回正文；这不代表全部账号或订阅都不可用',
                           'chatgpt_delivery_uncertain':'无法确认聊天消息是否送达，已保留原请求，未自动重发'}
                 if row[2] in messages:j['error']=messages[row[2]]
@@ -132,11 +133,33 @@ def register(app, store, config):
             available=None
         displayed=p.get('draft') or available
         output_text=canonical(displayed) if displayed else ''
+        newer_candidate=(j['status'] in {'failed','uncertain','cancelled'} and
+            bool(j.get('has_candidate') or j.get('draft',{}).get('blocks')) and
+            (p.get('production') or {}).get('job')!=j['id'])
+        candidate_url=f"/api/projects/{pid}/attempts/{j['id']}/output" if newer_candidate else None
         return {k:j.get(k) for k in ('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')} | {
             'call_count':j.get('call_count',len(j.get('calls',[]))),'has_output':bool(displayed),
             'output_chars':len(output_text),
             'output_digest':digest(output_text.encode()) if displayed else None,
+            'candidate_url':candidate_url,
+            'candidate_markdown_url':candidate_url+'?format=markdown' if candidate_url else None,
             'formal':(p.get('production') or {}).get('status')=='completed'}
+
+    @app.get('/api/projects/{pid}/attempts/{jid}/output')
+    def attempt_output(pid:str,jid:str,format:str='html'):
+        p=store.get(pid);job=store.job(jid)
+        if job.get('project')!=pid or job.get('role')!='production':raise KeyError(jid)
+        draft=available_draft(job)
+        if not draft:raise Conflict('本次尚未生成可阅读正文')
+        if format=='markdown':
+            return Response(canonical(draft).encode(),media_type='text/markdown',
+                headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(p['title']+'-本次新稿.md')})
+        if format!='html':raise ValueError('未知正文格式')
+        candidate=p|dict(draft=draft,inventory=job['inventory'],plan=job['plan'],
+                         accepted_revision=None,production={'status':'needs_review'})
+        content=render(candidate,lambda key:f'/api/projects/{pid}/assets/{key}')
+        return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/article.css"></head><body><p role="status">本次生成的新稿，尚未通过全部核对</p>'+content+'</body></html>',
+            headers={'Content-Security-Policy':"sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"})
 
     @app.post('/api/projects/{pid}/rewrite')
     def rewrite(pid:str):

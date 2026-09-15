@@ -240,6 +240,7 @@ def fidelity_issues(review, facts, draft, source):
 
 
 def style_issues(review, catalog, draft, report):
+    from .review_context import PROCESS_RULES
     issues=[]
     assessed=[rid for a in review['assessments'] for rid in a['rule_ids']]
     if len(assessed)!=len(catalog) or set(assessed)!=set(catalog):
@@ -250,7 +251,14 @@ def style_issues(review, catalog, draft, report):
             issues.append('写作规则尚未满足：'+','.join(a['rule_ids']))
         if not set(a['block_ids'])<=set(blocks):
             issues.append('写作审核引用不存在的正文块')
-        if a['status']=='pass' and (not a['quotes'] or not a['block_ids']):
+        execution=report.get('execution_evidence',{})
+        process=set(a['rule_ids'])<=PROCESS_RULES and bool(a.get('execution_ids'))
+        if process:
+            records=[execution.get(key,{}) for key in a['execution_ids']]
+            if (any(r.get('status')!='pass' for r in records) or
+                    not set(a['rule_ids'])<=set(rid for r in records for rid in r.get('rule_ids',[]))):
+                issues.append('写作过程声明缺少可验证执行记录')
+        if a['status']=='pass' and not process and (not a['quotes'] or not a['block_ids']):
             issues.append('写作规则通过声明缺少正文证据')
         if any(not q or not any(q in blocks.get(bid,'') for bid in a['block_ids']) for q in a['quotes']):
             issues.append('写作审核引用的成稿原句不匹配')
@@ -675,6 +683,15 @@ class Production:
                            actual_surrounding_text=(draft_text_view(job['regeneration']['original_draft'],[unit['id']])
                                                     if job.get('regeneration') else {}),
                            teaching_findings=job.get('regeneration',{}).get('findings',[]))
+            if job.get('writing_contract_version',0)>=7 and job.get('transformation_mode')=='rewrite':
+                prepared=self._call(job,'terms-'+unit['id'],'term_preparation',
+                    dict(source={'objects':inv['objects']},prior_terminology=job.get('terminology',[])),P.TermPreparation)
+                prepared=P.TermPreparation.model_validate(prepared).model_dump()
+                valid_ids={o['id'] for o in inv['objects']}
+                if any(not set(t['source_ids'])<=valid_ids for t in prepared['terms']):
+                    raise ValueError('术语准备引用不存在的原文对象')
+                job.setdefault('prepared_terminology',{})[unit['id']]=prepared
+                payload['prepared_terminology']=prepared
             generation=job.get('content_generation',0)
             key='writer-'+unit['id']+(f'-revision-{generation}' if generation else '')
             result=self._call(job,key,'writer',payload,P.FlatDraft)
@@ -841,7 +858,7 @@ class Production:
                 job.pop(key,None)
         elif stage=='fidelity':
             index=job['repair_rounds']
-            result=self._call(job,f'fidelity-{index}','fidelity',base|dict(facts=job['facts'],draft=job['draft']),P.FidelityReview)
+            result=self._call(job,f'fidelity-{index}','fidelity',base|dict(facts=job['facts'],draft=draft_text_view(job['draft'])),P.FidelityReview)
             job['fidelity']=P.FidelityReview.model_validate(result).model_dump()
             job['fidelity_draft_digest']=digest(canonical(job['draft']).encode())
             if not job.get('style') or not job.get('scan'):
@@ -855,10 +872,13 @@ class Production:
                     return 'needs_attention'
                 job['stage']='repair' if issues else 'publish'
         elif stage=='style':
+            from .review_context import execution_evidence,protected_context
             report=scan(bundle,job['draft'],self.store.root/'production'/job['id']/'checks')
+            report['execution_evidence']=execution_evidence(job,bundle)
             catalog=rule_catalog(bundle['instructions'])
             payload=dict(draft=job['draft'],source={'objects':source['objects']},rule_catalog=list(catalog),
-                         mechanical_findings=report['format']['findings'],mechanical_candidates=report['format']['candidates'])
+                         mechanical_findings=report['format']['findings'],mechanical_candidates=report['format']['candidates'],
+                         execution_evidence=report['execution_evidence'],protected_originals=protected_context(source,job['draft']))
             result=self._call(job,f"style-{job['repair_rounds']}",'style',payload,P.StyleReview)
             job['style']=P.StyleReview.model_validate(result).model_dump()
             job['scan']=report
@@ -894,15 +914,29 @@ class Production:
             allowed={f['block_id'] for f in findings if f['block_id']}
             if not allowed:
                 raise ValueError('审核存在缺口，但没有足以支持精确修复的定位；未擅自重写')
-            result=self._call(job,f'local_repair-{index}','local_repair',dict(draft=job['draft'],source=source,
-                findings=findings,document_digest=digest(canonical(job['draft']).encode())),P.LocalRepair)
             try:
+                before_digest=digest(canonical(job['draft']).encode())
+                if job.get('writing_contract_version',0)>=7:
+                    from .review_context import editable_lines,line_proposal,protected_context
+                    lines=editable_lines(job['draft'],source,allowed)
+                    if not lines:raise Conflict('没有可安全修改的已定位正文行')
+                    result=self._call(job,f'line_repair-{index}','line_repair',dict(draft=job['draft'],source=source,
+                        findings=findings,document_digest=before_digest,editable_lines=lines,
+                        protected_originals=protected_context(source,job['draft']),
+                        prepared_terminology=job.get('prepared_terminology',{})),P.LineRepair)
+                    result=line_proposal(P.LineRepair.model_validate(result).model_dump(),lines)
+                else:
+                    result=self._call(job,f'local_repair-{index}','local_repair',dict(draft=job['draft'],source=source,
+                        findings=findings,document_digest=before_digest),P.LocalRepair)
                 job['draft']=repair(bundle,job['draft'],result,allowed,self.store.root/'production'/job['id']/f'repair-{index}')
             except (ValueError,Conflict) as error:
                 if index<2:raise
                 job['repair_rejection']=str(error)
                 job.setdefault('quality_issues',[]).append('最后一轮局部补丁未能安全提交，正文保持原样：'+str(error))
                 return 'needs_attention'
+            job.setdefault('repair_commits',[]).append(dict(round=index,before=before_digest,
+                after=digest(canonical(job['draft']).encode()),blocks=sorted({e['block_id'] for e in result['edits']}),
+                edits=len(result['edits']),committer='full-skill-exact-local-transaction'))
             job.pop('active_repair_round',None)
             job.pop('fidelity',None)
             job.pop('style',None)

@@ -161,6 +161,7 @@ class RuleAssessment(Strict):
     status: Literal['pass','fail','unknown','not_applicable']
     block_ids: list[str]
     quotes: list[str] = Field(default_factory=list)
+    execution_ids: list[str] = Field(default_factory=list)
     reason: str = Field(min_length=1)
 
 
@@ -176,6 +177,11 @@ class StyleReview(Strict):
     findings: list[Finding]
 
 
+class IndependentReview(Strict):
+    style: StyleReview
+    fidelity: FidelityReview
+
+
 class LocalEdit(Strict):
     block_id: str
     old_text: str = Field(min_length=1)
@@ -186,6 +192,33 @@ class LocalEdit(Strict):
 class LocalRepair(Strict):
     document_digest: str
     edits: list[LocalEdit] = Field(min_length=1)
+
+
+class LineEdit(Strict):
+    line_id: str
+    replacement: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class LineRepair(Strict):
+    document_digest: str
+    edits: list[LineEdit] = Field(min_length=1)
+
+
+class PreparedTerm(Strict):
+    zh: str = Field(min_length=1)
+    en: str
+    abbr: str
+    source_ids: list[str] = Field(min_length=1)
+    what: str = Field(min_length=1)
+    purpose: str = Field(min_length=1)
+    mechanism: str = Field(min_length=1)
+    when: str = Field(min_length=1)
+    boundary: str = Field(min_length=1)
+
+
+class TermPreparation(Strict):
+    terms: list[PreparedTerm]
 
 
 class BindingAssignment(Strict):
