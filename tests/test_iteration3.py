@@ -230,7 +230,8 @@ def test_recheck_uses_exact_saved_candidate_as_new_version_baseline(tmp_path):
 
 
 @pytest.mark.parametrize('fresh',[False,True])
-def test_saved_teaching_review_recheck_preserves_candidate_and_prior_calls(tmp_path,fresh):
+@pytest.mark.parametrize('rewrite',[False,True])
+def test_saved_teaching_review_recheck_preserves_candidate_and_prior_calls(tmp_path,fresh,rewrite):
     from sourceloom.store import Conflict
     import pytest
     store=Store(tmp_path)
@@ -239,6 +240,8 @@ def test_saved_teaching_review_recheck_preserves_candidate_and_prior_calls(tmp_p
     original={'objects':[{'id':'s','kind':'metadata','text':'页面登记'}],'digest':'source'}
     store.change(project['id'],lambda p:p.update(inventory=original))
     job=queue.enqueue(project['id'],{'root':'saved','package_digest':'saved','instruction_digest':'saved'})
+    if rewrite:
+        job['goal']='忠实改写，与项目说明分别保存'
     candidate={'blocks':[{'id':'b','kind':'source','markdown':'页面登记'}]}
     job.update(status='needs_attention',stage='teaching',draft=candidate,inventory=original,
                calls=[{'id':'old','status':'completed'}],

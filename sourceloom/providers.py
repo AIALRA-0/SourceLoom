@@ -15,6 +15,19 @@ class Uncertain(RuntimeError):
     pass
 
 
+class ReasoningExhausted(ValueError):
+    """A fully received billed response spent its entire output on reasoning."""
+
+
+def reasoning_exhausted(body):
+    choice=body.get('choices',[{}])[0]
+    message=choice.get('message',{})
+    usage=body.get('usage',{})
+    return (choice.get('finish_reason')=='length' and not message.get('content') and
+            not message.get('tool_calls') and usage.get('completion_tokens',0)>0 and
+            usage.get('completion_tokens_details',{}).get('reasoning_tokens')==usage['completion_tokens'])
+
+
 def post_before_deadline(url,headers,body,deadline):
     """Bound the whole response, including servers that keep sending whitespace."""
     async def request():
@@ -127,6 +140,8 @@ class Provider:
         check(self.store,c)
         deadline=c.get('deadline_at',time.time()+c['call_timeout'])
         instruction_role=role.removesuffix('__fallback')
+        if instruction_role in {'planner','writer','plan_review','planner_repair','teaching_review'} and job.get('transformation_mode')=='rewrite':
+            instruction_role='rewrite_'+instruction_role
         instruction = (Path(__file__).parent / "roles" / f"{instruction_role}.md").read_text(encoding="utf-8")
         if job.get('writing_skill'):
             bundle = load_bundle(job['writing_skill']['root'], job['writing_skill']['package_digest'])
@@ -347,6 +362,9 @@ class Provider:
                 self.store.settle(call_id,actual,dict(usage=usage,model=body.get("model"),channel=c["provider"],
                     options=options,cost_measurement='usage multiplied by configured conservative rates; not a supplier invoice'))
                 if body["choices"][0].get("finish_reason") != ('tool_calls' if strict_output else 'stop'):
+                    if actual is not None and reasoning_exhausted(body):
+                        job['calls'][-1]['status']='reasoning_exhausted';self.store.put_job(job)
+                        raise ReasoningExhausted('模型已用完输出额度进行思考，没有返回正文，已保存实际用量')
                     job['calls'][-1]['status']='truncated';self.store.put_job(job)
                     raise ValueError("模型输出未正常结束，已保存用量，不接受截断候选")
                 message=body['choices'][0]['message']
@@ -479,6 +497,8 @@ class Provider:
         elif channel=='openai-compatible' and call.get('response_blob'):
             body=json.loads(self.store.read_blob(call['response_blob']))
             reason=body['choices'][0].get('finish_reason')
+            if call.get('status')=='reasoning_exhausted' and reasoning_exhausted(body):
+                raise ReasoningExhausted('原响应已明确结束且没有正文，可使用已配置的一次备用尝试')
             if reason not in {'stop','tool_calls'}:
                 raise Conflict('原响应已保存但被截断，不能当作完整结果恢复')
             message=body['choices'][0]['message']

@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 from .store import Conflict, digest
-from .production_contracts import ComposedDraft, FlatDraft, LocalRepair
+from .production_contracts import ComposedDraft, FlatDraft, LocalRepair, BindingPatch
 
 
 def canonical(draft):
@@ -83,6 +83,7 @@ def expand_response(response):
     raw=FlatDraft.model_validate(response).model_dump(exclude_none=True)
     blocks=[]
     active_sections={}
+    active_members={}
     for block in raw['blocks']:
         nodes=[]
         for node in block['content']:
@@ -122,7 +123,7 @@ def expand_response(response):
         external={n['parent_id'] for n in nodes if n['parent_id'] and n['parent_id'] not in local_ids}
         # The active preceding heading is already above this block in canonical
         # Markdown. A newer heading supersedes it, preventing stale references.
-        if external and external=={active_sections.get(block['unit_id'])}:
+        if external and external<=active_members.get(block['unit_id'],set()):
             nodes=[n|{'parent_id':''} if n['parent_id'] in external else n for n in nodes]
         # The skill's term renderer itself emits one list item. Empty unordered
         # wrappers around terms must not create a second bullet or lose a term.
@@ -197,7 +198,19 @@ def expand_response(response):
         if visited!=set(by_id):
             raise ValueError('有排版节点无法从根节点到达')
         blocks.append({k:v for k,v in block.items() if k!='content'}|dict(content=content))
-        if rendered_sections:active_sections[block['unit_id']]=rendered_sections[-1]
+        if rendered_sections:
+            section=rendered_sections[-1]
+            active_sections[block['unit_id']]=section
+            members={section};pending=[section]
+            while pending:
+                for child in children[pending.pop()]:
+                    members.add(child['node_id']);pending.append(child['node_id'])
+            active_members[block['unit_id']]=members
+        elif block['unit_id'] in active_sections and block['kind']!='document_info':
+            # Continuation objects sometimes name the preceding leaf rather
+            # than its heading. They remain siblings under that active heading;
+            # a superseded heading or another unit never qualifies.
+            active_members[block['unit_id']].update(by_id)
     return {'blocks':blocks}
 
 
@@ -250,6 +263,24 @@ def append_unit_completion(original, supplement, unit_id):
             raise ValueError('补充内容不能覆盖旧段落或改写其他教学单元')
         ids.add(block['id'])
     return before|{'blocks':before['blocks']+extra['blocks']}
+
+
+def apply_binding_patch(original,patch,inventory):
+    patch=BindingPatch.model_validate(patch).model_dump()
+    result=copy.deepcopy(original)
+    blocks={b['id']:b for b in result['blocks']}
+    sources={o['id']:o['text'] for o in inventory['objects']}
+    facts={f['id'] for f in inventory['obligations']}
+    seen=set()
+    for assignment in patch['assignments']:
+        bid=assignment['block_id']
+        if bid not in blocks or bid in seen:raise ValueError('来源补丁段落不存在或重复')
+        seen.add(bid)
+        if not set(assignment['source_ids'])<=sources.keys() or not set(assignment['obligation_ids'])<=facts:
+            raise ValueError('来源补丁引用未知原对象或事实')
+        blocks[bid]['obligation_ids']=list(dict.fromkeys(assignment['obligation_ids']))
+        blocks[bid]['evidence']=[{'source_id':sid,'quote':sources[sid]} for sid in dict.fromkeys(assignment['source_ids'])]
+    return result
 
 
 def compose(bundle, response, inventory):
@@ -353,20 +384,42 @@ def compose(bundle, response, inventory):
         selected={sid:sources[sid] for sid in placed if sid in sources}
         if set(selected)!=set(placed):
             raise ValueError('普通正文不能冒充逐字原对象，或对象身份不存在')
-        text=module.render_document({'blocks':b['content']},sources=selected)
+        if len(b['content'])==1 and b['content'][0]['type']=='section' and not b['content'][0]['blocks']:
+            # The full skill validates heading text, while this adapter preserves
+            # a heading-only source anchor whose body is in subsequent blocks.
+            # Do not invent child prose or hide a block marker in a paragraph.
+            heading=module._text(b['content'][0]['heading'],'section.heading')
+            text='## '+heading+'\n'
+        else:
+            text=module.render_document({'blocks':b['content']},sources=selected)
+        # canonical() already separates blocks. Remove only the renderer's final
+        # newline when no protected literal would lose bytes. Historical drafts
+        # and their digests remain untouched.
+        if text.endswith('\n') and all(literal in text[:-1] for literal in selected.values()):
+            text=text[:-1]
         # Placement is established by actual source nodes, never by a second model
         # list that can disagree with its own authored layout. Raw result is retained.
         embedded=list(dict.fromkeys([*selected,*sorted(lowered_sources)]))
+        # Exact embedded objects already have a physical source location. Bind
+        # their ledger entries here, rather than asking a writer to duplicate
+        # code/links just because it forgot an ID. Semantic review remains due.
+        obligations=list(dict.fromkeys([*b['obligation_ids'],
+            *(fid for fid,sid in fact_sources.items() if sid in protected_ids and sid in embedded
+              and sid in selected and selected[sid] in text)]))
         evidence=list(b['evidence'])
         evidence=[e|dict(quote=original_text[e['source_id']])
                   if e['source_id'] in original_text and e['quote'] and
                      e['quote'] in (sources.get(e['source_id']),original_raw.get(e['source_id'])) else e
                   for e in evidence]
-        for fid in b['obligation_ids']:
+        for fid in obligations:
             sid=fact_sources.get(fid)
             if sid in original_text and sid not in {e['source_id'] for e in evidence}:
                 evidence.append(dict(source_id=sid,quote=original_text[sid]))
-        blocks.append({k:v for k,v in b.items() if k!='content'}|dict(markdown=text,object_ids=embedded,embedded_object_ids=embedded,evidence=evidence))
+        # A rewritten heading is related to an original heading, not a literal
+        # embedded copy. Keep that explicit relationship only at a real heading.
+        heading_ids={o['id'] for o in inventory['objects'] if o['kind']=='heading'}
+        headings=[sid for sid in b['object_ids'] if sid in heading_ids] if any(n['type']=='section' for n in b['content']) else []
+        blocks.append({k:v for k,v in b.items() if k!='content'}|dict(markdown=text,obligation_ids=obligations,object_ids=list(dict.fromkeys(embedded+headings)),embedded_object_ids=embedded,evidence=evidence))
     return {'blocks':blocks}
 
 
@@ -405,6 +458,8 @@ def repair(bundle, draft, proposal, allowed, work):
     edits=[]
     ranges=[]
     for e in proposal['edits']:
+        if e['old_text']==e['new_text']:
+            raise Conflict('补丁没有实际修改，整笔未提交')
         if e['block_id'] not in allowed or e['block_id'] not in blocks:
             raise Conflict('修复超出已定位问题的段落')
         before=blocks[e['block_id']]['markdown']

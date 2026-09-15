@@ -153,6 +153,10 @@ def teaching_review_contract(review, draft, plan, inventory=None):
     for c in review['checks']:
         if c['status']!='not_applicable' and not exact(c['block_ids'],c['quotes']):
             errors.append('check '+c['category']+' contains a non-verbatim quote or unknown block')
+            errors.append('check '+c['category']+' evidence repair: '+repr({
+                'unknown_block_ids':[i for i in c['block_ids'] if i not in blocks],
+                'invalid_quotes':[q for q in c['quotes'] if not q or not any(
+                    q in blocks[i]['markdown'] for i in c['block_ids'] if i in blocks)]}))
     body=teaching_body_blocks(draft,inventory)
     pairs={(a['id'],b['id']) for a,b in zip(body,body[1:])}
     actual=[(t['before_id'],t['after_id']) for t in review['transitions']]

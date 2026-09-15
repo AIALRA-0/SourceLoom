@@ -13,7 +13,7 @@ from .checks import freeze, inspect_draft, validate_plan
 from .durable import Queue
 from .export import render
 from .ingest import decode, attach_markdown_fences
-from .providers import Provider, Uncertain
+from .providers import Provider, Uncertain, ReasoningExhausted
 from .skills import load_bundle, rule_catalog
 from .store import Conflict, digest, identity
 from .writing import canonical, compose, expand_response, protected_objects, repair, scan, validate_layout_repair
@@ -245,7 +245,6 @@ def style_issues(review, catalog, draft, report):
     if len(assessed)!=len(catalog) or set(assessed)!=set(catalog):
         issues.append('写作审核未逐条覆盖完整规则，或重复声明规则通过')
     blocks={b['id']:b['markdown'] for b in draft['blocks']}
-    text=canonical(draft)
     for a in review['assessments']:
         if a['status'] in {'fail','unknown'}:
             issues.append('写作规则尚未满足：'+','.join(a['rule_ids']))
@@ -253,7 +252,7 @@ def style_issues(review, catalog, draft, report):
             issues.append('写作审核引用不存在的正文块')
         if a['status']=='pass' and (not a['quotes'] or not a['block_ids']):
             issues.append('写作规则通过声明缺少正文证据')
-        if any(q not in text or not q for q in a['quotes']):
+        if any(not q or not any(q in blocks.get(bid,'') for bid in a['block_ids']) for q in a['quotes']):
             issues.append('写作审核引用的成稿原句不匹配')
     expected={x['id'] for kind in ('findings','candidates') for x in report['format'][kind]}
     adjudicated=review['mechanical_assessments']
@@ -328,7 +327,7 @@ class Production:
                 raise Uncertain('进程在提交边界中断，没有自动重发；需要查询原提交记录')
             try:
                 result=self.provider.recover(job)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ReasoningExhausted):
                 return self._invalid_response_fallback(job,key,role,payload,schema)
             if result is None:
                 raise Uncertain('原请求尚未取得完整结果，未重新提交')
@@ -356,7 +355,7 @@ class Production:
                     job.pop('pending',None)
                     self.store.put_job(job)
                 raise
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, ReasoningExhausted):
                 return self._invalid_response_fallback(job,key,role,payload,schema)
         # Persist raw role result before validation, so failed validation never loses the artifact.
         job['results'][key]=result
@@ -366,10 +365,12 @@ class Production:
 
     def _invalid_response_fallback(self,job,key,role,payload,schema):
         call=job['calls'][-1]
+        empty_reasoning=(call.get('status')=='reasoning_exhausted' and call.get('finish_reason')=='length')
         if (role.endswith('__fallback') or role not in self.config.get('fallback_providers',{})
-            or call.get('finish_reason') not in {'stop','tool_calls'} or not call.get('response_blob')):
+            or (call.get('finish_reason') not in {'stop','tool_calls'} and not empty_reasoning) or not call.get('response_blob')):
             raise ValueError('原响应结构无效，未配置可用的受限备用通道')
-        job.setdefault('fallbacks',{})[key]=dict(original_call=call['id'],reason='invalid_json_after_normal_finish')
+        job.setdefault('fallbacks',{})[key]=dict(original_call=call['id'],reason=
+            'output_budget_spent_on_reasoning_without_artifact' if empty_reasoning else 'invalid_json_after_normal_finish')
         job.pop('pending',None)
         self.store.put_job(job)
         return self._call(job,key,role,payload,schema)
@@ -686,16 +687,16 @@ class Production:
                 result=validate_layout_repair(result,fixed)
                 draft=compose(bundle,result,inv)
             issues=inspect_draft(inv,draft,{'units':[unit]})
-            if issues and any(i['code']!='omission' for i in issues) and {i['code'] for i in issues}<={'unknown_obligation','unmapped','quote','object','omission','heading_structure'}:
-                from .writing import validate_binding_repair
-                fixed=self._call(job,key+'-bindings','binding_repair',
+            if any(i['code'] in {'unknown_obligation','unmapped','quote','object'} for i in issues):
+                from .writing import apply_binding_patch
+                fixed=self._call(job,key+'-bindings-v2','binding_patch',
                     dict(received=result,rendered_draft=draft,inventory=inv,current_unit=unit,
-                         facts=payload['facts'],validator_issues=issues),P.FlatDraft)
-                result=validate_binding_repair(result,bind_evidence_layout(fixed,inv),inv)
+                         facts=payload['facts'],validator_issues=issues),P.BindingPatch)
+                result=apply_binding_patch(result,fixed,inv)
                 draft=compose(bundle,result,inv)
                 issues=inspect_draft(inv,draft,{'units':[unit]})
             completion_key=key+'-complete'
-            if issues and {i['code'] for i in issues}=={'omission'} and (
+            if issues and {i['code'] for i in issues}<={'omission','protected_object'} and all(i['obligation_id'] for i in issues) and (
                     completion_key in job.get('unit_completion_attempts',[]) or job['repair_rounds']<2):
                 from .writing import append_unit_completion
                 if completion_key not in job.setdefault('unit_completion_attempts',[]):
@@ -704,7 +705,7 @@ class Production:
                     self.store.put_job(job)
                 extra=self._call(job,completion_key,'writer',payload|dict(received=result,
                     completion_only=True,actual_current_text=draft,
-                    remaining_fact_ids=[i['obligation_id'] for i in issues]),P.FlatDraft)
+                    remaining_fact_ids=list(dict.fromkeys(i['obligation_id'] for i in issues))),P.FlatDraft)
                 result=append_unit_completion(result,bind_evidence_layout(extra,inv),unit['id'])
                 try:
                     draft=compose(bundle,result,inv)
@@ -740,7 +741,7 @@ class Production:
                     if untouched!=[b for b in job['draft']['blocks'] if b['unit_id'] not in regeneration['unit_ids']]:
                         raise ValueError('教学修复改变了未命中的正文')
                     job.pop('regeneration',None)
-                job['stage']='teaching' if job.get('teaching_version',0)>=2 else 'style'
+                job['stage']='teaching' if job.get('teaching_version',0)>=2 and job.get('review_order')!='style_first' else 'style'
                 job['initial_draft_blob']=self.store.blob(json.dumps(job['draft'],ensure_ascii=False).encode())
         elif stage=='teaching':
             job['plan']=self.validate_plan(job,job['plan'])
@@ -777,7 +778,9 @@ class Production:
                 job.setdefault('content_history',[]).append(self.store.blob(json.dumps(job['regeneration'],ensure_ascii=False).encode()))
                 job['stage']='teaching_replan'
             else:
-                job['stage']='style'
+                style_current=(job.get('style') and job.get('scan') and
+                               job.get('style_draft_digest')==digest(canonical(job['draft']).encode()))
+                job['stage']='fidelity' if style_current else 'style'
         elif stage=='teaching_replan':
             regeneration=job['regeneration']
             repair_view=dict(regeneration,original_draft=draft_text_view(regeneration['original_draft']))
@@ -871,22 +874,40 @@ class Production:
                     return 'needs_attention'
                 job['stage']='repair'
             else:
-                job['stage']='publish' if job.get('fidelity') else 'fidelity'
+                teaching_needed=(job.get('review_order')=='style_first' and job.get('teaching_version',0)>=2 and
+                    (not job.get('teaching_review') or job.get('teaching_draft_digest')!=digest(canonical(job['draft']).encode())))
+                job['stage']='teaching' if teaching_needed else ('publish' if job.get('fidelity') else 'fidelity')
         elif stage=='repair':
+            index=job.get('active_repair_round')
+            if index is None:
+                if job['repair_rounds']>=2:
+                    job.setdefault('quality_issues',[]).append('已用完两轮局部修复，保留当前正文及未解决问题，未发送额外请求')
+                    return 'needs_attention'
+                index=job['repair_rounds']+1
+                # Persist the transaction identity before dispatch. Validation
+                # failure or worker recovery must replay this same paid result.
+                job.update(active_repair_round=index,repair_rounds=index)
+                self.store.put_job(job)
+            if index not in {1,2} or index!=job['repair_rounds']:
+                raise ValueError('局部修复轮次记录不一致，未发送请求')
             findings=job['style']['findings']+job.get('fidelity',{}).get('findings',[])
             allowed={f['block_id'] for f in findings if f['block_id']}
             if not allowed:
                 raise ValueError('审核存在缺口，但没有足以支持精确修复的定位；未擅自重写')
-            index=job['repair_rounds']+1
             result=self._call(job,f'local_repair-{index}','local_repair',dict(draft=job['draft'],source=source,
                 findings=findings,document_digest=digest(canonical(job['draft']).encode())),P.LocalRepair)
-            job['repair_rounds']=index
-            self.store.put_job(job)
-            job['draft']=repair(bundle,job['draft'],result,allowed,self.store.root/'production'/job['id']/f'repair-{index}')
+            try:
+                job['draft']=repair(bundle,job['draft'],result,allowed,self.store.root/'production'/job['id']/f'repair-{index}')
+            except (ValueError,Conflict) as error:
+                if index<2:raise
+                job['repair_rejection']=str(error)
+                job.setdefault('quality_issues',[]).append('最后一轮局部补丁未能安全提交，正文保持原样：'+str(error))
+                return 'needs_attention'
+            job.pop('active_repair_round',None)
             job.pop('fidelity',None)
             job.pop('style',None)
             job.pop('scan',None)
-            job['stage']='teaching' if job.get('teaching_version',0)>=2 else 'style'
+            job['stage']='teaching' if job.get('teaching_version',0)>=2 and job.get('review_order')!='style_first' else 'style'
         elif stage=='publish':
             current=digest(canonical(job['draft']).encode())
             if job.get('teaching_version',0)>=2:

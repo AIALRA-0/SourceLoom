@@ -68,7 +68,7 @@ def test_style_review_precedes_independent_fidelity_and_failure_never_publishes(
     response=dict(assessments=[dict(rule_ids=['FMT-001'],status='pass',block_ids=['b'],quotes=['我们假设'],reason='Exact source person')],mechanical_assessments=[],findings=[])
     def call(job,key,role,*args):calls.append(role);return response
     monkeypatch.setattr(engine,'_call',call)
-    assert engine.step(job)=='queued' and job['stage']=='fidelity' and calls==['style']
+    assert engine.step(job)=='queued' and job['stage']=='teaching' and calls==['style']
     job['stage']='style';job['repair_rounds']=2
     response['assessments'][0]['status']='unknown'
     assert engine.step(job)=='needs_attention'
@@ -152,7 +152,8 @@ def test_inventory_uncertainty_requires_independent_evidenced_decision(tmp_path,
     assert roles==['inventory_audit','inventory_decision']
 
 
-def test_actual_api_request_contains_unabridged_skill_and_exact_receipt(tmp_path,skill,monkeypatch):
+@pytest.mark.parametrize('role',['fact_inventory','writer','planner'])
+def test_actual_api_request_contains_unabridged_skill_and_exact_receipt(tmp_path,skill,monkeypatch,role):
     store,queue,p,bundle=prepared(tmp_path,skill)
     job=queue.enqueue(p['id'],bundle)
     captured=[]
@@ -169,10 +170,18 @@ def test_actual_api_request_contains_unabridged_skill_and_exact_receipt(tmp_path
     monkeypatch.setattr('sourceloom.providers.httpx.AsyncClient',Client)
     c=load_config()|{'provider':'openai-compatible','api_key':'test-not-a-secret','writing_skill_dir':str(skill),
                      'role_providers':{},'max_input_bytes':100000,'daily_budget_usd':1,'total_budget_usd':1}
-    Provider(store,c).call(p['id'],'fact_inventory',{'source':'the source'},{'type':'object'},job)
+    Provider(store,c).call(p['id'],role,{'source':'the source'},{'type':'object'},job)
     sent=captured[0]['messages'][0]['content']
     for name,text in bundle['instructions'].items():
         assert text in sent,name
+    if role=='writer':
+        assert 'You rewrite the supplied source faithfully' in sent
+        assert 'For the first unit, begin with a concrete situation' not in sent
+        assert 'A first technical definition must be a term node' in sent
+    if role=='planner':
+        assert 'You plan a faithful rewrite' in sent
+        assert 'The first unit must bring the reader' not in sent
+        assert 'The plan MUST NOT waive first-use definitions' in sent
     request=json.loads(store.read_blob(job['calls'][0]['request_blob']))
     assert request['system'] in sent
     assert request['payload']['writing_skill_receipt']['deployed_file_count']==6

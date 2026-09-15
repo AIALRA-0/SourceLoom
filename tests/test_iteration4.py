@@ -64,6 +64,7 @@ def test_new_rewrite_retains_old_content_and_project_spending(tmp_path):
     bundle={'root':'saved','package_digest':'saved','instruction_digest':'saved'}
     job=queue.rewrite_existing(p['id'],bundle)
     assert job['transformation_mode']=='rewrite' and job['stage']=='planner'
+    assert job['project_goal']==p['goal'] and job['review_order']=='style_first'
     assert job['reused_inventory_job']=='previous' and job['base_revision']==p['revision']
     assert s.get(p['id'])['draft']==p['draft'] and s.get(p['id'])['max_calls']==p['max_calls']
     with pytest.raises(Conflict):queue.rewrite_existing(p['id'],bundle)

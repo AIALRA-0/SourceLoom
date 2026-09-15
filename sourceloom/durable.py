@@ -3,8 +3,15 @@
 import json
 import math
 import time
+from pathlib import Path
 
-from .store import Conflict, identity
+from .store import Conflict, identity, digest
+
+
+def planning_policy_digest():
+    roles=Path(__file__).parent/'roles'
+    names=('rewrite_planner','rewrite_plan_review','rewrite_planner_repair','rewrite_scope','plan_decision')
+    return digest({name:(roles/(name+'.md')).read_text(encoding='utf-8') for name in names})
 
 
 class Queue:
@@ -61,8 +68,8 @@ class Queue:
             jid = identity()
             job = dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
                        stage='visual_extract' if any(o['kind'] in {'page','image'} and o.get('resource_id') for o in p['inventory']['objects']) else 'inventory',
-                       results={},repair_rounds=0,teaching_version=2,transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],
-                       source_digest=p['inventory']['digest'],source=p['inventory'],goal=p['goal'],
+                       results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,review_order='style_first',transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],
+                       source_digest=p['inventory']['digest'],source=p['inventory'],goal=p['goal'],project_goal=p['goal'],
                        writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')})
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',
                        (jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
@@ -109,11 +116,27 @@ class Queue:
                 raise Conflict('原件清单尚未完成独立核对')
             jid=identity();now=time.time()
             job=dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
-                stage='planner',results={},repair_rounds=0,teaching_version=2,transformation_mode='rewrite',
+                stage='planner',results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,review_order='style_first',transformation_mode='rewrite',
                 base_revision=p['revision'],source_digest=p['inventory']['digest'],source=old['source'],
                 inventory=p['inventory'],facts=old['facts'],reused_inventory_job=old['id'],
+                project_goal=p['goal'],
                 goal='保持原文主旨、作者意图与人称，完整保留信息，改善逻辑与可读性，不自行设计课程、情境、练习或拓展',
                 writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')})
+            # A fresh, explicitly requested rewrite can reuse preparation that
+            # reached the writer but produced no draft. Keep the original job,
+            # reviews and cumulative spending; never reuse uncertain execution.
+            if (old.get('status')=='failed' and old.get('stage')=='writer' and old.get('unit_index')==0 and
+                    not old.get('draft',{}).get('blocks') and old.get('plan') and
+                    old.get('goal')==job['goal'] and old.get('project_goal')==p['goal'] and
+                    old.get('transformation_mode')=='rewrite' and
+                    old.get('planning_policy_digest')==job['planning_policy_digest'] and
+                    old.get('writing_skill',{}).get('package_digest')==bundle['package_digest'] and
+                    old.get('calls') and old['calls'][-1].get('status') in {'invalid','truncated','reasoning_exhausted'}):
+                from .pedagogy import validate_teaching_plan
+                job.update(plan=validate_teaching_plan(old['plan'],p['inventory'],'rewrite'),
+                    stage='writer',unit_index=0,draft={'blocks':[]},terminology=[],
+                    reused_plan_job=old['id'],verified_terminology=old.get('verified_terminology',[]),
+                    optional_source_limits=old.get('optional_source_limits',[]))
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',(jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
             cx.execute('INSERT INTO production_control(id,project,status,created) VALUES(?,?,?,?)',(jid,pid,'queued',now))
             p.update(active_job=jid,state='queued')
@@ -193,6 +216,12 @@ class Queue:
                     job.setdefault('rejected_resubmissions',{})[key]=call['id']
                 job.pop('pending',None)
             returned_invalid=call.get('status')=='invalid' and call.get('finish_reason') in {'stop','tool_calls'} and bool(call.get('response_blob'))
+            if (call.get('status') in {'truncated','reasoning_exhausted'} and billing and
+                    billing['actual'] is not None and call.get('response_blob')):
+                from .providers import reasoning_exhausted
+                if reasoning_exhausted(json.loads(self.store.read_blob(call['response_blob']))):
+                    call['status']='reasoning_exhausted'
+                    returned_invalid=True
             if not rejected and not no_call_preflight and ((job.get('pending') and not returned_invalid) or (call.get('status') not in {'completed','recovered'} and not returned_invalid)):
                 raise Conflict('原调用没有完整结果，不能重新发送')
             p=json.loads(cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()[0])
@@ -237,7 +266,7 @@ class Queue:
             row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
             if not row:raise KeyError(job['project'])
             project=json.loads(row[0])
-            if project.get('active_job') or project.get('trashed') or project['goal']!=job['goal']:
+            if project.get('active_job') or project.get('trashed') or project['goal']!=job.get('project_goal',job['goal']):
                 raise Conflict('材料已变化，不能重新核对原规划')
             if project['revision']!=job['base_revision']:
                 receipt=project.get('production') or {}
@@ -280,7 +309,7 @@ class Queue:
             row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
             if not row:raise KeyError(job['project'])
             project=json.loads(row[0])
-            if project.get('active_job') or project.get('trashed') or project['goal']!=job['goal']:
+            if project.get('active_job') or project.get('trashed') or project['goal']!=job.get('project_goal',job['goal']):
                 raise Conflict('材料已变化，不能重新核对原审核')
             if project['revision']!=job['base_revision']:
                 receipt=project.get('production') or {}
@@ -329,7 +358,7 @@ class Queue:
             row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
             if not row:raise KeyError(job['project'])
             project=json.loads(row[0])
-            if project.get('active_job') or project.get('trashed') or project['goal']!=job['goal']:
+            if project.get('active_job') or project.get('trashed') or project['goal']!=job.get('project_goal',job['goal']):
                 raise Conflict('材料已变化，不能继续原规划')
             if project['revision']!=job['base_revision']:
                 receipt=project.get('production') or {}

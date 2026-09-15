@@ -160,7 +160,7 @@ class RuleAssessment(Strict):
     rule_ids: list[str] = Field(min_length=1)
     status: Literal['pass','fail','unknown','not_applicable']
     block_ids: list[str]
-    quotes: list[str]
+    quotes: list[str] = Field(default_factory=list)
     reason: str = Field(min_length=1)
 
 
@@ -186,6 +186,16 @@ class LocalEdit(Strict):
 class LocalRepair(Strict):
     document_digest: str
     edits: list[LocalEdit] = Field(min_length=1)
+
+
+class BindingAssignment(Strict):
+    block_id: str
+    obligation_ids: list[str]
+    source_ids: list[str]
+
+
+class BindingPatch(Strict):
+    assignments: list[BindingAssignment] = Field(min_length=1)
 
 
 class ParagraphNode(Strict):
