@@ -1,6 +1,7 @@
 """Evidence scopes and immutable line addresses, without modifying prose."""
 from .store import Conflict, digest
 from .writing import canonical, protected_objects
+from .media import source_literals
 
 
 PROCESS_RULES = {'FMT-001', 'FMT-004', 'FMT-005', 'FMT-006', 'FMT-007', 'FMT-109'}
@@ -28,20 +29,23 @@ def execution_evidence(job, bundle):
 
 def protected_context(source, draft):
     literals = protected_objects(source)
+    objects={o['id']:o for o in source['objects']}
     return [{'source_id': sid, 'kind': next(o['kind'] for o in source['objects'] if o['id'] == sid),
              'literal': text, 'block_ids': [b['id'] for b in draft['blocks'] if text and text in b['markdown']]}
-            for sid, text in literals.items() if text]
+            for sid, current in literals.items() for text in source_literals(objects[sid],current) if text]
 
 
 def editable_lines(draft, source, allowed):
     protected = protected_objects(source)
+    objects={o['id']:o for o in source['objects']}
+    variants=[literal for sid,current in protected.items() for literal in source_literals(objects[sid],current)]
     result = []
     for block in draft['blocks']:
         if block['id'] not in allowed:
             continue
         text = block['markdown']
         spans = []
-        for literal in protected.values():
+        for literal in variants:
             if not literal:
                 continue
             start = 0

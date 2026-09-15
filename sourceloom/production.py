@@ -1045,9 +1045,11 @@ class Production:
             report=scan(bundle,job['draft'],self.store.root/'production'/job['id']/'checks')
             report['execution_evidence']=execution_evidence(job,bundle)
             catalog=rule_catalog(bundle['instructions'])
-            payload=dict(draft=draft_text_view(job['draft']),source={'objects':objects_view(source['objects'])},rule_catalog=list(catalog),
+            payload=dict(draft=draft_text_view(job['draft']),source={'objects':objects_view(source['objects'])},rule_catalog=list(catalog),rule_definitions=catalog,
                          mechanical_findings=report['format']['findings'],mechanical_candidates=report['format']['candidates'],
                          execution_evidence=report['execution_evidence'],protected_originals=protected_context(source,job['draft']))
+            from .style_parts import evidence_catalog
+            payload['evidence_catalog']=evidence_catalog(job['draft'])
             root_key=f"style-{job['repair_rounds']}"
             from .style_parts import partitions,validate_part,merge,IndexedReviewSchema,decode_indexed,missing_assignments,merge_indexed
             divided=root_key not in job['results'] and (job.get('style_parts_enabled') or
@@ -1060,7 +1062,12 @@ class Production:
                 key=root_key+f'-part-{number+1}' if divided else root_key
                 job.update(style_part_index=number,style_part_count=len(groups))
                 if divided:
-                    indexed_key=key+'-indexed-v1'
+                    indexed_key=key+'-indexed-v2'
+                    legacy_key=key+'-indexed-v1'
+                    if legacy_key in job['results'] or str(job.get('pending','')).startswith(legacy_key):
+                        # A previously dispatched request keeps its original schema.
+                        indexed_key=legacy_key
+                        part={k:v for k,v in part.items() if k!='evidence_catalog'}
                     # Reuse a complete earlier assignment. A malformed old array
                     # cannot become a pass; the new schema fixes identities before
                     # dispatch while retaining every original response and charge.
@@ -1077,16 +1084,20 @@ class Production:
                             'style_contract_repair' if contract else 'style',part,P.StyleReview)
                         parsed=validate_part(result,part)
                     else:
-                        indexed_payload=part|{'review_encoding':'indexed_review_v1',
+                        indexed_payload=part|{'review_encoding':'indexed_review_v2' if 'evidence_catalog' in part else 'indexed_review_v1',
                             'response_instruction':'Return the exact indexed schema: findings plus rules_by_id and/or checks_by_id ONLY when present in the schema. Each required object key is an assigned identity and must occur exactly once. Do not return assessments or mechanical_assessments arrays. Read the full skill and actual candidate; keep failures and unknowns with exact evidence. Omitted schema fields mean this group has no assignments of that type, not that their rules are waived.'}
                         result=self._call(job,indexed_key,'style',indexed_payload,IndexedReviewSchema(part))
                         from jsonschema import ValidationError
                         try:parsed=decode_indexed(result,part)
                         except ValidationError:
-                            missing=missing_assignments(result,indexed_payload)
+                            retained=result
+                            try:missing=missing_assignments(result,indexed_payload)
+                            except ValueError:
+                                from .style_parts import invalid_assignments
+                                retained,missing=invalid_assignments(result,indexed_payload)
                             missing['response_instruction']+=' This is the sole supplement for missing identities. Assess only these remaining supplied items; earlier returned judgments are retained unchanged by the program. Do not repeat them or rewrite the article.'
                             supplement=self._call(job,indexed_key+'-missing','style',missing,IndexedReviewSchema(missing))
-                            parsed=merge_indexed(result,supplement,part)
+                            parsed=merge_indexed(retained,supplement,part)
                     completed.append(parsed);continue
                 result=self._call(job,key,'style',part,P.StyleReview)
                 try:parsed=validate_part(result,part) if divided else P.StyleReview.model_validate(result).model_dump()
@@ -1106,6 +1117,11 @@ class Production:
                                                               require_heading_structure=job.get('teaching_version',0)>=2)]
             job['quality_issues']=issues
             if issues:
+                if job.get('joint_review_before_repair') and job.get('fidelity_draft_digest')!=digest(canonical(job['draft']).encode()):
+                    # Gather independent content feedback on this same draft
+                    # before spending either of its bounded repair transactions.
+                    job['stage']='fidelity'
+                    return 'queued'
                 if job['repair_rounds']>=2:
                     return 'needs_attention'
                 job['stage']='repair'

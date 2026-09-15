@@ -71,8 +71,12 @@ def test_style_review_precedes_independent_fidelity_and_failure_never_publishes(
     assert engine.step(job)=='queued' and job['stage']=='teaching' and calls==['style']
     job['stage']='style';job['repair_rounds']=2
     response['assessments'][0]['status']='unknown'
+    job['joint_review_before_repair']=False
     assert engine.step(job)=='needs_attention'
     assert job['quality_issues']
+    job['joint_review_before_repair']=True
+    assert engine.step(job)=='queued' and job['stage']=='fidelity'
+    assert job['repair_rounds']==2 and job['quality_issues']
 
 
 def test_complete_skill_is_frozen_and_each_file_is_checked(tmp_path,skill):

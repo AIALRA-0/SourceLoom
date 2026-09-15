@@ -30,6 +30,20 @@ def verify():
           for(const n of [0,599,1199]){const target='unique-ending-'+n+' ',ranges=testRanges(longDoc,target);if(ranges.length!==1||ranges[0].toString()!==target.trim())throw Error('Long-document location drifted')}
           return {cross_node_unicode:true,repeated_quotes:true,excluded_non_source:true,range_cache:true,long_source_chars:longIndex.text.length,index_ms:Math.round(elapsed),offset_storage_bytes:longIndex.offsets.byteLength,long_nodes:longIndex.nodes.length};
         }''',functions)
+        page.set_content('<iframe srcdoc="&lt;section data-readweave-anchor-id=one&gt;&lt;details&gt;&lt;summary&gt;Original page&lt;/summary&gt;Original text&lt;/details&gt;&lt;/section&gt;"></iframe>')
+        page.frame_locator('iframe').locator('summary').wait_for()
+        page.evaluate('''source=>{eval(source.replace(/export /g,'')+`;globalThis.bindTest=bindSourceClicks`);
+          globalThis.blockClicks=0;bindTest(document.querySelector('iframe'),()=>blockClicks++);
+        }''',source)
+        page.frame_locator('iframe').locator('summary').focus()
+        page.keyboard.press('Enter')
+        assert page.frame_locator('iframe').locator('details').get_attribute('open') is not None
+        assert page.evaluate('blockClicks')==0
+        page.frame_locator('iframe').locator('section').focus()
+        page.keyboard.press('Enter')
+        assert page.evaluate('blockClicks')==1
+        result['keyboard_reference_toggle']=True
+        result['keyboard_block_navigation']=True
         browser.close()
         return result
 

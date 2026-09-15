@@ -50,8 +50,9 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
     earlier=set()
     if prior_draft:
         from .writing import protected_objects
+        from .media import source_literals
         for sid,literal in protected_objects(inventory).items():
-            if any(sid in b.get('embedded_object_ids',[]) and sid in b['object_ids'] and literal in b['markdown'] for b in prior_draft['blocks']):
+            if any(sid in b.get('embedded_object_ids',[]) and sid in b['object_ids'] and any(v in b['markdown'] for v in source_literals(sources[sid],literal)) for b in prior_draft['blocks']):
                 earlier.add(sid)
     covered, object_coverage, identities = set(), set(), set()
     for b in parsed["blocks"]:
@@ -64,7 +65,8 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
                 if src['kind'] in {'text','heading'}:
                     literals[src['id']]=''.join('> '+line for line in src['text'].splitlines(keepends=True))
             for sid in b['embedded_object_ids']:
-                if sid not in literals or literals[sid] not in b['markdown']:
+                from .media import source_literals
+                if sid not in literals or not any(text in b['markdown'] for text in source_literals(sources[sid],literals[sid])):
                     error('embedded_bytes','正文内嵌原对象的字符发生变化',b['id'])
         if b["id"] in identities:
             error("duplicate", "候选段落身份重复", b["id"])

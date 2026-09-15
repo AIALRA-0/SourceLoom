@@ -97,7 +97,7 @@ def register(app, store, config):
     @app.patch('/api/library/documents/{pid}')
     def change_document(pid:str,body:dict):
         return queue.edit_document(pid,body['library_revision'],title=body.get('title'),
-                                   folder=body.get('folder'),move='folder' in body,trashed=body.get('trashed'))
+                                   folder=body.get('folder'),move='folder' in body,trashed=body.get('trashed'),budget_cny=body.get('budget_cny'))
 
     @app.post('/api/projects/{pid}/produce')
     def produce(pid:str):
@@ -177,7 +177,8 @@ def register(app, store, config):
         draft=available_draft(job)
         if not draft:raise Conflict('本次尚未生成可阅读正文')
         if format=='markdown':
-            return Response(canonical(draft).encode(),media_type='text/markdown',
+            from .media import reading_draft
+            return Response(canonical(reading_draft(p|{'draft':draft,'inventory':job['inventory']})).encode(),media_type='text/markdown',
                 headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(p['title']+'-本次新稿.md')})
         if format!='html':raise ValueError('未知正文格式')
         candidate=p|dict(draft=draft,inventory=job['inventory'],plan=job['plan'],
@@ -225,7 +226,8 @@ def register(app, store, config):
             p=p|dict(draft=available,inventory=j['inventory'],plan=j['plan'])
         p=presentation(p,numbering)
         if format=='markdown':
-            return Response(canonical(p['draft']).encode(),media_type='text/markdown',
+            from .media import reading_draft
+            return Response(canonical(reading_draft(p)).encode(),media_type='text/markdown',
                             headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(p['title']+'.md')})
         if format!='html':
             raise ValueError('未知正文格式')
@@ -373,6 +375,7 @@ def register(app, store, config):
         latest=latest_production(pid)
         provenance={'project':pid,'revision':p['revision'],'inventory_job':latest['id'] if latest else p.get('copied_from',{}).get('inventory_job')}
         return store.change(new['id'],lambda n:n.update(inventory=inv,goal=p['goal'],folder=p.get('folder'),
+            budget_cny=p.get('budget_cny'),
             draft=copy.deepcopy(p.get('draft')),plan=copy.deepcopy(p.get('plan')),
             heading_numbering=p.get('heading_numbering','preserve'),copied_from=provenance,
             state='generated' if p.get('draft') else 'inventoried' if inv else 'collecting'))

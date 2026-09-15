@@ -11,6 +11,19 @@ class IndexedReviewSchema:
     def model_json_schema(self):
         schema=copy.deepcopy(StyleReview.model_json_schema())
         definitions=schema['$defs']
+        blocks=self.payload.get('draft',{}).get('blocks',[])
+        if blocks:
+            ids=[b['id'] for b in blocks]
+            definitions['RuleAssessment']['properties']['block_ids']['items']={'type':'string','enum':ids}
+            definitions['Finding']['properties']['block_id']={'type':'string','enum':ids}
+        executions=list(self.payload.get('execution_evidence',{}))
+        if executions:
+            definitions['RuleAssessment']['properties']['execution_ids']['items']={'type':'string','enum':executions}
+        if self.payload.get('evidence_catalog'):
+            rule=definitions['RuleAssessment']
+            rule['properties'].pop('quotes',None);rule['properties'].pop('block_ids',None)
+            rule['required']=[k for k in rule['required'] if k not in {'quotes','block_ids'}]+['evidence_ids']
+            rule['properties']['evidence_ids']={'type':'array','items':{'type':'string','enum':list(self.payload['evidence_catalog'])}}
         for name,identity in [('RuleAssessment','rule_ids'),('CandidateAssessment','candidate_id')]:
             definitions[name]['properties'].pop(identity)
             definitions[name]['required'].remove(identity)
@@ -37,9 +50,21 @@ def decode_indexed(result,payload):
                 if isinstance(row,dict) and row.get('findings')==[]:
                     del row['findings']
     validate(result,IndexedReviewSchema(payload).model_json_schema())
+    if payload.get('evidence_catalog'):
+        for row in result.get('rules_by_id',{}).values():
+            records=[payload['evidence_catalog'][key] for key in row.pop('evidence_ids')]
+            row['block_ids']=list(dict.fromkeys(r['block_id'] for r in records))
+            row['quotes']=[r['text'] for r in records]
     rules=[row|{'rule_ids':[key]} for key,row in result.get('rules_by_id',{}).items()]
     candidates=[row|{'candidate_id':key} for key,row in result.get('checks_by_id',{}).items()]
     return validate_part({'assessments':rules,'mechanical_assessments':candidates,'findings':result['findings']},payload)
+
+
+def evidence_catalog(draft):
+    """Immutable line references prevent reviewers from rewriting their quotations."""
+    return {f"e{block_index+1}-{line_index+1}":{'block_id':block['id'],'text':line}
+        for block_index,block in enumerate(draft['blocks'])
+        for line_index,line in enumerate(block['markdown'].splitlines()) if line.strip()}
 
 
 def missing_assignments(result,payload):
@@ -65,6 +90,22 @@ def merge_indexed(original,supplement,payload):
         if supplement.get(key):result.setdefault(key,{}).update(copy.deepcopy(supplement[key]))
     result['findings'].extend(copy.deepcopy(supplement['findings']))
     return decode_indexed(result,payload)
+
+
+def invalid_assignments(result,payload):
+    """Reassess only malformed rows; preserve valid verdicts and all findings."""
+    from jsonschema import Draft202012Validator
+    errors=list(Draft202012Validator(IndexedReviewSchema(payload).model_json_schema()).iter_errors(result))
+    if not errors:raise ValueError('没有需要修正的审核结构')
+    rows=set()
+    for error in errors:
+        path=list(error.path)
+        if len(path)<2 or path[0] not in {'rules_by_id','checks_by_id'}:
+            raise ValueError('审核错误不局限于可独立重审的检查项')
+        rows.add((path[0],path[1]))
+    retained=copy.deepcopy(result)
+    for group,key in rows:del retained[group][key]
+    return retained,missing_assignments(retained,payload)
 
 
 def partitions(payload,limit=40):

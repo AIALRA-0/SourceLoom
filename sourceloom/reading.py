@@ -57,4 +57,8 @@ def reader_summary(project,costs):
     p['draft']=bool(project.get('draft'))
     p['cost_summary']={'known_usd':sum(c['actual'] or 0 for c in costs),
         'subscription_calls':sum(c['actual'] is None and c['body'].get('channel') in {'subscription','router','codex-cli'} for c in costs)}
+    from .money import summary
+    p['cost_summary'].update(summary(costs));p['budget_cny']=project.get('budget_cny')
+    count=(p['inventory'] or {}).get('source_chars',0)
+    p['cost_summary']['cny_per_1000_source_chars']=p['cost_summary']['known_cny']*1000/count if count else None
     return p

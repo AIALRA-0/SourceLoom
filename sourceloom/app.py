@@ -30,6 +30,7 @@ class Create(BaseModel):
     goal:str=Field(default="保持原文主旨与人称，完整保留信息，改善逻辑与可读性，不自行设计课程或情境",max_length=2000)
     mode:str="rewrite"
     budget_usd:float=Field(default=0.2,ge=0,le=20)
+    budget_cny:float|None=Field(default=None,ge=0,le=200)
 
 
 def create_app(config=None):
@@ -107,8 +108,8 @@ def create_app(config=None):
     def create(body:Create):
         if body.mode not in {"rewrite","research"}:
             raise ValueError("选择保真改写或调查成教材")
-        p=store.create(body.title,body.mode,body.budget_usd)
-        return store.change(p["id"],lambda p:p.update(goal=body.goal))
+        p=store.create(body.title,body.mode,20 if body.budget_cny is not None else body.budget_usd)
+        return store.change(p["id"],lambda p:p.update(goal=body.goal,budget_cny=body.budget_cny))
 
     @app.post("/api/demo")
     def demo():

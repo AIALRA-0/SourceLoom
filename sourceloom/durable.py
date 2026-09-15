@@ -73,6 +73,7 @@ class Queue:
                 raise Conflict('本篇已有处理记录，请继续原任务或明确建立新的材料副本，不能重置本篇限制')
             jid = identity()
             job = dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
+                       joint_review_before_repair=True,
                        stage='visual_extract' if any(o['kind'] in {'page','image'} and o.get('resource_id') for o in p['inventory']['objects']) else 'inventory',
                        results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,writing_contract_version=7,review_order='style_first',transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],
                        source_digest=p['inventory']['digest'],source=p['inventory'],goal=p['goal'],project_goal=p['goal'],
@@ -125,6 +126,7 @@ class Queue:
                 raise Conflict('原件清单尚未完成独立核对')
             jid=identity();now=time.time()
             job=dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
+                joint_review_before_repair=True,
                 stage='planner',results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,writing_contract_version=7,review_order='style_first',transformation_mode='rewrite',
                 base_revision=p['revision'],source_digest=p['inventory']['digest'],source=old['source'],
                 inventory=p['inventory'],facts=old['facts'],reused_inventory_job=old['id'],
@@ -625,8 +627,13 @@ class Queue:
             if not cx.execute('DELETE FROM library_folders WHERE id=?',(fid,)).rowcount:
                 raise KeyError(fid)
 
-    def edit_document(self, pid, revision, *, title=None, folder=None, move=False, trashed=None):
+    def edit_document(self, pid, revision, *, title=None, folder=None, move=False, trashed=None, budget_cny=None):
         def update(p):
+            if budget_cny is not None:
+                import math
+                if isinstance(budget_cny,bool) or not isinstance(budget_cny,(int,float)) or not math.isfinite(budget_cny) or not 0<=budget_cny<=200:
+                    raise ValueError('人民币付费上限需为 0 到 200 元')
+                p['budget_cny']=budget_cny
             if title is not None:
                 if not title.strip() or len(title)>180:
                     raise ValueError('材料名称需为 1 到 180 个字符')

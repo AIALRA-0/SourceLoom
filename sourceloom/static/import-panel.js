@@ -24,7 +24,7 @@ export function bindImport({api,send,notice,refresh,open}) {
   try{
    update('正在建立材料记录');
    let pid=form.dataset.project;
-   if(!pid){const created=await send('/projects',{title:form.elements.title.value,goal:form.elements.goal.value,budget_usd:Number(form.elements.budget.value)});pid=created.id;form.dataset.project=pid;
+   if(!pid){const created=await send('/projects',{title:form.elements.title.value,goal:form.elements.goal.value,budget_cny:Number(form.elements.budget.value)});pid=created.id;form.dataset.project=pid;
     if(form.elements.folder.value)await send('/library/documents/'+pid,{library_revision:0,folder:form.elements.folder.value},'PATCH')}
    const generate=form.elements.generate.checked;
    if(!form.dataset.accepted){

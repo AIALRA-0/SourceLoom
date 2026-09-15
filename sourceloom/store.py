@@ -158,6 +158,13 @@ class Store:
             if previous:
                 raise Conflict("已有调用身份，不得重复发送")
             subscription=body.get('channel') in {'router','codex-cli','subscription'}
+            if not subscription and p.get('budget_cny') is not None:
+                from .money import summary
+                costs=[dict(r)|{'body':json.loads(r['body'])} for r in cx.execute('SELECT actual,body FROM spending WHERE project=?',(pid,))]
+                native=summary(costs)
+                if body.get('reserved_cny') is None:raise Conflict('当前通道未配置人民币价格，未按美元冒充人民币计费')
+                if native['known_cny']+native['reserved_cny']+body['reserved_cny']>p['budget_cny']+1e-9:
+                    raise Conflict(f"本篇人民币费用保护暂停，下一步预留后将超过 ¥{p['budget_cny']:.2f}，已有结果保留")
             paid="COALESCE(json_extract(body,'$.channel'),'') NOT IN ('router','codex-cli','subscription')"
             total, count = cx.execute("SELECT COALESCE(SUM(COALESCE(actual,reserved)),0), SUM(CASE WHEN "+paid+" THEN 1 ELSE 0 END) FROM spending WHERE project=?", (pid,)).fetchone()
             if not subscription and total + amount > p["budget_usd"] + 1e-9:

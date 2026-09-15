@@ -12,7 +12,7 @@ from .checks import inspect_draft, release_issues
 from .store import Conflict, digest
 from .math_render import markdown_renderer
 
-SAFE_TAGS = {"div","p","br","strong","em","b","i","u","s","sub","sup","table","thead","tbody","tfoot","tr","td","th","caption","pre","code","blockquote","ul","ol","li","h2","h3","h4","h5","h6","span","a","img","figure","figcaption","hr"}
+SAFE_TAGS = {"details","summary","div","p","br","strong","em","b","i","u","s","sub","sup","table","thead","tbody","tfoot","tr","td","th","caption","pre","code","blockquote","ul","ol","li","h2","h3","h4","h5","h6","span","a","img","figure","figcaption","hr"}
 MATH_TAGS=set('math mrow mi mn mo msub msup msubsup mfrac mover munder munderover mtable mtr mtd msqrt mroot mtext mspace menclose mpadded mphantom semantics annotation mstyle mfenced'.split())
 SAFE_TAGS |= MATH_TAGS
 
@@ -63,8 +63,33 @@ def safe_html(raw):
 def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
     from .reading import presentation
     project=presentation(project)
+    from .media import reading_draft
+    project=project|{'draft':reading_draft(project)}
     inventory = project["inventory"]
+    from .writing import protected_objects
+    from .media import source_literals
+    literals=protected_objects(inventory)
     src = {o["id"]:o for o in inventory["objects"]}
+    resource_ids={r['id'] for r in inventory.get('resources',[])}|{o['resource_id'] for o in src.values() if o.get('resource_id')}
+    image_targets={}
+    for obj in src.values():
+        if obj.get('resource_id') and obj.get('target'):
+            image_targets.setdefault(obj['target'],set()).add(obj['resource_id'])
+    transparent={o['resource_id'] for o in src.values() if o.get('visual_classification',{}).get('method')=='all_pixels_alpha_zero'}
+    def resource_html(raw):
+        doc=BeautifulSoup(raw,'html.parser')
+        for img in doc.select('img[src]'):
+            matches=image_targets.get(img['src'],set())
+            if len(matches)==1:img['src']='assets/'+next(iter(matches))
+        doc=BeautifulSoup(safe_html(str(doc)),'html.parser')
+        for img in doc.select('img[src^="assets/"]'):
+            key=img['src'][7:]
+            if key not in resource_ids:
+                del img['src'];continue
+            img['src']=asset_url(key)
+            if target=='preview':img['loading']='lazy';img['decoding']='async'
+            if key in transparent:img['class']=['source-spacer'];img['width']='1';img['height']='1'
+        return str(doc)
     anchor_map={}
     scope=lambda o:o.get('source_scope',o['locator'].split('/')[0])
     for o in inventory['objects']:
@@ -81,12 +106,21 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
             inserted[sid]=inserted.get(sid,0)+1
             suffix='' if inserted[sid]==1 else '-repeat-'+str(inserted[sid])
             parts.append('<span id="loom-source-'+html.escape(sid,quote=True)+suffix+'"></span>')
-        rendered=safe_html(md.render(b["markdown"]))
-        if embedded:
-            parsed=BeautifulSoup(rendered,'html.parser')
-            for image in parsed.select('img[src^="assets/"]'):
-                image['src']=asset_url(image['src'][7:])
-            rendered=str(parsed)
+        # Protected HTML can contain blank lines inside attributes or cells.
+        # Parse it as HTML, not as Markdown fragments separated by those lines.
+        text=b['markdown'];fragments={}
+        for sid in embedded:
+            obj=src.get(sid)
+            if not obj or obj['kind'] not in {'image','page','table'} or sid not in literals:continue
+            for literal in source_literals(obj,literals[sid]):
+                if not literal.lstrip().startswith(('<img ','<table')) or literal not in text:continue
+                token='SOURCELOOMRESOURCE'+digest(literal.encode())
+                while token in text:token+='X'
+                fragments[token]=literal;text=text.replace(literal,token)
+        rendered=md.render(text)
+        for token,literal in fragments.items():
+            rendered=rendered.replace('<p>'+token+'</p>',literal).replace(token,literal)
+        rendered=resource_html(rendered) if embedded else safe_html(rendered)
         parts.append(rendered)
         quoted_objects=[sid for sid in b['object_ids'] if sid not in embedded]
         if b['kind']=='source' and quoted_objects:
@@ -103,11 +137,11 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
             parts.append('<div id="loom-source-'+html.escape(sid,quote=True)+suffix+'">')
             if o["kind"] in {"image","page"}:
                 if o.get("resource_id"):
-                    parts.append(f'<figure class="image"><img src="{html.escape(asset_url(o["resource_id"]),quote=True)}" alt="{html.escape(o["text"][:160] or o["locator"],quote=True)}"></figure>')
+                    parts.append(f'<figure class="image"><img loading="lazy" decoding="async" src="{html.escape(asset_url(o["resource_id"]),quote=True)}" alt="{html.escape(o["text"][:160] or o["locator"],quote=True)}"></figure>')
                 else:
                     parts.append("<p>图片资源尚未取得</p>")
             elif o["kind"]=="table" and o.get("raw", "").lstrip().startswith("<table"):
-                parts.append(safe_html(o["raw"]))
+                parts.append(resource_html(o['raw']))
             elif o["kind"]=="link":
                 link_target = o.get("target", "")
                 if link_target.startswith('#') and (scope(o),link_target[1:]) in anchor_map:link_target='#'+anchor_map[(scope(o),link_target[1:])]

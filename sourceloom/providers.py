@@ -68,6 +68,19 @@ class Uncertain(RuntimeError):
     pass
 
 
+def confirmed_subscription_exhaustion(response,endpoint):
+    from urllib.parse import urlsplit
+    if urlsplit(endpoint).hostname!='opencode.ai' or response.status_code not in {402,429}:return False
+    try:
+        body=response.json()
+        if not isinstance(body,dict):return False
+        if body.get('type')=='GoUsageLimitError':return True
+        error=body.get('error',{})
+        if not isinstance(error,dict):return False
+        return error.get('type')=='GoUsageLimitError' or error.get('code') in {'quota_exhausted','quota_exceeded','usage_limit_exceeded','subscription_limit_exceeded'}
+    except ValueError:return False
+
+
 def recover_labeled_chat_json(body, schema):
     """Recover only the evidenced browser language-label wrapper, with full validation."""
     if (body.get('status')!='failed' or body.get('errorCode')!='validation_failed' or
@@ -205,6 +218,9 @@ class Provider:
         self.store, self.config = store, config
 
     def call(self, pid, role, payload, schema, job, cancelled=lambda:False):
+        import copy
+        original_payload=copy.deepcopy(payload)
+        original_schema=copy.deepcopy(schema)
         c = self.config | self.config.get('role_providers', {}).get(role, {})
         from .trials import check
         check(self.store,c)
@@ -237,6 +253,10 @@ class Provider:
             'after writing and must not be demanded as already demonstrated by a plan. An outline should not be judged '
             'as if it were final prose. Do not confuse observations that say a requirement IS satisfied with errors.\n')
         payload = dict(payload)
+        if instruction_role=='line_repair' and payload.get('editable_lines') and '$defs' in schema:
+            schema=copy.deepcopy(schema)
+            schema['properties']['document_digest']['enum']=[payload['document_digest']]
+            schema['$defs']['LineEdit']['properties']['line_id']['enum']=[line['line_id'] for line in payload['editable_lines']]
         if instruction_role=='inventory_patch':
             ids=[f['id'] for f in payload.get('previous_response',{}).get('facts',[])]
             if ids:
@@ -313,8 +333,12 @@ class Provider:
             raise Conflict('输入准备后已达到等待上限，尚未发送模型请求')
         call_id = identity()
         request_blob = self.store.blob(json.dumps(dict(system=instruction,payload=payload,schema=schema),ensure_ascii=False).encode())
-        reserve = ((input_bytes+len(image_resources)*c.get('vision_input_token_reserve',20000))*c["input_price"] + c["max_output_tokens"]*c["output_price"])/1e6 if c["provider"]=="openai-compatible" else 0
-        self.store.reserve(pid, call_id, reserve, dict(role=role,model=c["model"],input_bytes=input_bytes,channel=c["provider"]),
+        from .money import usage_cost
+        subscription=c.get('billing_mode')=='subscription'
+        billing_channel='subscription' if subscription else c['provider']
+        reserve = ((input_bytes+len(image_resources)*c.get('vision_input_token_reserve',20000))*c["input_price"] + c["max_output_tokens"]*c["output_price"])/1e6 if c["provider"]=="openai-compatible" and not subscription else 0
+        reserved_cny=0 if subscription else usage_cost({'prompt_tokens':input_bytes+len(image_resources)*c.get('vision_input_token_reserve',20000),'completion_tokens':c['max_output_tokens']},c.get('pricing_cny'))
+        self.store.reserve(pid, call_id, reserve, dict(role=role,model=c["model"],input_bytes=input_bytes,channel=billing_channel,reserved_cny=reserved_cny),
                            c.get('daily_budget_usd',2.0),c.get('daily_call_limit',80),
                            c.get('total_budget_usd'),c.get('subscription_call_limit'))
         job["calls"].append(dict(id=call_id,role=role,status="submitted",channel=c['provider'],
@@ -326,6 +350,9 @@ class Provider:
                                  skill_delivery='unabridged_inline',file_read_verified=False))
         self.store.put_job(job)
         headers = {"Authorization":"Bearer "+c["api_key"], "Content-Type":"application/json"}
+        from urllib.parse import urlsplit
+        if urlsplit(c['base_url']).hostname=='opencode.ai':
+            headers.update({'User-Agent':'SourceLoom/0.1','x-opencode-session':'sourceloom-'+job['id']})
         try:
             if c["provider"] == "codex-cli":
                 work=self.store.root/'calls'/call_id
@@ -426,9 +453,18 @@ class Provider:
                     from urllib.parse import urlsplit
                     job['calls'][-1].update(http_status=response.status_code,response_blob=self.store.blob(response.content))
                     self.store.put_job(job)
+                    if subscription and confirmed_subscription_exhaustion(response,endpoint):
+                        self.store.settle(call_id,0,dict(channel=billing_channel,status='quota_rejected',actual_cny=0))
+                        job['calls'][-1].update(status='rejected',error_code='subscription_limit_exceeded')
+                        self.store.put_job(job)
+                        fallback=c.get('quota_fallback')
+                        if not fallback:raise ValueError('订阅通道明确返回用量耗尽，未配置官方备用通道，已有结果保留')
+                        job.setdefault('quota_switches',[]).append({'from_call':call_id,'role':role,'reason':'explicit_subscription_exhaustion'})
+                        self.store.put_job(job)
+                        return Provider(self.store,c|fallback|{'role_providers':{},'quota_fallback':None}).call(pid,role,original_payload,original_schema,job,cancelled)
                     balance_rejected=response.status_code==402 and urlsplit(endpoint).hostname=='api.deepseek.com'
                     if response.status_code in {400,401,403,422} or balance_rejected:
-                        self.store.settle(call_id,0,dict(channel=c['provider'],status='rejected',http_status=response.status_code))
+                        self.store.settle(call_id,0,dict(channel=billing_channel,status='rejected',http_status=response.status_code,actual_cny=0))
                         job['calls'][-1].update(status='rejected',http_status=response.status_code,
                             response_blob=self.store.blob(response.content))
                         self.store.put_job(job)
@@ -449,7 +485,11 @@ class Provider:
                     actual=((usage['prompt_tokens']-cached)*c['input_price']
                             +cached*c.get('cached_input_price',c['input_price'])
                             +usage['completion_tokens']*c['output_price'])/1e6
-                self.store.settle(call_id,actual,dict(usage=usage,model=body.get("model"),channel=c["provider"],
+                allocation=actual
+                if subscription:actual=0
+                self.store.settle(call_id,actual,dict(usage=usage,model=body.get("model"),channel=billing_channel,
+                    actual_cny=0 if subscription else usage_cost(usage,c.get('pricing_cny')),subscription_allocation_usd=allocation if subscription else None,
+                    pricing_cny=c.get('pricing_cny'),billing_mode=c.get('billing_mode','metered'),
                     options=options,cost_measurement='usage multiplied by configured conservative rates; not a supplier invoice'))
                 if body["choices"][0].get("finish_reason") != ('tool_calls' if strict_output else 'stop'):
                     if actual is not None and reasoning_exhausted(body):
@@ -556,10 +596,14 @@ class Provider:
                 raise Uncertain("达到本次等待上限，继续查询原任务，不自动重发")
             raise ValueError("当前为人工任务包通道，请导出任务包后导回结果")
         except (httpx.HTTPError, Uncertain) as exc:
+            if job['calls'][-1]['id']!=call_id:
+                # The explicitly authorized quota fallback owns its own ledger.
+                raise
             job['calls'][-1]['status']='uncertain';self.store.put_job(job)
-            self.store.settle(call_id,None,dict(role=role,channel=c["provider"],error=type(exc).__name__))
+            self.store.settle(call_id,None,dict(role=role,channel=billing_channel,error=type(exc).__name__))
             raise Uncertain(str(exc) if isinstance(exc,Uncertain) else "上游结果不确定，原调用及预留费用保留") from None
         except (ValueError,KeyError,IndexError,TypeError):
+            if job['calls'][-1]['id']!=call_id:raise
             if not job['calls'][-1].get('dispatch_started',True):
                 self.store.settle(call_id,0,dict(status='rejected',reason='local_preflight_before_dispatch'))
                 job['calls'][-1]['status']='rejected';self.store.put_job(job)

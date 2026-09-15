@@ -55,7 +55,8 @@ def protected_objects(inventory):
         if kind in {'text','heading'}:
             continue
         if kind in {'image','page'} and o.get('resource_id'):
-            text='<img src="assets/'+o['resource_id']+'" alt="'+html.escape(o['text'] or o['locator'],quote=True)+'">'
+            from .media import image_markup
+            text=image_markup(o)
         elif kind=='table' and o.get('raw','').lstrip().startswith('<table'):
             text=o['raw']
         elif kind=='code' and o.get('fence_raw'):
@@ -97,12 +98,14 @@ def attach_original_pages(response, inventory, unit_id, prior_draft):
     """Place retained page images once after their assigned facts have prose bindings."""
     result=copy.deepcopy(response)
     literals=protected_objects(inventory)
+    from .media import source_literals
+    objects={o['id']:o for o in inventory['objects']}
     covered={fid for b in result['blocks'] for fid in b.get('obligation_ids',[])}
     def placed(nodes):
         return {n['id'] for n in nodes if n['type']=='source'}
     present=set().union(*(placed(b['content']) for b in result['blocks']))
     earlier={sid for sid,text in literals.items() if any(sid in b.get('embedded_object_ids',[]) and
-        sid in b['object_ids'] and text in b['markdown'] for b in prior_draft.get('blocks',[]))}
+        sid in b['object_ids'] and any(v in b['markdown'] for v in source_literals(objects[sid],text)) for b in prior_draft.get('blocks',[]))}
     for obj in inventory['objects']:
         sid=obj['id']
         if obj['kind']!='page' or not obj.get('resource_id') or sid in present|earlier:continue
