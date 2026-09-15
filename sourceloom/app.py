@@ -137,7 +137,7 @@ def create_app(config=None):
         return p
 
     @app.post("/api/projects/{pid}/upload")
-    def upload(pid:str,files:list[UploadFile]=File(...)):
+    def upload(pid:str,files:list[UploadFile]=File(...),background:bool=False,generate:bool=False,request_id:str|None=None):
         store.get(pid)
         if len(files)>100:
             raise ValueError("单次最多上传 100 个文件")
@@ -149,12 +149,18 @@ def create_app(config=None):
             if len(raw)>MAX_FILE or total>MAX_FILE*4:
                 raise ValueError('单文件最多 25 MB，本次最多 100 MB')
             uploads.append((file.filename or "material.txt",raw))
+        if background:
+            from .intake_jobs import IntakeQueue
+            return JSONResponse(IntakeQueue(store,config).enqueue(pid,uploads=uploads,generate=generate,request_id=request_id),status_code=202)
         return assign_inventory(pid,isolated_intake(store,uploads))
 
     @app.post("/api/projects/{pid}/url")
     def import_url(pid:str,body:dict):
         if not config["fetch_enabled"]:
             raise Conflict("当前运行配置未启用网页获取，可以上传保存的网页")
+        if body.get('background'):
+            from .intake_jobs import IntakeQueue
+            return JSONResponse(IntakeQueue(store,config).enqueue(pid,url=str(body.get('url','')),generate=bool(body.get('generate')),request_id=body.get('request_id')),status_code=202)
         uploads,url,aliases,failures=fetch_bundle(str(body.get('url','')))
         inv=isolated_intake(store,uploads,source_url=url,asset_aliases=aliases)
         inv['web_snapshot']={'asset_aliases':aliases,'fetch_failures':failures,'scope':'complete supplied HTML body'}
@@ -208,6 +214,9 @@ def create_app(config=None):
 
     @app.post("/api/jobs/{jid}/cancel")
     def cancel(jid:str):
+        if store.job(jid)['role']=='intake':
+            from .intake_jobs import IntakeQueue
+            return IntakeQueue(store,config).cancel(jid)
         if store.job(jid)['role']=='production':
             return queue.cancel(jid)
         return pipeline.cancel(jid)

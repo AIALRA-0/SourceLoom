@@ -152,7 +152,7 @@ def test_inventory_uncertainty_requires_independent_evidenced_decision(tmp_path,
     assert roles==['inventory_audit','inventory_decision']
 
 
-@pytest.mark.parametrize('role',['fact_inventory','writer','planner','term_preparation','line_repair','independent_review'])
+@pytest.mark.parametrize('role',['fact_inventory','writer','planner','term_preparation','line_repair','independent_review','style_contract_repair'])
 def test_actual_api_request_contains_unabridged_skill_and_exact_receipt(tmp_path,skill,monkeypatch,role):
     store,queue,p,bundle=prepared(tmp_path,skill)
     job=queue.enqueue(p['id'],bundle)

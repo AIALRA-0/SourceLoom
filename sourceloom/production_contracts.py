@@ -8,7 +8,7 @@ from .contracts import Strict, Evidence, Finding
 class SourceFact(Strict):
     id: str
     source_id: str
-    quote: str = Field(min_length=1)
+    quote: str
     meaning: str = Field(min_length=1)
     person: str
     pronouns: list[str]
@@ -24,6 +24,14 @@ class FactInventory(Strict):
     facts: list[SourceFact] = Field(min_length=1)
     assessed_source_ids: list[str]
     unresolved: list[str]
+
+
+class InventoryPatch(Strict):
+    replacements: list[SourceFact]
+    additions: list[SourceFact]
+    remove_ids: list[str]
+    unresolved: list[str]
+    rationale: str = Field(min_length=1)
 
 
 class InventoryUncertainty(Strict):
@@ -116,7 +124,7 @@ class VisualCheck(Strict):
     status: Literal['preserved','changed','missing','unreadable','not_applicable']
     region: str = Field(min_length=1)
     observation: str = Field(min_length=1)
-    transcript_excerpt: str
+    transcript_excerpt: str = ''
 
 
 class VisualPageChecks(Strict):
@@ -130,7 +138,7 @@ class VisualAuditV2(Strict):
 
 class FactCheck(Strict):
     fact_id: str
-    source_quote: str = Field(min_length=1)
+    source_quote: str
     block_id: str
     output_quote: str
     status: Literal['preserved','lost','changed','unknown']
@@ -229,6 +237,17 @@ class BindingAssignment(Strict):
 
 class BindingPatch(Strict):
     assignments: list[BindingAssignment] = Field(min_length=1)
+
+
+class ReferenceTextEdit(Strict):
+    block_id: str
+    node_id: str
+    old_text: str
+    new_text: str
+
+
+class ReferenceTextPatch(Strict):
+    edits: list[ReferenceTextEdit] = Field(min_length=1)
 
 
 class ParagraphNode(Strict):
@@ -351,3 +370,13 @@ class FlatBlock(ComposedBlock):
 class FlatDraft(Strict):
     encoding: Literal['flat_nodes_v1']
     blocks: list[FlatBlock] = Field(min_length=1)
+
+
+class UnitDependency(Strict):
+    unit_id: str
+    follows_units: list[str]
+    bridge_reason: str
+
+
+class DependencyPatch(Strict):
+    units: list[UnitDependency]

@@ -64,7 +64,8 @@ def response(content='',reason='length',completion=100,thinking=100):
 
 def test_reasoning_exhaustion_never_classifies_partial_or_unknown_output_as_empty():
     assert reasoning_exhausted(response())
-    for body in [response('{'),response(reason='stop'),response(completion=0,thinking=0),response(thinking=99),{}]:
+    assert reasoning_exhausted(response(reason='stop'))
+    for body in [response('{'),response(reason='content_filter'),response(completion=0,thinking=0),response(thinking=99),{}]:
         assert not reasoning_exhausted(body)
     body=response();body['choices'][0]['message']['tool_calls']=[{'id':'partial'}]
     assert not reasoning_exhausted(body)

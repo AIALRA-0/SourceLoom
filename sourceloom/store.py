@@ -44,6 +44,8 @@ class Store:
             """)
             if 'created' not in {r[1] for r in cx.execute('PRAGMA table_info(spending)')}:
                 cx.execute('ALTER TABLE spending ADD COLUMN created REAL NOT NULL DEFAULT 0')
+            from .progress import install
+            install(cx)
 
     @contextmanager
     def connect(self):
@@ -155,15 +157,21 @@ class Store:
             previous = cx.execute("SELECT * FROM spending WHERE id=?", (call_id,)).fetchone()
             if previous:
                 raise Conflict("已有调用身份，不得重复发送")
-            total, count = cx.execute("SELECT COALESCE(SUM(COALESCE(actual,reserved)),0), COUNT(*) FROM spending WHERE project=?", (pid,)).fetchone()
-            if total + amount > p["budget_usd"] + 1e-9 or count >= p["max_calls"]:
-                raise Conflict("预算或调用次数已达上限，已有产物保留")
+            subscription=body.get('channel') in {'router','codex-cli','subscription'}
+            paid="COALESCE(json_extract(body,'$.channel'),'') NOT IN ('router','codex-cli','subscription')"
+            total, count = cx.execute("SELECT COALESCE(SUM(COALESCE(actual,reserved)),0), SUM(CASE WHEN "+paid+" THEN 1 ELSE 0 END) FROM spending WHERE project=?", (pid,)).fetchone()
+            if not subscription and total + amount > p["budget_usd"] + 1e-9:
+                raise Conflict(f"本篇费用保护暂停：已计费或预留 ${total:.4f}，下一步最多预留 ${amount:.4f}，本篇上限 ${p['budget_usd']:.2f}；这是本篇设置，不是模型账户余额耗尽")
+            if not subscription and (count or 0) >= p["max_calls"]:
+                raise Conflict(f"本篇流程保护暂停：已记录 {count} 次请求，达到本篇设置的 {p['max_calls']} 次；这不是订阅账户额度耗尽，已有产物保留")
             day=int(time.time()//86400)*86400
-            global_total,global_calls=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0),COUNT(*) FROM spending WHERE created>=?',(day,)).fetchone()
-            if (daily_budget is not None and global_total+amount>daily_budget+1e-9) or global_calls>=daily_calls:
-                raise Conflict('今日总预算或总调用次数已达上限，其他项目不能绕过额度')
+            global_total,global_calls=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0),SUM(CASE WHEN '+paid+' THEN 1 ELSE 0 END) FROM spending WHERE created>=?',(day,)).fetchone()
+            if not subscription and daily_budget is not None and global_total+amount>daily_budget+1e-9:
+                raise Conflict('今日接口费用保护暂停，已知费用与预留合计将超过当前设置，已有结果保留；不是订阅账户额度耗尽')
+            if not subscription and (global_calls or 0)>=daily_calls:
+                raise Conflict('今日接口请求次数达到当前保护设置，已有结果保留；订阅请求不计入这个次数')
             all_spending=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0) FROM spending').fetchone()[0]
-            if total_budget is not None and all_spending+amount>total_budget+1e-9:
+            if not subscription and total_budget is not None and all_spending+amount>total_budget+1e-9:
                 raise Conflict('累计测试预算已达上限，更换日期或项目不能重新获得额度')
             if subscription_calls is not None and body.get('channel') in {'router','codex-cli'}:
                 # A confirmed pre-dispatch rejection did not consume a model

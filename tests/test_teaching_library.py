@@ -86,6 +86,45 @@ def test_page_metadata_is_routed_to_end_matter_even_if_planner_forgets_flag():
     assert plan['units'][0]['document_info_ids']==[]
 
 
+def test_fact_identity_in_document_info_preserves_mixed_page_assignments():
+    inv,plan=lesson()
+    inv['objects'][0]['kind']='page'
+    inv['obligations'] += [{'id':'peer','object_id':'s'}, {'id':'mf','object_id':'m'}]
+    plan['units'][0]['document_info_ids']=['f','mf','m']
+    plan['units'][0]['obligation_ids']=['f']
+    original=copy.deepcopy(plan)
+    fixed,removed=unmark_nonmetadata_document_info(plan,inv)
+    assert removed==['s']
+    assert fixed['units'][0]['document_info_ids']==['m']
+    assert fixed['units'][0]['obligation_ids']==['f','mf']
+    assert 'peer' not in fixed['units'][0]['obligation_ids']
+    assert fixed['units'][0]['stages']==original['units'][0]['stages']
+    assert plan==original
+    assert unmark_nonmetadata_document_info(fixed,inv)[0]==fixed
+    plan['units'][0]['document_info_ids']=['invented-fact']
+    with pytest.raises(ValueError,match='不存在的源对象'):
+        unmark_nonmetadata_document_info(plan,inv)
+
+
+def test_dependency_patch_preserves_text_and_rejects_future_or_missing_units():
+    from sourceloom.pedagogy import apply_dependency_patch
+    inv,plan=lesson()
+    second=copy.deepcopy(plan['units'][0]);second['id']='v'
+    plan['units'].append(second);plan['units'][0]['follows_units']=['v']
+    patch={'units':[{'unit_id':'u','follows_units':[],'bridge_reason':''},
+                    {'unit_id':'v','follows_units':['u'],'bridge_reason':'沿用前一单元的选择结果'}]}
+    fixed=apply_dependency_patch(plan,patch)
+    assert plan['units'][0]['follows_units']==['v']
+    assert fixed['units'][0]['follows_units']==[]
+    assert fixed['units'][1]['follows_units']==['u']
+    for before,after in zip(plan['units'],fixed['units']):
+        assert {k:v for k,v in before.items() if k not in {'follows_units','bridge_reason'}}=={k:v for k,v in after.items() if k not in {'follows_units','bridge_reason'}}
+    patch['units'][0]['follows_units']=['v']
+    with pytest.raises(ValueError,match='后面的单元'):apply_dependency_patch(plan,patch)
+    patch['units'].pop()
+    with pytest.raises(ValueError,match='逐项覆盖'):apply_dependency_patch(plan,patch)
+
+
 def test_end_matter_selection_binds_all_metadata_facts_without_dropping_them():
     inv,plan=lesson();inv['obligations'].append(dict(id='metadata-fact',object_id='m'))
     plan['units'][0]['object_ids'].remove('m')

@@ -1,6 +1,7 @@
 """Independent, bounded calls. Uncertain submissions are never replayed."""
 
 import json
+import re
 import asyncio
 import time
 import subprocess
@@ -9,6 +10,11 @@ import httpx
 
 from .store import Conflict, identity, digest
 from .skills import deploy_skill, load_bundle, full_prompt
+
+
+def literal_chat_packet(text):
+    """Deliver the complete original packet without introducing nested display fences."""
+    return text
 
 
 def reference_repeated_text(payload):
@@ -62,6 +68,23 @@ class Uncertain(RuntimeError):
     pass
 
 
+def recover_labeled_chat_json(body, schema):
+    """Recover only the evidenced browser language-label wrapper, with full validation."""
+    if (body.get('status')!='failed' or body.get('errorCode')!='validation_failed' or
+            not body.get('webExecution') or
+            body.get('validation',{}).get('messages')!=['schema:/:must be object']):
+        return None
+    raw=body.get('output')
+    if not isinstance(raw,str) or not re.match(r'^(?:JSON|json)\r?\n',raw):return None
+    from jsonschema import validate,ValidationError,SchemaError
+    try:
+        result=json.loads(raw.split('\n',1)[1])
+        if not isinstance(result,dict):return None
+        validate(result,schema)
+    except (ValueError,ValidationError,SchemaError):return None
+    return result
+
+
 class ReasoningExhausted(ValueError):
     """A fully received billed response spent its entire output on reasoning."""
 
@@ -70,7 +93,7 @@ def reasoning_exhausted(body):
     choice=body.get('choices',[{}])[0]
     message=choice.get('message',{})
     usage=body.get('usage',{})
-    return (choice.get('finish_reason')=='length' and not message.get('content') and
+    return (choice.get('finish_reason') in {'length','stop'} and not message.get('content') and
             not message.get('tool_calls') and usage.get('completion_tokens',0)>0 and
             usage.get('completion_tokens_details',{}).get('reasoning_tokens')==usage['completion_tokens'])
 
@@ -214,6 +237,15 @@ class Provider:
             'after writing and must not be demanded as already demonstrated by a plan. An outline should not be judged '
             'as if it were final prose. Do not confuse observations that say a requirement IS satisfied with errors.\n')
         payload = dict(payload)
+        if instruction_role=='inventory_patch':
+            ids=[f['id'] for f in payload.get('previous_response',{}).get('facts',[])]
+            if ids:
+                schema=json.loads(json.dumps(schema))
+                fact=schema.get('$defs',{}).get('SourceFact')
+                if fact:
+                    replacement=json.loads(json.dumps(fact));replacement['properties']['id']['enum']=ids
+                    schema['properties']['replacements']['items']=replacement
+                    schema['properties']['remove_ids']['items']['enum']=ids
         if isinstance(payload.get('claims'),list) and 'decisions' in schema.get('properties',{}):
             # Make one-verdict-per-claim cardinality explicit in the transport too.
             schema=json.loads(json.dumps(schema))
@@ -365,7 +397,10 @@ class Provider:
                             mime=Image.MIME.get(pic.format)
                             if mime not in {'image/png','image/jpeg','image/webp','image/gif'}:
                                 raise ValueError('视觉输入不是受支持的原始图片格式')
-                        content.append({'type':'text','text':'Original image for source_id='+resource['source_id']})
+                        label='Original image for source_id='+resource['source_id']
+                        if resource.get('view'):
+                            label='Detail view of source_id='+resource['source_id']+' '+json.dumps({k:v for k,v in resource.items() if k!='sha256'})
+                        content.append({'type':'text','text':label})
                         content.append({'type':'image_url','image_url':{'url':'data:'+mime+';base64,'+base64.b64encode(raw).decode(),'detail':'original'}})
                     messages[1]['content']=content
                 strict_output=c.get('structured_output')=='deepseek_strict_tool'
@@ -433,10 +468,13 @@ class Provider:
                 job['calls'][-1]['status']='completed';self.store.put_job(job)
                 return result
             if c["provider"] == "router":
-                schema_instruction=('\nReturn only JSON conforming to this exact response schema:\n'+json.dumps(schema)
+                schema_instruction=('\nReturn the complete JSON inside ONE fenced json code block, without surrounding prose. This prevents browser Markdown rendering from consuming JSON escapes. Put any required completion marker after the closing fence. The JSON must conform to this exact response schema:\n'+json.dumps(schema)
                                     if c.get('execution_channel')=='chatgpt_web' else
                                     '\nReturn the final artifact conforming to the supplied enforced output schema. Do not use file or network tools; all instruction files are complete inline.')
-                task = dict(objective=instruction+schema_instruction+"\nThis channel receives every instruction inline; do not claim filesystem access.\n"+prompt,taskKind="bounded",model=c["model"],effort=c["effort"],
+                objective=instruction+schema_instruction+"\nThis channel receives every instruction inline; do not claim filesystem access.\n"+prompt
+                if c.get('execution_channel')=='chatgpt_web':
+                    objective=literal_chat_packet(objective)
+                task = dict(objective=objective,taskKind="bounded",model=c["model"],effort=c["effort"],
                             sessionMode="ephemeral",deadlineMs=int(c["call_timeout"]*1000),replayable=False,
                             validation={"responseSchema":strict_schema(schema),"checks":[],"acceptanceTests":[]},
                             permissions={"preset":"restricted","filesystem":"read","network":"none","allowedHosts":[],
@@ -500,6 +538,14 @@ class Provider:
                                 content = content.get("structured",content.get("text",content))
                             return parse_json(content) if isinstance(content,str) else content
                         if body["status"] in {"failed","cancelled","timed_out","expired","awaiting_approval"}:
+                            recovered=recover_labeled_chat_json(body,task['validation']['responseSchema'])
+                            if recovered is not None:
+                                self.store.settle(call_id,None,dict(channel='subscription',usage=body.get('usage'),upstream_id=jid))
+                                job['calls'][-1].update(status='recovered',web_execution=body.get('webExecution'),
+                                    recovery='Removed only browser JSON language label; validated complete original response schema; upstream failure retained',
+                                    response_blob=self.store.blob(json.dumps(body,ensure_ascii=False).encode()))
+                                self.store.put_job(job)
+                                return recovered
                             job['calls'][-1].update(status='uncertain',error_code=body.get('errorCode'),
                                 response_blob=self.store.blob(json.dumps(body,ensure_ascii=False).encode()))
                             self.store.put_job(job)
@@ -548,6 +594,15 @@ class Provider:
                              headers={'Authorization':'Bearer '+self.config['api_key']})
                 r.raise_for_status();body=r.json()
             if body['status']!='succeeded':
+                request=json.loads(self.store.read_blob(call['wire_request_blob'])) if call.get('wire_request_blob') else {}
+                schema=request.get('task',{}).get('validation',{}).get('responseSchema')
+                recovered=recover_labeled_chat_json(body,schema) if schema else None
+                if recovered is not None:
+                    call.update(status='recovered',web_execution=body.get('webExecution'),
+                        recovery='Removed only browser JSON language label; validated complete original response schema; upstream failure retained',
+                        response_blob=self.store.blob(json.dumps(body,ensure_ascii=False).encode()))
+                    self.store.put_job(job)
+                    return recovered
                 if body['status'] in {'failed','cancelled','expired'}:
                     raise ValueError('原上游任务已结束：'+body['status'])
                 return None

@@ -69,6 +69,8 @@ def line_proposal(proposal, lines):
             raise Conflict('修复行号重复或不在可编辑范围内，整笔未提交')
         seen.add(key)
         line = by_id[key]
+        if line['text'] == edit['replacement']:
+            continue
         edits.append({'block_id': line['block_id'], 'old_text': line['text'],
                       'new_text': edit['replacement'], 'reason': edit['reason']})
     return {'document_digest': proposal['document_digest'], 'edits': edits}

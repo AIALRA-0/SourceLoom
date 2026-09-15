@@ -10,7 +10,7 @@ class Strict(BaseModel):
 
 class Evidence(Strict):
     source_id: str
-    quote: str = Field(min_length=1)
+    quote: str
 
 
 class Obligation(Strict):

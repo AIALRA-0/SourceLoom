@@ -4,6 +4,9 @@ import re
 import http.client
 
 CATALOG=[
+    {'triggers':['CVE','CVEs'],'abbr':'CVE','zh':'通用漏洞披露','en':'Common Vulnerabilities and Exposures',
+     'url':'https://www.cve.org/ResourcesSupport/FAQs','fallback_urls':['https://www.cve.org/'],
+     'note':'英文名称由官方资料查证；本条名称证据不能代替用途或机制证据，也不能据此推断原项目的报告、修复或发布政策'},
     {'triggers':['IETF'],'abbr':'IETF','zh':'互联网工程任务组','en':'Internet Engineering Task Force',
      'url':'https://www.ietf.org/about/','fallback_urls':['https://www.rfc-editor.org/rfc/rfc2026.txt'],
      'note':'互联网标准组织；不能声称原文给了全称，名称由官方资料补充查证'},

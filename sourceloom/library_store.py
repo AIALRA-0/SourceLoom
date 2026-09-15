@@ -65,6 +65,12 @@ class Library:
                         d.update(trashed=True,trash_group=group);changes['documents'].add(did)
                         if d.get('active_job'):
                             cx.execute('UPDATE production_control SET cancel_requested=1 WHERE id=?',(d['active_job'],))
+                            row=cx.execute("SELECT body FROM jobs WHERE id=? AND role='intake' AND status IN ('queued','running')",(d['active_job'],)).fetchone()
+                            if row:
+                                job=json.loads(row[0]);job.update(status='cancelled',finished=time.time())
+                                cx.execute("UPDATE jobs SET status='cancelled',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),job['id']))
+                                cx.execute('UPDATE intake_control SET owner=NULL,lease_until=0 WHERE id=?',(job['id'],))
+                                d.update(active_job=None,state='cancelled')
             elif action=='restore':
                 groups={folders[fid]['trash_group'] for fid in roots if folders[fid]['trashed']}
                 for fid in affected_folders:

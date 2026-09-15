@@ -111,20 +111,34 @@ def register(app, store, config):
     @app.get('/api/projects/{pid}/production')
     def production(pid:str):
         p=store.get(pid)
-        # A saved readable draft needs status fields only, never raw model history.
-        if p.get('draft'):
-            fields=('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')
-            expression='json_extract(body,'+','.join("'$."+field+"'" for field in fields)+')'
-            with store.connect() as cx:
-                row=cx.execute('SELECT '+expression+",json_array_length(body,'$.calls'),json_extract(body,'$.calls[#-1].error_code'),json_array_length(body,'$.draft.blocks') FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
-            j=dict(zip(fields,json.loads(row[0]))) if row else None
-            if j:
-                j['call_count']=row[1]
-                j['has_candidate']=bool(row[3])
-                messages={'codex_quota_exhausted':'转发服务报告本次所用通道额度耗尽，未返回正文；这不代表全部账号或订阅都不可用',
-                          'chatgpt_delivery_uncertain':'无法确认聊天消息是否送达，已保留原请求，未自动重发'}
-                if row[2] in messages:j['error']=messages[row[2]]
-        else:j=latest_production(pid)
+        from .progress import summary
+        from .intake_jobs import IntakeQueue
+        incoming=IntakeQueue(store,config).latest(pid)
+        with store.connect() as cx:
+            later_production=bool(incoming and cx.execute("SELECT 1 FROM jobs WHERE project=? AND role='production' AND created>=? LIMIT 1",(pid,incoming['created'])).fetchone())
+        if incoming and (p.get('active_job')==incoming['id'] or (not p.get('active_job') and not later_production and incoming['status']!='completed')):
+            return {k:incoming.get(k) for k in ('id','status','stage','created','started','finished')}|{
+                'error':incoming.get('error') or incoming.get('generation_error'),'progress':summary(incoming),
+                'has_output':bool(p.get('draft')),'formal':False,'call_count':0,'intake':True,
+                'received_files':[{'name':f['name'],'bytes':f['bytes'],'url':f"/api/projects/{pid}/intakes/{incoming['id']}/original/{f['sha256']}"} for f in incoming.get('files',[])]}
+        # Poll progress without loading the complete, potentially large model history.
+        from .progress import FIELDS,latest
+        with store.connect() as cx:
+            row=latest(cx,pid)
+        j=dict(zip(FIELDS,json.loads(row[0]))) if row else None
+        if j:
+            j['call_count']=row[1];j['has_candidate']=bool(row[3]);j['unit_count']=row[4]
+            messages={'codex_quota_exhausted':'转发服务报告本次所用通道额度耗尽，未返回正文；这不代表全部账号或订阅都不可用',
+                      'chatgpt_delivery_uncertain':'无法确认聊天消息是否送达，已保留原请求，未自动重发'}
+            if row[2] in messages:j['error']=messages[row[2]]
+            if not p.get('draft') and j['has_candidate']:
+                from .progress import candidate as saved_candidate
+                with store.connect() as cx:
+                    candidate=saved_candidate(cx,j['id'])
+                j['draft']=json.loads(candidate[0]);j['plan']=json.loads(candidate[1]) if candidate[1] else None
+            elif not p.get('draft') and j['stage']=='writer' and j['status'] in {'failed','needs_attention'}:
+                # Only a returned but uncomposed writer result needs the full fallback path.
+                j=latest_production(pid)
         if not j:
             return {'status':'not_started'}
         try:
@@ -137,13 +151,24 @@ def register(app, store, config):
             bool(j.get('has_candidate') or j.get('draft',{}).get('blocks')) and
             (p.get('production') or {}).get('job')!=j['id'])
         candidate_url=f"/api/projects/{pid}/attempts/{j['id']}/output" if newer_candidate else None
+        j['role']='production'
         return {k:j.get(k) for k in ('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')} | {
             'call_count':j.get('call_count',len(j.get('calls',[]))),'has_output':bool(displayed),
             'output_chars':len(output_text),
             'output_digest':digest(output_text.encode()) if displayed else None,
             'candidate_url':candidate_url,
             'candidate_markdown_url':candidate_url+'?format=markdown' if candidate_url else None,
+            'progress':summary(j),
             'formal':(p.get('production') or {}).get('status')=='completed'}
+
+    @app.get('/api/projects/{pid}/intakes/{jid}/original/{key}')
+    def intake_original(pid:str,jid:str,key:str):
+        store.get(pid);job=store.job(jid)
+        if job.get('project')!=pid or job.get('role')!='intake':raise KeyError(jid)
+        file=next((f for f in job.get('files',[]) if f['sha256']==key),None)
+        if not file:raise KeyError(key)
+        return Response(store.read_blob(key),media_type='application/octet-stream',
+            headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(file['name'])})
 
     @app.get('/api/projects/{pid}/attempts/{jid}/output')
     def attempt_output(pid:str,jid:str,format:str='html'):

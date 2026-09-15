@@ -86,23 +86,53 @@ def unmark_nonmetadata_document_info(plan, inventory):
     result = copy.deepcopy(plan)
     sources = {o['id']: o for o in inventory['objects']}
     obligations = inventory['obligations']
+    facts = {f['id']: f for f in obligations}
     removed = []
     for unit in result['units']:
         kept = []
         for sid in unit.get('document_info_ids', []):
+            fact = facts.get(sid) if sid not in sources else None
+            if fact is not None:
+                # Resolve an existing identity only; a fact on a mixed PDF page
+                # does not turn that whole page into metadata or reassign its peers.
+                sid = fact['object_id']
+                if fact['id'] not in unit['obligation_ids']:
+                    unit['obligation_ids'].append(fact['id'])
+                if sid not in unit['object_ids']:
+                    unit['object_ids'].append(sid)
             if sid not in sources:
                 raise ValueError('规划引用不存在的源对象')
             if sources[sid]['kind'] == 'metadata':
-                kept.append(sid)
+                if sid not in kept:
+                    kept.append(sid)
                 continue
             removed.append(sid)
             if sid not in unit['object_ids']:
                 unit['object_ids'].append(sid)
-            for fact in obligations:
-                if fact['object_id'] == sid and fact['id'] not in unit['obligation_ids']:
-                    unit['obligation_ids'].append(fact['id'])
+            for fact_item in obligations:
+                if fact is None and fact_item['object_id'] == sid and fact_item['id'] not in unit['obligation_ids']:
+                    unit['obligation_ids'].append(fact_item['id'])
         unit['document_info_ids'] = kept
     return result, sorted(set(removed))
+
+
+def apply_dependency_patch(plan, patch):
+    """Change dependency fields only, preserving ordered units and all source assignments."""
+    result = copy.deepcopy(plan)
+    updates = patch['units']
+    if len(updates) != len(result['units']) or {u['unit_id'] for u in updates} != {u['id'] for u in result['units']}:
+        raise ValueError('前提关系修正没有逐项覆盖实际单元')
+    updates = {u['unit_id']: u for u in updates}
+    seen = set()
+    for unit in result['units']:
+        update = updates[unit['id']]
+        if not set(update['follows_units']) <= seen:
+            raise ValueError('教学前提引用后面的单元或不存在的单元')
+        if update['follows_units'] and not update['bridge_reason'].strip():
+            raise ValueError('相邻主题的依赖没有说明原因')
+        unit.update(follows_units=update['follows_units'], bridge_reason=update['bridge_reason'])
+        seen.add(unit['id'])
+    return result
 
 
 def mark_known_document_metadata(plan, inventory):

@@ -12,7 +12,7 @@
   "call_timeout": 180,
   "job_timeout": 0,
   "total_budget_usd": 10.0,
-  "subscription_call_limit": 40,
+  "subscription_call_limit": null,
   "external_worker": true,
   "daily_budget_usd": 2.0,
   "daily_call_limit": 80,

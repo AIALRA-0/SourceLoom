@@ -226,7 +226,8 @@ class Pipeline:
                     if proof["block_id"] not in block_ids:
                         raise ValueError("证明记录引用未知段落")
                     for ev in proof["evidence"]:
-                        if ev["source_id"] not in source or ev["quote"] not in source[ev["source_id"]]:
+                        from .checks import source_quote_matches
+                        if ev["source_id"] not in source or not source_quote_matches(ev['quote'],source[ev['source_id']]):
                             raise ValueError("证明来源片段不匹配")
                 p["review"]={"revision":p["revision"],"inventory_digest":inv["digest"],"job":job_id,"body":result}
                 p["state"]="reviewed"

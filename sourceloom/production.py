@@ -9,13 +9,14 @@ import time
 
 from . import contracts as C
 from . import production_contracts as P
-from .checks import freeze, inspect_draft, validate_plan
+from .checks import freeze, inspect_draft, validate_plan,source_quote_matches
 from .durable import Queue
 from .export import render
 from .ingest import decode, attach_markdown_fences
 from .providers import Provider, Uncertain, ReasoningExhausted
 from .skills import load_bundle, rule_catalog
 from .store import Conflict, digest, identity
+from .source_context import objects_view,inventory_groups,merge_inventories,patch_inventory,classify_inert_markup
 from .writing import canonical, compose, expand_response, protected_objects, repair, scan, validate_layout_repair
 from .pedagogy import (TeachingReview, validate_teaching_plan, unmark_nonmetadata_document_info, mark_known_document_metadata, teaching_issues,
                        arrange_document_info, repair_units, validate_replan, teaching_review_contract)
@@ -114,7 +115,7 @@ def validate_facts(body, source):
         raise ValueError('生产前信息清点没有准确覆盖全部源对象')
     ids=set()
     for f in body['facts']:
-        if f['id'] in ids or f['source_id'] not in source_map or f['quote'] not in source_map[f['source_id']]['text']:
+        if f['id'] in ids or f['source_id'] not in source_map or not source_quote_matches(f['quote'],source_map[f['source_id']]['text']):
             raise ValueError('原子信息身份重复或原文证据不匹配')
         ids.add(f['id'])
     if {f['source_id'] for f in body['facts']}!=set(source_map):
@@ -130,6 +131,19 @@ def bind_source_quotes(body, source):
             raise ValueError('清点引用不存在的原对象')
         fact['quote']=sources[fact['source_id']]
     return result
+
+
+def merge_inventory_additions(facts,additions,source):
+    """Replay a saved audit idempotently without altering conflicting facts."""
+    merged=bind_source_quotes(facts,source);extra=bind_source_quotes({'facts':additions},source)
+    by_id={};ordered=[]
+    for fact in [*merged['facts'],*extra['facts']]:
+        if fact['id'] in by_id:
+            if by_id[fact['id']]!=fact:raise ValueError('同一原子信息身份对应不同内容，未覆盖任何事实')
+            continue
+        by_id[fact['id']]=fact;ordered.append(fact)
+    merged['facts']=ordered;validate_facts(merged,source)
+    return merged
 
 
 def bind_evidence_layout(value, source):
@@ -183,7 +197,7 @@ def bind_uncertainty_evidence(response,source):
             sid=evidence['source_id']
             if sid not in texts or not texts[sid]:
                 raise ValueError('清点疑点引用不存在或没有文字的源对象')
-            if evidence['quote'] not in texts[sid]:
+            if not source_quote_matches(evidence['quote'],texts[sid]):
                 evidence['quote']=texts[sid]
                 replacements.append({'uncertainty_id':assessment['id'],'source_id':sid})
     return result,replacements
@@ -220,7 +234,7 @@ def fidelity_issues(review, facts, draft, source):
     for x in checks:
         fact=fact_map.get(x['fact_id'])
         block=blocks.get(x['block_id'])
-        if (not fact or not block or x['source_quote'] not in source_map[fact['source_id']]
+        if (not fact or not block or not source_quote_matches(x['source_quote'],source_map[fact['source_id']])
             or not x['output_quote'] or x['output_quote'] not in block['markdown']
             or x['status']!='preserved' or not x['person_preserved'] or not x['referents_preserved']):
             issues.append('原信息、人称或指代尚未确认保留：'+x['fact_id'])
@@ -233,7 +247,7 @@ def fidelity_issues(review, facts, draft, source):
         if x['kind']=='source' and not x['evidence']:
             issues.append('原文主张缺少来源证据')
         for ev in x['evidence']:
-            if ev['source_id'] not in source_map or ev['quote'] not in source_map[ev['source_id']]:
+            if ev['source_id'] not in source_map or not source_quote_matches(ev['quote'],source_map[ev['source_id']]):
                 issues.append('反查证据与原件不符')
     issues.extend(f['message'] for f in review['findings'])
     return issues
@@ -283,7 +297,7 @@ class Production:
     def teaching_inventory(self, inventory):
         # All original objects and obligations are included. Internal reviews are
         # kept in the ledger, not injected as competing instructions to the writer.
-        return {k:inventory[k] for k in ('id','version','objects','obligations','resources','frozen','digest')}
+        return {k:inventory[k] for k in ('id','version','objects','obligations','resources','frozen','digest')}|{'objects':objects_view(inventory['objects'])}
 
     def validate_plan(self, job, plan):
         if job.get('teaching_version',0)>=2:
@@ -306,6 +320,10 @@ class Production:
         saved=job['results'].get('planner-contract-document-info-1',job['results']['planner'])
         plan,_=unmark_nonmetadata_document_info(saved,job['inventory'])
         plan,_=mark_known_document_metadata(plan,job['inventory'])
+        dependencies=job['results'].get('planner-contract-dependencies-1')
+        if dependencies:
+            from .pedagogy import apply_dependency_patch
+            plan=apply_dependency_patch(plan,dependencies)
         patch=job['results'].get('planner-contract-coverage-patch-1')
         if patch:
             record=(job.get('planner_contract_repair') or {}).get('coverage_repair') or {}
@@ -337,6 +355,8 @@ class Production:
                 result=self.provider.recover(job)
             except (json.JSONDecodeError, ReasoningExhausted):
                 return self._invalid_response_fallback(job,key,role,payload,schema)
+            except ValueError as error:
+                return self._known_truncated_fallback(job,key,role,payload,schema,error)
             if result is None:
                 raise Uncertain('原请求尚未取得完整结果，未重新提交')
         else:
@@ -365,15 +385,30 @@ class Production:
                 raise
             except (json.JSONDecodeError, ReasoningExhausted):
                 return self._invalid_response_fallback(job,key,role,payload,schema)
+            except ValueError as error:
+                return self._known_truncated_fallback(job,key,role,payload,schema,error)
         # Persist raw role result before validation, so failed validation never loses the artifact.
         job['results'][key]=result
         job.pop('pending',None)
         self.store.put_job(job)
         return result
 
+    def _known_truncated_fallback(self,job,key,role,payload,schema,error):
+        call=job.get('calls',[{}])[-1]
+        with self.store.connect() as cx:
+            billed=cx.execute('SELECT actual FROM spending WHERE id=?',(call.get('id',''),)).fetchone()
+        if (role in {'term_preparation','style','style_contract_repair','writer'}
+                and role in self.config.get('fallback_providers',{})
+                and call.get('status')=='truncated' and call.get('finish_reason')=='length'
+                and call.get('response_blob') and billed and billed['actual'] is not None):
+            job.setdefault('fallbacks',{})[key]=dict(original_call=call['id'],reason='known_truncated_review')
+            job.pop('pending',None);self.store.put_job(job)
+            return self._call(job,key,role,payload,schema)
+        raise error
+
     def _invalid_response_fallback(self,job,key,role,payload,schema):
         call=job['calls'][-1]
-        empty_reasoning=(call.get('status')=='reasoning_exhausted' and call.get('finish_reason')=='length')
+        empty_reasoning=(call.get('status')=='reasoning_exhausted' and call.get('finish_reason') in {'length','stop'})
         if (role.endswith('__fallback') or role not in self.config.get('fallback_providers',{})
             or (call.get('finish_reason') not in {'stop','tool_calls'} and not empty_reasoning) or not call.get('response_blob')):
             raise ValueError('原响应结构无效，未配置可用的受限备用通道')
@@ -383,32 +418,89 @@ class Production:
         self.store.put_job(job)
         return self._call(job,key,role,payload,schema)
 
+    def _finish_draft(self,job):
+        # A mistaken metadata label cannot remove unapproved content from the
+        # main flow. Keep it in place for the following full-content review.
+        allowed={sid for u in job['plan']['units'] for sid in u.get('document_info_ids',[])}
+        candidate=copy.deepcopy(job['draft']);kept=[]
+        for b in candidate['blocks']:
+            if b['kind']=='document_info' and (not b['evidence'] or
+                    not {e['source_id'] for e in b['evidence']}<=allowed):
+                b['kind']='explanation'
+                if b['id'] not in kept:kept.append(b['id'])
+        candidate=arrange_document_info(candidate,job['plan'])
+        regeneration=job.get('regeneration')
+        if regeneration:
+            untouched=[b for b in regeneration['original_draft']['blocks'] if b['unit_id'] not in regeneration['unit_ids']]
+            if untouched!=[b for b in candidate['blocks'] if b['unit_id'] not in regeneration['unit_ids']]:
+                raise ValueError('教学修复改变了未命中的正文')
+            job.pop('regeneration',None)
+        job['draft']=candidate
+        job['document_info_kept_in_body']=list(dict.fromkeys(job.get('document_info_kept_in_body',[])+kept))
+        job['stage']='teaching' if job.get('teaching_version',0)>=2 and job.get('review_order')!='style_first' else 'style'
+        job['initial_draft_blob']=self.store.blob(json.dumps(job['draft'],ensure_ascii=False).encode())
+        return 'queued'
+
     def step(self, job):
         bundle=load_bundle(job['writing_skill']['root'],job['writing_skill']['package_digest'])
-        source=job['source']
-        base=dict(goal=job['goal'],source={'objects':source['objects']},
+        from .word_structures import resolve_word_structures
+        source=resolve_word_structures(self.store,classify_inert_markup(job['source']));job['source']=source
+        base=dict(goal=job['goal'],source={'objects':objects_view(source['objects'])},
                   required_source_ids=[o['id'] for o in source['objects']])
         base['source_contract']='The supplied files define input scope. HTML locator child indexes count text/whitespace nodes too; li[2] is NOT a claim that an earlier list item exists. Never derive content ordinals or omissions from locator numbers. Raw Markdown templates are literal source syntax, not missing rendered webpage content unless rendered expansion was explicitly requested. Preserve them without inventing expansion. Object text, raw markup and complete original text are complementary views of the same retained material. Source code bytes stay authoritative over inventory annotations about layout.'
         base['original_text_files']=[dict(name=o['name'],text=decode(self.store.read_blob(o['sha256'])))
             for o in source.get('originals',[]) if Path(o['name']).suffix.lower() in {'.md','.txt','.html','.htm'}]
         stage=job['stage']
         if stage in {'visual_extract','visual_audit'}:
-            visual=[o for o in source['objects'] if o['kind'] in {'page','image'} and o.get('resource_id')]
+            from .visual_sources import classify_transparent,image_resources
+            source=classify_transparent(self.store,source);job['source']=source
+            visual=[o for o in source['objects'] if o['kind'] in {'page','image'} and o.get('resource_id') and not o.get('visual_classification')]
             index=job.get('visual_index',0)
             pages=visual[index:index+3]
             ids={o['id'] for o in pages}
-            payload=dict(pages=pages,_image_resources=[dict(source_id=o['id'],sha256=o['resource_id']) for o in pages])
+            if not pages:
+                job['stage']='inventory';return 'queued'
+            key=f'visual_extract-{index}'
+            previous=job['results'].get(key)
+            if previous and {p['source_id'] for p in previous.get('pages',[])}!=ids:key+='-'+digest(sorted(ids))[:8]
+            def image_view(objects):
+                return [{k:o[k] for k in ('id','kind','locator')} for o in objects]
+            payload=dict(pages=image_view(pages),_image_resources=image_resources(self.store,pages,source))
             if stage=='visual_extract':
-                result=self._call(job,f'visual_extract-{index}','visual_extract',payload,P.VisualExtraction)
+                result=self._call(job,key,'visual_extract',payload,P.VisualExtraction)
                 result=P.VisualExtraction.model_validate(result).model_dump()
                 if len(result['pages'])!=len(ids) or {p['source_id'] for p in result['pages']}!=ids:
                     raise ValueError('视觉提取没有准确覆盖本批原始页面')
-                if any(p['unresolved'] for p in result['pages']):
-                    raise ValueError('原始页面仍有不可辨认内容，保留原件，未猜测补齐')
+                unresolved={p['source_id'] for p in result['pages'] if p['unresolved']}
+                if unresolved:
+                    focused=[o for o in pages if o['id'] in unresolved]
+                    corrected=self._call(job,key+'-detail-repair','visual_extract',
+                        dict(pages=image_view(focused),_image_resources=image_resources(self.store,focused,source),
+                             prior_extraction=[p for p in result['pages'] if p['source_id'] in unresolved],
+                             instruction='Reinspect these exact original images once at the supplied higher detail. Resolve the listed uncertain glyphs from the actual image; extracted text is fallible. Return complete corrected transcripts for only these IDs, preserving all other readable text. Blank transparency is absence of visible content, not unreadable text. Keep any truly unreadable region unresolved.'),P.VisualExtraction)
+                    corrected=P.VisualExtraction.model_validate(corrected).model_dump()
+                    if len(corrected['pages'])!=len(unresolved) or {p['source_id'] for p in corrected['pages']}!=unresolved:raise ValueError('视觉局部修正没有覆盖指定原件')
+                    by_id={p['source_id']:p for p in corrected['pages']}
+                    result={'pages':[by_id.get(p['source_id'],p) for p in result['pages']]}
+                    # The independent image reviewer adjudicates these explicit
+                    # uncertainties too; an extractor's doubt is not itself a verdict.
                 job['visual_candidate']=result
                 job['stage']='visual_audit'
             else:
-                result=self._call(job,f'visual_audit-{index}','visual_audit',payload|dict(extraction=job['visual_candidate']),P.VisualAuditV2)
+                audit_key=key.replace('visual_extract-','visual_audit-',1)+'-image-v2'
+                if job.get('visual_detail_ids'):
+                    detail_ids=set(job['visual_detail_ids'])&ids
+                    audit_key+='-detail-v1'
+                    payload['_image_resources']=image_resources(self.store,pages,source,detail_ids)
+                    focused=[o for o in pages if o['id'] in detail_ids]
+                    detail=self._call(job,audit_key+'-extraction','visual_extract',
+                        dict(pages=image_view(focused),_image_resources=image_resources(self.store,focused,source,detail_ids),
+                             instruction='Transcribe these original images using both the whole image and its labeled overlapping detail views. These are the same pixels, not additional content. Read actual visible text, never recall a familiar diagram from memory. Reconcile the overlaps so no label is duplicated or assigned to the wrong spatial group. Prior failed transcripts are deliberately not supplied as visual evidence.'),P.VisualExtraction)
+                    detail=P.VisualExtraction.model_validate(detail).model_dump()
+                    if len(detail['pages'])!=len(detail_ids) or {p['source_id'] for p in detail['pages']}!=detail_ids:raise ValueError('图片细节提取没有覆盖指定原件')
+                    by_id={p['source_id']:p for p in detail['pages']}
+                    job['visual_candidate']={'pages':[by_id.get(p['source_id'],p) for p in job['visual_candidate']['pages']]}
+                result=self._call(job,audit_key,'visual_audit',payload|dict(extraction=job['visual_candidate']),P.VisualAuditV2)
                 result=visual_decision(result)
                 inaccessible=any('unsupported image' in d.lower() for p in result['pages'] for d in p['discrepancies'])
                 if inaccessible and self.config.get('vision_capability_corrected'):
@@ -417,6 +509,22 @@ class Production:
                     result=visual_decision(result)
                 if len(result['pages'])!=len(ids) or {p['source_id'] for p in result['pages']}!=ids:
                     raise ValueError('独立视觉核对没有准确覆盖本批原始页面')
+                defects={p['source_id'] for p in result['pages'] if p['status']!='verified' or p['discrepancies']}
+                if defects:
+                    focused=[p for p in pages if p['id'] in defects]
+                    fixed=self._call(job,audit_key+'-repair','visual_extract',
+                        dict(pages=image_view(focused),_image_resources=image_resources(self.store,focused,source,job.get('visual_detail_ids',())),
+                             prior_extraction=[p for p in job['visual_candidate']['pages'] if p['source_id'] in defects],
+                             audit_findings=[p for p in result['pages'] if p['source_id'] in defects],
+                             instruction='Correct only the independently identified transcription or structural discrepancies against these actual original images. Keep every readable character and all unrelated content. Return complete transcripts for exactly these source IDs. Do not force resolution when genuinely unreadable.'),P.VisualExtraction)
+                    fixed=P.VisualExtraction.model_validate(fixed).model_dump()
+                    if len(fixed['pages'])!=len(defects) or {p['source_id'] for p in fixed['pages']}!=defects:raise ValueError('视觉核对修复没有覆盖指定原件')
+                    by_id={p['source_id']:p for p in fixed['pages']}
+                    repaired={'pages':[by_id.get(p['source_id'],p) for p in job['visual_candidate']['pages']]}
+                    result=self._call(job,audit_key+'-recheck','visual_audit',payload|dict(extraction=repaired),P.VisualAuditV2)
+                    result=visual_decision(result)
+                    if len(result['pages'])!=len(ids) or {p['source_id'] for p in result['pages']}!=ids:raise ValueError('视觉再次核对没有覆盖原件')
+                    job['visual_candidate']=repaired
                 if any(p['status']!='verified' or p['discrepancies'] for p in result['pages']):
                     raise ValueError('独立视觉核对仍有缺口，未进入教学改写')
                 extracted={p['source_id']:p for p in job['visual_candidate']['pages']}
@@ -432,18 +540,37 @@ class Production:
                 source['unknown']=[g for g in source['unknown'] if g['object_id'] not in ids]
                 job['source']=source
                 job['visual_index']=index+len(pages)
+                job.pop('visual_detail_ids',None)
                 job['stage']='visual_extract' if job['visual_index']<len(visual) else 'inventory'
         elif stage=='inventory':
+            groups=inventory_groups(source['objects'])
+            if len(groups)>1 and sum(len(o.get('text','')) for o in source['objects'])>12000 and 'inventory' not in job['results']:
+                index=job.get('inventory_group_index',0)
+                if index<len(groups):
+                    group={'objects':groups[index]};payload=base|dict(source={'objects':objects_view(groups[index])},
+                        original_text_files=[],required_source_ids=[o['id'] for o in groups[index]],
+                        source_group=index+1,source_group_count=len(groups),
+                        instruction='Inventory every fact in these complete source objects. Adjacent groups are inventoried separately and the combined result is independently checked against the entire source. Do not infer omissions outside the supplied group. Keep quote to one short exact phrase; the application binds its full original source text automatically.')
+                    key=f'inventory-group-{index}'
+                    result=self._call(job,key,'fact_inventory',payload,P.FactInventory)
+                    try:
+                        result=P.FactInventory.model_validate(bind_source_quotes(result,group)).model_dump();validate_facts(result,group)
+                    except ValueError as exc:
+                        result=self._call(job,key+'-correction','inventory_repair',payload|dict(previous_response=result,validator_error=str(exc)),P.FactInventory)
+                        result=P.FactInventory.model_validate(bind_source_quotes(result,group)).model_dump();validate_facts(result,group)
+                    job.setdefault('inventory_groups',[]).append(result)
+                    job.update(inventory_group_index=index+1,inventory_group_count=len(groups))
+                    return 'queued'
+                job['facts']=merge_inventories(job['inventory_groups']);validate_facts(job['facts'],source)
+                job['stage']='inventory_audit';return 'queued'
             result=self._call(job,'inventory','fact_inventory',base,P.FactInventory)
-            result=P.FactInventory.model_validate(result).model_dump()
-            result=bind_source_quotes(result,source)
+            result=P.FactInventory.model_validate(bind_source_quotes(result,source)).model_dump()
             try:
                 validate_facts(result,source)
             except ValueError as exc:
                 result=self._call(job,'inventory_correction-1','inventory_repair',
                                   base|dict(previous_response=result,validator_error=str(exc)),P.FactInventory)
-                result=P.FactInventory.model_validate(result).model_dump()
-                result=bind_source_quotes(result,source)
+                result=P.FactInventory.model_validate(bind_source_quotes(result,source)).model_dump()
                 validate_facts(result,source)
             job['facts']=result
             job['stage']='inventory_audit'
@@ -451,14 +578,26 @@ class Production:
             uncertainties=[dict(id=f'uncertainty-{n+1}',description=x) for n,x in enumerate(job['facts']['unresolved'])]
             audit_round=job.get('inventory_semantic_repairs',0)
             audit_key='inventory_audit' if not audit_round else f'inventory_audit-{audit_round}'
+            review_suffix='-recheck-1' if job.get('inventory_review_recheck',{}).get('round')==audit_round else ''
+            audit_key+=review_suffix
+            if source.get('resolved_word_structure_gaps'):
+                audit_key+='-word-structures-v1'
+                review_suffix+='-word-structures-v1'
             result=self._call(job,audit_key,'inventory_audit',base|dict(facts=job['facts'],inventory_uncertainties=uncertainties),P.InventoryAudit)
-            result=P.InventoryAudit.model_validate(result).model_dump()
+            try:result=P.InventoryAudit.model_validate(result).model_dump()
+            except ValueError as exc:
+                result=self._call(job,audit_key+'-contract','inventory_audit',
+                    base|dict(facts=job['facts'],inventory_uncertainties=uncertainties,
+                              invalid_review=result,protocol_error=str(exc),
+                              instruction='Return the complete independent review with only declared fields. Preserve every actual error and uncertainty against the source. Put evidence explanations in declared explanation fields, never add evidence_note. Do not modify the fact inventory. This is the sole schema correction for this review.'),P.InventoryAudit)
+                result=P.InventoryAudit.model_validate(result).model_dump()
             expected_uncertainties={a['id'] for a in uncertainties}
             actual_uncertainties=[a['id'] for a in result['uncertainty_assessments']]
             if set(actual_uncertainties)!=expected_uncertainties or len(actual_uncertainties)!=len(expected_uncertainties):
-                result=self._call(job,f'inventory_audit_protocol-{audit_round}','inventory_audit',
+                result=self._call(job,f'inventory_audit_protocol-{audit_round}-exact-ids'+review_suffix,'inventory_audit',
                     base|dict(facts=job['facts'],inventory_uncertainties=uncertainties,
-                        invalid_review=result,protocol_error='The review used nonexistent or duplicate uncertainty IDs. Independently recheck the actual source and facts. Return assessments for exactly the supplied inventory_uncertainties IDs; an empty input list requires an empty assessment list. Do not put passing observations into errors. Source raw markup and target fields are already separately retained; semantic meaning need not duplicate their bytes.'),P.InventoryAudit)
+                        invalid_review=result,expected_assessment_count=len(uncertainties),
+                        protocol_error='Build a NEW uncertainty_assessments array from only inventory_uncertainties, exactly one item per supplied ID. Do NOT preserve the invalid review array or invent IDs for additional observations. Put any real newly found inventory defects in errors/missing_facts instead. An empty supplied list requires an empty assessment list. Independently recheck the actual source and facts, preserving real errors. Do not put passing observations into errors. Source raw markup and target fields are already separately retained; semantic meaning need not duplicate their bytes.'),P.InventoryAudit)
                 result=P.InventoryAudit.model_validate(result).model_dump()
             result,bound_evidence=bind_uncertainty_evidence(result,source)
             if bound_evidence:job.setdefault('uncertainty_evidence_bindings',[]).extend(bound_evidence)
@@ -467,6 +606,11 @@ class Production:
             claims=confirmed_errors+confirmed_unresolved
             if claims:
                 decision_key=f'inventory_decision-{audit_round}'+('-all-claims' if confirmed_unresolved else '')
+                # A corrected audit can contain different claims in the same
+                # round. Never reuse an older verdict for a different question.
+                if f'inventory_audit_protocol-{audit_round}-exact-ids' in job['results']:
+                    decision_key+='-'+digest(claims)[:12]
+                decision_key+=review_suffix
                 decisions=self._call(job,decision_key,'inventory_decision',
                     base|dict(facts=job['facts'],uncertainty_assessments=result['uncertainty_assessments'],
                         claims=[dict(claim_index=n,claim=claim) for n,claim in enumerate(claims)]),P.InventoryDecisions)
@@ -475,7 +619,7 @@ class Production:
                 if len(ids)!=len(claims) or set(ids)!=set(range(len(claims))):
                     raise ValueError('审核争议未逐项得到明确裁决')
                 sources={o['id']:o['text'] for o in source['objects']}
-                if any(e['source_id'] not in sources or e['quote'] not in sources[e['source_id']]
+                if any(e['source_id'] not in sources or not source_quote_matches(e['quote'],sources[e['source_id']])
                        for d in decisions for e in d['evidence']):
                     raise ValueError('审核争议裁决缺少与原件匹配的证据')
                 job.setdefault('inventory_decisions',{})[str(audit_round)]=decisions
@@ -484,12 +628,21 @@ class Production:
             if (set(result['assessed_source_ids'])!={o['id'] for o in source['objects']}
                 or set(result['assessed_fact_ids'])!={f['id'] for f in job['facts']['facts']}
                 or confirmed_errors or confirmed_unresolved):
-                if audit_round<2:
-                    fixed=self._call(job,f'inventory_semantic_repair-{audit_round+1}','inventory_repair',
-                        base|dict(previous_response=job['facts'],independent_review=result|dict(errors=confirmed_errors,unresolved=confirmed_unresolved),
-                                  validator_error='Resolve the cited inventory errors against the full source, preserving all information. Add actual missing facts. Do not invent facts to satisfy incorrect criticism. Canonical source quotes are substrings of source.objects[*].text, not HTML markup; objects retain raw markup and links separately.'),P.FactInventory)
-                    fixed=P.FactInventory.model_validate(fixed).model_dump()
-                    fixed=bind_source_quotes(fixed,source)
+                if audit_round<job.get('inventory_semantic_limit',2):
+                    repair_payload=base|dict(previous_response=job['facts'],independent_review=result|dict(errors=confirmed_errors,unresolved=confirmed_unresolved),
+                                  validator_error='Resolve the cited inventory errors against the full source, preserving all information. Add actual missing facts. Do not invent facts to satisfy incorrect criticism. Canonical source quotes are substrings of source.objects[*].text, not HTML markup; objects retain raw markup and links separately.')
+                    legacy_key=f'inventory_semantic_repair-{audit_round+1}'
+                    if len(job['facts']['facts'])>80 and legacy_key not in job['results']:
+                        patch=self._call(job,legacy_key+'-patch','inventory_patch',repair_payload,P.InventoryPatch)
+                        try:fixed=patch_inventory(job['facts'],patch)
+                        except ValueError as exc:
+                            patch=self._call(job,legacy_key+'-patch-contract','inventory_patch',repair_payload|dict(
+                                received_patch=patch,patch_contract_error=str(exc),
+                                instruction='Correct only the patch contract against the ACTUAL previous_response fact IDs. Do not delete hypothetical or previously removed entries. Reread replacement/remove conflicts against source and choose exactly one supported action. unresolved contains ONLY real remaining uncertainties, not statements saying something is resolved or present. Keep every untouched fact and actual source condition.'),P.InventoryPatch)
+                            fixed=patch_inventory(job['facts'],patch)
+                    else:
+                        fixed=self._call(job,legacy_key,'inventory_repair',repair_payload,P.FactInventory)
+                    fixed=P.FactInventory.model_validate(bind_source_quotes(fixed,source)).model_dump()
                     validate_facts(fixed,source)
                     job['facts']=fixed
                     job['inventory_semantic_repairs']=audit_round+1
@@ -503,17 +656,18 @@ class Production:
             # that contradiction or discard the fact. Ask a separate role to
             # adjudicate only these disputed classifications against the source.
             disputed=[a for a in assessments if a['kind']!='original_ambiguity'
-                      and a['treatment']=='preserve_without_invention']
+                      or a['treatment']!='preserve_without_invention']
             accepted_disputes=set()
             if disputed:
                 dispute_claims=[dict(claim_index=n,claim='The inventory audit classifies '+a['id']+
-                                     ' as '+a['kind']+' while requesting preservation without invention. '
-                                     'Determine whether this classification identifies a real inventory error '
-                                     'that requires correction. Original uncertainty: '+
+                                     ' as '+a['kind']+' with treatment '+a['treatment']+'. '
+                                     'Determine whether there is a real source extraction gap, missing evidence, or inventory error '
+                                     'that blocks faithful rewriting within the supplied input scope. Do not reject a real gap. '
+                                     'A reference to an external file does not itself require inventing or explaining its absent contents. Original uncertainty: '+
                                      next(u['description'] for u in uncertainties if u['id']==a['id'])+
                                      '. Audit explanation: '+a['explanation'])
                                 for n,a in enumerate(disputed)]
-                verdicts=self._call(job,f'inventory_uncertainty_decision-{audit_round}',
+                verdicts=self._call(job,f'inventory_uncertainty_decision-{audit_round}-'+digest(dispute_claims)[:12]+review_suffix,
                                     'inventory_decision',base|dict(facts=job['facts'],
                                     uncertainty_assessments=disputed,claims=dispute_claims),P.InventoryDecisions)
                 verdicts=decision_evidence(verdicts,source)
@@ -524,16 +678,15 @@ class Production:
                                    if d['verdict']=='not_error'}
             source_text={o['id']:o['text'] for o in source['objects']}
             for a in assessments:
-                if (a['treatment']!='preserve_without_invention' or
-                        (a['kind']!='original_ambiguity' and a['id'] not in accepted_disputes)):
+                if (a['id'] not in accepted_disputes and
+                        (a['treatment']!='preserve_without_invention' or a['kind']!='original_ambiguity')):
                     raise ValueError('独立清单审核确认仍需补充证据或纠正清点')
-                if any(e['source_id'] not in source_text or e['quote'] not in source_text[e['source_id']] for e in a['evidence']):
+                if any(e['source_id'] not in source_text or not source_quote_matches(e['quote'],source_text[e['source_id']]) for e in a['evidence']):
                     raise ValueError('清点疑点的裁决没有匹配原件证据')
-            additions=bind_source_quotes({'facts':result['missing_facts']},source)
-            job['facts']['facts'].extend(additions['facts'])
-            validate_facts(job['facts'],source)
+            merged=merge_inventory_additions(job['facts'],result['missing_facts'],source)
             if source['unknown']:
                 raise ValueError('原件仍有解析或视觉未知项，文本审核不能擅自清除')
+            job['facts']=merged
             inv=copy.deepcopy(source)
             inv['obligations']=[dict(id=f['id'],object_id=f['source_id'],statement=f['meaning'],conditions=f['conditions'],
                 quantities=f['quantities'],negations=f['negations'],status='reviewed') for f in job['facts']['facts']]
@@ -553,6 +706,18 @@ class Production:
                 instruction='Use the fewest pedagogically coherent units that fully cover all facts. Each unit must fit one complete response. Do not omit small details to meet the limit.'),C.Plan)
             normalized,removed=unmark_nonmetadata_document_info(result,job['inventory'])
             normalized,marked=mark_known_document_metadata(normalized,job['inventory'])
+            seen=set()
+            invalid_dependencies=False
+            for unit in normalized['units']:
+                invalid_dependencies |= not set(unit['follows_units']) <= seen
+                seen.add(unit['id'])
+            if invalid_dependencies:
+                from .pedagogy import apply_dependency_patch
+                dependencies=self._call(job,'planner-contract-dependencies-1','planner',dict(
+                    goal=job['goal'],plan=normalized,
+                    instruction='This request repairs ONLY the dependency field contract of the saved plan. Return DependencyPatch, exactly one entry per existing unit. follows_units means prerequisite units ALREADY READ, never the unit that comes next. Respect the existing unit order. Use an empty array when no earlier unit is required. Explain an actual dependency in bridge_reason, do not invent one. Do not rewrite stages, facts, titles, or assignments. The complete plan will then receive an independent review.'),P.DependencyPatch)
+                normalized=apply_dependency_patch(normalized,dependencies)
+                job['planner_dependency_repair']='planner-contract-dependencies-1'
             coverage_repair=None
             try:
                 job['plan']=self.validate_plan(job,normalized)
@@ -655,6 +820,8 @@ class Production:
             job['unit_index']=0
             job['stage']='writer'
         elif stage=='writer':
+            if job['unit_index']==len(job['plan']['units']):
+                return self._finish_draft(job)
             unit=job['plan']['units'][job['unit_index']]
             needed=set(unit['obligation_ids'])
             inv=copy.deepcopy(self.teaching_inventory(job['inventory']))
@@ -676,6 +843,8 @@ class Production:
                 obligation_binding='Each listed obligation_fact_id is the SAME id in facts. Its original object_id is fact.source_id; statement is fact.meaning; conditions/quantities/negations are the fact fields. The complete pre-production ledger remains saved. Use these IDs in every block obligation_ids.',
                 protected_objects=protected_objects(inv),prior_terminology=job.get('terminology',[]),
                 optional_source_limits=job.get('optional_source_limits',[]))
+            payload['previously_embedded_object_ids']=[sid for sid,literal in payload['protected_objects'].items()
+                if any(sid in b.get('embedded_object_ids',[]) and sid in b['object_ids'] and literal in b['markdown'] for b in job['draft']['blocks'])]
             previous_units=[u['id'] for u in job['plan']['units'][:job['unit_index']]]
             immediately_previous=previous_units[-1:] if previous_units else []
             payload.update(full_teaching_route=job['plan'],
@@ -696,6 +865,13 @@ class Production:
             key='writer-'+unit['id']+(f'-revision-{generation}' if generation else '')
             result=self._call(job,key,'writer',payload,P.FlatDraft)
             result=bind_evidence_layout(result,inv)
+            from .writing import attach_original_pages,invalid_inline_references,apply_reference_patch
+            bad_references=invalid_inline_references(result,inv)
+            if bad_references:
+                patch=self._call(job,key+'-references','reference_repair',dict(source={'objects':objects_view(inv['objects'])},
+                    invalid_nodes=bad_references,actual_unit=result,facts=payload['facts']),P.ReferenceTextPatch)
+                result=apply_reference_patch(result,patch,inv)
+            result=attach_original_pages(result,inv,unit['id'],job['draft'])
             try:
                 draft=compose(bundle,result,inv)
             except ValueError as exc:
@@ -703,15 +879,15 @@ class Production:
                     dict(received=result,validator_error=str(exc)),P.FlatDraft)
                 result=validate_layout_repair(result,fixed)
                 draft=compose(bundle,result,inv)
-            issues=inspect_draft(inv,draft,{'units':[unit]})
-            if any(i['code'] in {'unknown_obligation','unmapped','quote','object'} for i in issues):
+            issues=inspect_draft(inv,draft,{'units':[unit]},prior_draft=job['draft'])
+            if any(i['code'] in {'unknown_obligation','unmapped','quote','object','omission'} for i in issues):
                 from .writing import apply_binding_patch
                 fixed=self._call(job,key+'-bindings-v2','binding_patch',
                     dict(received=result,rendered_draft=draft,inventory=inv,current_unit=unit,
                          facts=payload['facts'],validator_issues=issues),P.BindingPatch)
                 result=apply_binding_patch(result,fixed,inv)
                 draft=compose(bundle,result,inv)
-                issues=inspect_draft(inv,draft,{'units':[unit]})
+                issues=inspect_draft(inv,draft,{'units':[unit]},prior_draft=job['draft'])
             completion_key=key+'-complete'
             if issues and {i['code'] for i in issues}<={'omission','protected_object'} and all(i['obligation_id'] for i in issues) and (
                     completion_key in job.get('unit_completion_attempts',[]) or job['repair_rounds']<2):
@@ -731,7 +907,7 @@ class Production:
                         dict(received=result,validator_error=str(exc)),P.FlatDraft)
                     result=validate_layout_repair(result,fixed)
                     draft=compose(bundle,result,inv)
-                issues=inspect_draft(inv,draft,{'units':[unit]})
+                issues=inspect_draft(inv,draft,{'units':[unit]},prior_draft=job['draft'])
             if issues:
                 raise ValueError('单元结构或原对象不完整：'+'；'.join(x['message'] for x in issues[:3]))
             if {b['id'] for b in draft['blocks']} & {b['id'] for b in job['draft']['blocks']}:
@@ -752,14 +928,7 @@ class Production:
                     job['draft']['blocks'].extend(copy.deepcopy([b for b in regeneration['original_draft']['blocks'] if b['unit_id']==next_id]))
                     job['unit_index']+=1
             if job['unit_index']==len(job['plan']['units']):
-                job['draft']=arrange_document_info(job['draft'],job['plan'])
-                if regeneration:
-                    untouched=[b for b in regeneration['original_draft']['blocks'] if b['unit_id'] not in regeneration['unit_ids']]
-                    if untouched!=[b for b in job['draft']['blocks'] if b['unit_id'] not in regeneration['unit_ids']]:
-                        raise ValueError('教学修复改变了未命中的正文')
-                    job.pop('regeneration',None)
-                job['stage']='teaching' if job.get('teaching_version',0)>=2 and job.get('review_order')!='style_first' else 'style'
-                job['initial_draft_blob']=self.store.blob(json.dumps(job['draft'],ensure_ascii=False).encode())
+                return self._finish_draft(job)
         elif stage=='teaching':
             job['plan']=self.validate_plan(job,job['plan'])
             generation=job.get('content_generation',0)
@@ -876,11 +1045,58 @@ class Production:
             report=scan(bundle,job['draft'],self.store.root/'production'/job['id']/'checks')
             report['execution_evidence']=execution_evidence(job,bundle)
             catalog=rule_catalog(bundle['instructions'])
-            payload=dict(draft=job['draft'],source={'objects':source['objects']},rule_catalog=list(catalog),
+            payload=dict(draft=draft_text_view(job['draft']),source={'objects':objects_view(source['objects'])},rule_catalog=list(catalog),
                          mechanical_findings=report['format']['findings'],mechanical_candidates=report['format']['candidates'],
                          execution_evidence=report['execution_evidence'],protected_originals=protected_context(source,job['draft']))
-            result=self._call(job,f"style-{job['repair_rounds']}",'style',payload,P.StyleReview)
-            job['style']=P.StyleReview.model_validate(result).model_dump()
+            root_key=f"style-{job['repair_rounds']}"
+            from .style_parts import partitions,validate_part,merge,IndexedReviewSchema,decode_indexed,missing_assignments,merge_indexed
+            divided=root_key not in job['results'] and (job.get('style_parts_enabled') or
+                not job.get('pending') and sum(len(payload[k]) for k in ('rule_catalog','mechanical_findings','mechanical_candidates'))>40)
+            if divided:
+                job['style_parts_enabled']=True
+                groups=partitions(payload);completed=[]
+            else:groups=[payload];completed=[]
+            for number,part in enumerate(groups):
+                key=root_key+f'-part-{number+1}' if divided else root_key
+                job.update(style_part_index=number,style_part_count=len(groups))
+                if divided:
+                    indexed_key=key+'-indexed-v1'
+                    # Reuse a complete earlier assignment. A malformed old array
+                    # cannot become a pass; the new schema fixes identities before
+                    # dispatch while retaining every original response and charge.
+                    previous=job['results'].get(key+'-contract',job['results'].get(key))
+                    if previous is not None and indexed_key not in job['results'] and not job.get('pending'):
+                        try:
+                            completed.append(validate_part(previous,part));continue
+                        except ValueError:pass
+                    old_pending={key,key+'__fallback',key+'-contract',key+'-contract__fallback'}
+                    if job.get('pending') in old_pending:
+                        # Recover the exact already submitted old call first.
+                        contract='-contract' in job['pending']
+                        result=self._call(job,key+'-contract' if contract else key,
+                            'style_contract_repair' if contract else 'style',part,P.StyleReview)
+                        parsed=validate_part(result,part)
+                    else:
+                        indexed_payload=part|{'review_encoding':'indexed_review_v1',
+                            'response_instruction':'Return the exact indexed schema: findings plus rules_by_id and/or checks_by_id ONLY when present in the schema. Each required object key is an assigned identity and must occur exactly once. Do not return assessments or mechanical_assessments arrays. Read the full skill and actual candidate; keep failures and unknowns with exact evidence. Omitted schema fields mean this group has no assignments of that type, not that their rules are waived.'}
+                        result=self._call(job,indexed_key,'style',indexed_payload,IndexedReviewSchema(part))
+                        from jsonschema import ValidationError
+                        try:parsed=decode_indexed(result,part)
+                        except ValidationError:
+                            missing=missing_assignments(result,indexed_payload)
+                            missing['response_instruction']+=' This is the sole supplement for missing identities. Assess only these remaining supplied items; earlier returned judgments are retained unchanged by the program. Do not repeat them or rewrite the article.'
+                            supplement=self._call(job,indexed_key+'-missing','style',missing,IndexedReviewSchema(missing))
+                            parsed=merge_indexed(result,supplement,part)
+                    completed.append(parsed);continue
+                result=self._call(job,key,'style',part,P.StyleReview)
+                try:parsed=validate_part(result,part) if divided else P.StyleReview.model_validate(result).model_dump()
+                except ValueError as exc:
+                    result=self._call(job,key+'-contract','style_contract_repair',
+                        part|dict(received_review=result,contract_error=str(exc),
+                            instruction='Correct this review protocol once, retaining all actual defects and exact evidence. Return exactly the assigned rule and mechanical IDs. Do not rewrite prose or turn failures into passes.'),P.StyleReview)
+                    parsed=validate_part(result,part) if divided else P.StyleReview.model_validate(result).model_dump()
+                completed.append(parsed)
+            job['style']=merge(completed)
             job['scan']=report
             job['style_draft_digest']=digest(canonical(job['draft']).encode())
             issues=style_issues(job['style'],catalog,job['draft'],report)
@@ -914,24 +1130,33 @@ class Production:
             allowed={f['block_id'] for f in findings if f['block_id']}
             if not allowed:
                 raise ValueError('审核存在缺口，但没有足以支持精确修复的定位；未擅自重写')
+            received_proposal=False
             try:
                 before_digest=digest(canonical(job['draft']).encode())
                 if job.get('writing_contract_version',0)>=7:
                     from .review_context import editable_lines,line_proposal,protected_context
                     lines=editable_lines(job['draft'],source,allowed)
                     if not lines:raise Conflict('没有可安全修改的已定位正文行')
-                    result=self._call(job,f'line_repair-{index}','line_repair',dict(draft=job['draft'],source=source,
+                    result=self._call(job,f'line_repair-{index}','line_repair',dict(draft=draft_text_view(job['draft']),
+                        source={'objects':objects_view(source['objects'])},
                         findings=findings,document_digest=before_digest,editable_lines=lines,
                         protected_originals=protected_context(source,job['draft']),
+                        prior_rejection=job.get('repair_rejection'),
                         prepared_terminology=job.get('prepared_terminology',{})),P.LineRepair)
+                    received_proposal=True
                     result=line_proposal(P.LineRepair.model_validate(result).model_dump(),lines)
                 else:
                     result=self._call(job,f'local_repair-{index}','local_repair',dict(draft=job['draft'],source=source,
                         findings=findings,document_digest=before_digest),P.LocalRepair)
+                    received_proposal=True
                 job['draft']=repair(bundle,job['draft'],result,allowed,self.store.root/'production'/job['id']/f'repair-{index}')
             except (ValueError,Conflict) as error:
-                if index<2:raise
+                if not received_proposal:raise
                 job['repair_rejection']=str(error)
+                if index<2:
+                    job.pop('active_repair_round',None)
+                    job['stage']='repair'
+                    return 'queued'
                 job.setdefault('quality_issues',[]).append('最后一轮局部补丁未能安全提交，正文保持原样：'+str(error))
                 return 'needs_attention'
             job.setdefault('repair_commits',[]).append(dict(round=index,before=before_digest,
@@ -972,7 +1197,7 @@ class Production:
         if len(ids)!=len(claims) or set(ids)!=set(range(len(claims))):
             raise ValueError('审核争议未逐项得到明确裁决')
         sources={o['id']:o['text'] for o in source['objects']}
-        if any(e['source_id'] not in sources or e['quote'] not in sources[e['source_id']]
+        if any(e['source_id'] not in sources or not source_quote_matches(e['quote'],sources[e['source_id']])
                for d in decisions for e in d['evidence']):
             raise ValueError('审核争议裁决没有匹配的原文证据')
         return all(d['verdict']=='not_error' for d in decisions)
@@ -1019,6 +1244,11 @@ class Production:
 
 
 def worker(store, config, once=False):
+    from .intake_jobs import intake_worker,IntakeQueue
+    if once:IntakeQueue(store,config).run_once()
+    else:
+        intake_stop=threading.Event()
+        threading.Thread(target=intake_worker,args=(store,config,intake_stop),daemon=True).start()
     engine=Production(store,config)
     while True:
         worked=engine.run_once()

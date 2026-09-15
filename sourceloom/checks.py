@@ -6,6 +6,12 @@ from .contracts import Draft, Patch, Plan
 from .store import Conflict, digest
 
 
+def source_quote_matches(quote,text):
+    # A truly text-free image container has no characters to quote. Its
+    # identity, raw structure and child image still require separate coverage.
+    return isinstance(quote,str) and (bool(quote) or text=='') and quote in text
+
+
 def validate_plan(plan, inventory):
     plan = Plan.model_validate(plan).model_dump()
     obligations = {o["id"] for o in inventory["obligations"]}
@@ -24,7 +30,7 @@ def validate_plan(plan, inventory):
     return plan
 
 
-def inspect_draft(inventory, draft, plan=None, require_heading_structure=False):
+def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, prior_draft=None):
     findings = []
     def error(code, message, block_id="", obligation_id=""):
         findings.append(dict(id=f"mechanical-{len(findings)+1}", severity="error", code=code,
@@ -41,6 +47,12 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False):
     obligations = {o["id"]: o for o in inventory["obligations"]}
     units = {u["id"] for u in plan["units"]} if plan else None
     resources = {r["id"] for r in inventory["resources"]}
+    earlier=set()
+    if prior_draft:
+        from .writing import protected_objects
+        for sid,literal in protected_objects(inventory).items():
+            if any(sid in b.get('embedded_object_ids',[]) and sid in b['object_ids'] and literal in b['markdown'] for b in prior_draft['blocks']):
+                earlier.add(sid)
     covered, object_coverage, identities = set(), set(), set()
     for b in parsed["blocks"]:
         if not set(b.get('embedded_object_ids',[])) <= set(b['object_ids']):
@@ -71,7 +83,7 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False):
                     error("unmapped", "义务没有指向对应原文或原对象", b["id"], oid)
         for e in b["evidence"]:
             src = sources.get(e["source_id"])
-            if not src or e["quote"] not in src["text"]:
+            if not src or not source_quote_matches(e['quote'],src['text']):
                 error("quote", "来源片段与保存的原文不符", b["id"])
         for sid in b["object_ids"]:
             if sid not in sources:
@@ -84,7 +96,7 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False):
     for oid in obligations.keys() - covered:
         error("omission", "冻结义务在候选中没有落点", obligation_id=oid)
     for sid, src in sources.items():
-        if src["kind"] in {"image", "table", "code", "formula", "link", "page", "attachment", "footnote"} and sid not in object_coverage:
+        if src["kind"] in {"image", "table", "code", "formula", "link", "page", "attachment", "footnote"} and sid not in object_coverage and sid not in earlier:
             error("protected_object", "受保护对象没有插入候选", obligation_id=next((o["id"] for o in obligations.values() if o["object_id"]==sid), ""))
         if require_heading_structure and src['kind']=='heading' and not any(
                 sid in b['object_ids'] and (

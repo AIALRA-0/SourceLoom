@@ -42,7 +42,7 @@ class Queue:
                     visual_batches=visual_batches,minimum_calls=minimum_calls,
                     max_calls=max_calls,feasible=minimum_calls<=max_calls)
 
-    def enqueue(self, pid, bundle):
+    def enqueue(self, pid, bundle, expected_intake=None):
         now = time.time()
         with self.store.connect() as cx:
             cx.execute('BEGIN IMMEDIATE')
@@ -52,7 +52,13 @@ class Queue:
             p = json.loads(row[0])
             if p.get('trashed'):
                 raise Conflict('先恢复材料，再开始生成')
-            if p.get('active_job'):
+            incoming=None
+            if expected_intake:
+                prior=cx.execute("SELECT body FROM jobs WHERE id=? AND project=? AND role='intake'",(expected_intake,pid)).fetchone()
+                incoming=json.loads(prior[0]) if prior else {}
+                if (incoming.get('status')!='running' or not incoming.get('inventory_saved') or
+                        p.get('active_job')!=expected_intake):raise Conflict('接入任务已停止或材料已变化')
+            if p.get('active_job') and not expected_intake:
                 return self.store.job(p['active_job'])
             if not p.get('inventory'):
                 raise Conflict('先上传文件或导入网页')
@@ -74,6 +80,9 @@ class Queue:
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',
                        (jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
             cx.execute('INSERT INTO production_control(id,project,status,created) VALUES(?,?,?,?)', (jid,pid,'queued',now))
+            if incoming:
+                incoming.update(status='completed',production_job=jid,finished=now)
+                cx.execute("UPDATE jobs SET status='completed',body=? WHERE id=?",(json.dumps(incoming,ensure_ascii=False),expected_intake))
             p.update(active_job=jid,state='queued',max_calls=24)
             cx.execute('UPDATE projects SET body=? WHERE id=?', (json.dumps(p,ensure_ascii=False),pid))
         return job
@@ -180,6 +189,9 @@ class Queue:
         return not row or bool(row['cancel_requested']) or (owner is not None and row['owner']!=owner)
 
     def cancel(self, jid):
+        if self.store.job(jid)['role']=='intake':
+            from .intake_jobs import IntakeQueue
+            return IntakeQueue(self.store,{}).cancel(jid)
         with self.store.connect() as cx:
             if not cx.execute('UPDATE production_control SET cancel_requested=1 WHERE id=?',(jid,)).rowcount:
                 raise KeyError(jid)
@@ -216,6 +228,24 @@ class Queue:
                     job.setdefault('rejected_resubmissions',{})[key]=call['id']
                 job.pop('pending',None)
             returned_invalid=call.get('status')=='invalid' and call.get('finish_reason') in {'stop','tool_calls'} and bool(call.get('response_blob'))
+            if (job.get('stage')=='style' and not job.get('style_parts_enabled') and
+                    call.get('role') in {'style__fallback','style_contract_repair__fallback'} and
+                    call.get('status')=='truncated' and call.get('finish_reason')=='length' and
+                    call.get('response_blob') and billing and billing['actual'] is not None):
+                job['style_partition_continuation']={'original_call':call['id'],'original_step':job.get('pending'),
+                    'reason':'Complete billed review exceeded output capacity; continue once as disjoint bounded review assignments, preserving all prior charges'}
+                job['style_parts_enabled']=True
+                job.pop('pending',None);returned_invalid=True
+            # A fully received, billed review cut off at its output limit has no
+            # delivery uncertainty. The engine permits only its configured one-shot fallback.
+            if (call.get('role') in {'style','style_contract_repair','term_preparation','writer'} and
+                    call.get('status')=='truncated' and call.get('finish_reason')=='length' and
+                    call.get('response_blob') and billing and billing['actual'] is not None):
+                key=job.get('pending') or next((k for k,v in job.get('fallbacks',{}).items() if v.get('original_call')==call['id']),None)
+                if not key:raise Conflict('截断审核缺少原阶段身份，未重新提交')
+                job.setdefault('fallbacks',{})[key]=dict(original_call=call['id'],reason='known_truncated_review')
+                job.pop('pending',None)
+                returned_invalid=True
             if (call.get('status') in {'truncated','reasoning_exhausted'} and billing and
                     billing['actual'] is not None and call.get('response_blob')):
                 from .providers import reasoning_exhausted
@@ -234,6 +264,60 @@ class Queue:
             cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
             cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),p['id']))
         return job
+
+    def continue_inventory_patch(self, jid):
+        """Explicitly continue with a different small patch task; never replay an unknown request."""
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0]);call=job.get('calls',[{}])[-1]
+            if (job.get('role')!='production' or job.get('status')!='uncertain'
+                    or job.get('stage')!='inventory_audit' or job.get('inventory_patch_continuation')
+                    or call.get('role') not in {'inventory_repair','inventory_repair__fallback'}
+                    or call.get('status')!='uncertain' or call.get('step_key')!=job.get('pending')
+                    or len(job.get('facts',{}).get('facts',[]))<=80
+                    or not any(k.startswith('inventory_audit') for k in job.get('results',{}))):
+                raise Conflict('当前没有可改用局部清单补丁的长文任务')
+            p=json.loads(cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()[0])
+            if p.get('active_job') or p.get('trashed') or p['revision']!=job['base_revision'] or p['inventory']['digest']!=job['source_digest']:
+                raise Conflict('原件版本已变化，不能接续原清单')
+            job['inventory_patch_continuation']=dict(original_call=call['id'],original_step=job['pending'],
+                reason='Explicit continuation with a different bounded delta task after full-inventory repair transport failure; unknown delivery and reserved cost remain recorded')
+            job.pop('pending');job.update(status='queued',error=None)
+            p.update(active_job=jid,state='queued')
+            cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),p['id']))
+        return job
+
+    def retry_visual_details(self, jid):
+        """One explicit detailed-image retry of a completely received failed visual review."""
+        job=self.store.job(jid)
+        if (job.get('status')!='failed' or job.get('stage')!='visual_audit'
+                or job.get('visual_detail_retry') or job.get('pending')):
+            raise Conflict('当前没有可补充图片细节的已返回视觉审核')
+        reviews=[(k,v) for k,v in job['results'].items() if k.startswith('visual_audit') and k.endswith('recheck')]
+        if not reviews:raise Conflict('缺少已返回的原始图片审核')
+        key,result=reviews[-1]
+        ids=[p['source_id'] for p in result['pages'] if any(c['status'] not in {'preserved','not_applicable'} for c in p.get('checks',[]))]
+        if not ids:raise Conflict('没有定位到需要补充细节的原件')
+        # Set the retry scope before retry_validation releases the queue lease.
+        job.update(visual_detail_ids=ids,visual_detail_retry={'review':key,'source_ids':ids})
+        self.store.put_job(job)
+        return self.retry_validation(jid)
+
+    def recheck_inventory(self,jid):
+        """One explicit review after a diagnosed reviewer/configuration correction."""
+        job=self.store.job(jid)
+        if (job.get('status')!='failed' or job.get('stage')!='inventory_audit'
+                or job.get('inventory_review_recheck') or job.get('pending')):
+            raise Conflict('当前没有可重新核对的已返回清单审核')
+        round=job.get('inventory_semantic_repairs',0)
+        job['inventory_review_recheck']={'round':round,'reason':'Explicit bounded recheck after correcting review interpretation; all prior facts, reviews and spending remain retained'}
+        job['inventory_semantic_limit']=round+1
+        self.store.put_job(job)
+        return self.retry_validation(jid)
 
     def recheck_plan_review(self, jid):
         """Re-evaluate a saved repair plan after fixing old-prose review confusion."""
@@ -381,8 +465,8 @@ class Queue:
             cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(project,ensure_ascii=False),project['id']))
         return job
 
-    def retry_truncated_inventory(self, jid, new_output_limit):
-        """One revised-cap attempt after a paid, known-truncated inventory call."""
+    def retry_truncated_inventory(self, jid, new_output_limit=None):
+        """One revised-cap or partitioned continuation after a billed truncation."""
         with self.store.connect() as cx:
             cx.execute('BEGIN IMMEDIATE')
             row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
@@ -391,11 +475,16 @@ class Queue:
             call=job['calls'][-1] if job.get('calls') else {}
             if (job.get('role')!='production' or job.get('status')!='failed' or
                     job.get('stage')!='inventory' or job.get('pending')!='inventory' or
-                    job.get('inventory_cap_retry') or call.get('status')!='truncated' or
+                    job.get('inventory_cap_retry') or job.get('inventory_partition_retry') or call.get('status')!='truncated' or
                     call.get('finish_reason')!='length' or not call.get('wire_request_blob')):
                 raise Conflict('当前没有可按增大输出上限重试的已知截断清单')
             previous=json.loads(self.store.read_blob(call['wire_request_blob']))['max_tokens']
-            if new_output_limit<=previous:raise Conflict('新的输出上限必须高于上次截断上限')
+            if new_output_limit is None:
+                from .source_context import inventory_groups
+                objects=job['source']['objects']
+                if len(inventory_groups(objects))<2 or sum(len(o.get('text','')) for o in objects)<=12000:
+                    raise Conflict('当前原件不满足按完整对象分组清点的条件')
+            elif new_output_limit<=previous:raise Conflict('新的输出上限必须高于上次截断上限')
             paid=cx.execute('SELECT actual FROM spending WHERE id=?',(call['id'],)).fetchone()
             if not paid or paid['actual'] is None:raise Conflict('上次用量尚未结算，不能重新提交')
             row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
@@ -403,7 +492,9 @@ class Queue:
             project=json.loads(row[0])
             if project.get('active_job') or project.get('trashed') or project['revision']!=job['base_revision']:
                 raise Conflict('材料已变化，不能继续原任务')
-            job['inventory_cap_retry']={'prior_call':call['id'],'prior_limit':previous,'new_limit':new_output_limit}
+            if new_output_limit is None:
+                job['inventory_partition_retry']={'prior_call':call['id'],'prior_limit':previous,'method':'complete_source_object_groups'}
+            else:job['inventory_cap_retry']={'prior_call':call['id'],'prior_limit':previous,'new_limit':new_output_limit}
             job.pop('pending',None)
             job.update(status='queued',error=None)
             project.update(active_job=jid,state='queued')

@@ -17,7 +17,7 @@ def load_config():
             "router_max_objective_chars":300000,
             "daily_budget_usd":2.0,"daily_call_limit":80,
             "provider_options":{},"role_options":{},"role_providers":{},
-            "total_budget_usd":10.0,"subscription_call_limit":40,
+            "total_budget_usd":10.0,"subscription_call_limit":None,
             "external_worker":True,
             "writing_skill_dir":os.environ.get("HUMAN_READABLE_SKILL_DIR", ""),
             "auth_mode":"local", "allowed_subject":"", "public_origin":"",
