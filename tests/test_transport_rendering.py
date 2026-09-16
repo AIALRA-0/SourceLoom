@@ -248,3 +248,59 @@ def test_quoted_original_keeps_blank_lines_and_changed_pronoun_is_rejected(newli
     assert not inspect_draft(inv,{'blocks':[b]})
     b['markdown']=b['markdown'].replace('We','They')
     assert any(x['code']=='embedded_bytes' for x in inspect_draft(inv,{'blocks':[b]}))
+
+def test_native_import_link_rewriting_cannot_change_literal_code_or_prose():
+    import re
+    from bs4 import BeautifulSoup
+    from sourceloom.export import editor_storage
+    raw='<p>Literal src="diagram.png" and href="chapter.html"</p><pre><code>&lt;script src="index.js"&gt;\n&lt;/script&gt;\n</code></pre><img src="real.png" alt="real"><a href="chapter.html">Read</a>'
+    encoded=editor_storage(raw)
+    # Match the upstream importer's serialized attribute rewrite boundary.
+    imported=re.sub(r'(src|href)="([^"]*)"',lambda m:m[1]+'="api/imported/'+m[2]+'"',encoded)
+    before=BeautifulSoup(raw,'html.parser');after=BeautifulSoup(imported,'html.parser')
+    assert before.pre.get_text()==after.pre.get_text()
+    assert before.p.get_text()==after.p.get_text()
+    assert after.img['src']=='api/imported/real.png'
+    assert after.a['href']=='api/imported/chapter.html'
+
+def test_native_candidate_identity_tracks_export_bytes_not_zip_timestamps(tmp_path,monkeypatch):
+    import json,zipfile
+    from io import BytesIO
+    from scripts.rich_fixture import create
+    from sourceloom.store import Store
+    import sourceloom.export as export
+    s=Store(tmp_path);p=create(s)
+    def key():
+        with zipfile.ZipFile(BytesIO(export.export_zip(s,p))) as z:
+            return json.loads(z.read('!!!meta.json'))['files'][0]['attributes'][0]['value']
+    first=key();assert key()==first
+    original=export.editor_storage
+    monkeypatch.setattr(export,'editor_storage',lambda raw:original(raw)+'<!-- transport revision -->')
+    second=key();assert second!=first
+    assert first.startswith(p['id']+':'+str(p['revision'])+':')
+    assert second.startswith(p['id']+':'+str(p['revision'])+':')
+
+@pytest.mark.parametrize('legacy',[False,True])
+def test_uncertain_native_import_is_not_replayed_after_transport_changes(tmp_path,monkeypatch,legacy):
+    import json,zipfile,httpx
+    from io import BytesIO
+    from scripts.rich_fixture import create
+    from sourceloom.store import Store,Conflict
+    from sourceloom.export import export_zip
+    from sourceloom.readweave import import_candidate
+    s=Store(tmp_path);p=create(s)
+    with zipfile.ZipFile(BytesIO(export_zip(s,p))) as z:
+        key=json.loads(z.read('!!!meta.json'))['files'][0]['attributes'][0]['value']
+    folder=s.root/'readweave';folder.mkdir()
+    suffix='' if legacy else '-'+key.rsplit(':',1)[-1]
+    (folder/(p['id']+'-'+str(p['revision'])+suffix+'.json')).write_text(json.dumps({'status':'submitted'}))
+    calls=[]
+    def handler(request):
+        calls.append(request.method)
+        assert request.method=='GET'
+        return httpx.Response(200,json={'results':[]})
+    client=httpx.Client
+    monkeypatch.setattr(httpx,'Client',lambda **kwargs:client(**kwargs,transport=httpx.MockTransport(handler)))
+    with pytest.raises(Conflict,match='不确定'):
+        import_candidate(s,{'readweave_url':'https://reader.example','readweave_token':'synthetic','readweave_parent':'parent'},p['id'])
+    assert calls==['GET']

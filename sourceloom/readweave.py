@@ -32,17 +32,20 @@ def import_candidate(store,config,pid):
     if not all(config.get(k) for k in ['readweave_url','readweave_token','readweave_parent']):
         raise Conflict('先配置 ReadWeave 的地址、接口凭据与专用候选父笔记')
     p=store.get(pid);raw=export_zip(store,p)
-    key=f'{pid}:{p["revision"]}';parent=config['readweave_parent']
+    parent=config['readweave_parent']
     with zipfile.ZipFile(BytesIO(raw)) as z:
         expected=z.read('material.html').decode()
         meta=json.loads(z.read('!!!meta.json'))
+        key=next(a['value'] for a in meta['files'][0]['attributes'] if a['name']=='sourceloomCandidate')
         attachment_hashes={x['title']:digest(z.read(x['dataFileName'])) for x in meta['files'][0]['attachments']}
         expected_attachments=[(a['title'],a['role'],a['mime'],digest(z.read(a['dataFileName']))) for a in meta['files'][0]['attachments']]
         image_files={a['dataFileName']:digest(z.read(a['dataFileName'])) for a in meta['files'][0]['attachments'] if a['role']=='image'}
         expected_images=[image_files.get(n.get('src','')) for n in BeautifulSoup(expected,'html.parser').find_all('img')]
     work=store.root/'readweave';work.mkdir(exist_ok=True)
-    record=work/(pid+'-'+str(p['revision'])+'.json')
+    legacy_record=work/(pid+'-'+str(p['revision'])+'.json')
+    record=work/(pid+'-'+str(p['revision'])+'-'+key.rsplit(':',1)[-1]+'.json')
     previous=json.loads(record.read_text(encoding='utf-8')) if record.exists() else None
+    legacy=json.loads(legacy_record.read_text(encoding='utf-8')) if legacy_record.exists() else None
     with httpx.Client(base_url=config['readweave_url'].rstrip('/')+'/etapi/',headers={'Authorization':config['readweave_token']},timeout=45,follow_redirects=False) as c:
         # Native import is not idempotent: query the exact label before every write.
         r=c.get('notes',params={'search':'#sourceloomCandidate','limit':1000});r.raise_for_status()
@@ -56,6 +59,8 @@ def import_candidate(store,config,pid):
                 raise Conflict('前次导入结果尚不确定，未再次提交导入；请核对原始远端记录')
             nid=previous['note_id']
         else:
+            if legacy and not legacy.get('note_id'):
+                raise Conflict('旧版导入送达尚不确定，保留原记录，未因导出格式变化重复提交')
             record.write_text(json.dumps({'status':'submitted','candidate':key,'parent':parent,'created':time.time()}),encoding='utf-8')
             r=c.post(f'notes/{parent}/import',content=raw,headers={'Content-Type':'application/octet-stream','Content-Transfer-Encoding':'binary'})
             r.raise_for_status();nid=r.json()['note']['noteId']

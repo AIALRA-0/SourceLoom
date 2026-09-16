@@ -236,7 +236,11 @@ def editor_storage(raw):
         if block is None:
             block=doc.new_tag('p');section.insert(0,block)
         block['data-readweave-anchor-id']=anchor
-    return str(doc)
+    # The native ZIP importer rewrites src="..." and href="..." with regexes
+    # over serialized HTML, including escaped code/text. Encode text quotes so
+    # only real attributes match; decoded visible/code characters stay exact.
+    from bs4.formatter import HTMLFormatter
+    return doc.decode(formatter=HTMLFormatter(entity_substitution=lambda text:html.escape(text,quote=True)))
 
 
 def export_zip(store, project, release=False):
@@ -278,9 +282,14 @@ def export_zip(store, project, release=False):
     audit['previous_source_versions']=store.source_versions(project['id'])
     audit_raw = json.dumps(audit,ensure_ascii=False,indent=2).encode()
     attach(audit_raw,"sourceloom-audit.json","application/json","file",digest(audit_raw))
+    # A renderer/transport correction may change an export without changing the
+    # authored revision. Bind import identity to actual content and attachments.
+    artifact_digest=digest([digest(file_map['material.html']),sorted(
+        (a['title'],a['role'],a['mime'],digest(file_map[a['dataFileName']])) for a in attachments)])
+    candidate_key=project['id']+':'+str(project['revision'])+':'+artifact_digest
     meta = dict(formatVersion=2,appVersion="0.1.0",files=[dict(noteId=root_id,title=project["title"]+" · "+status,
          type="text",mime="text/html",format="html",dataFileName="material.html",attachments=attachments,children=[],
-         attributes=[dict(type="label",name="sourceloomCandidate",value=project["id"]+":"+str(project["revision"]),isInheritable=False)])])
+         attributes=[dict(type="label",name="sourceloomCandidate",value=candidate_key,isInheritable=False)])])
     output = BytesIO()
     with zipfile.ZipFile(output,"w",zipfile.ZIP_DEFLATED) as z:
         # Native importer discovers metadata before resolving body and attachments.
