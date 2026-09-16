@@ -3,6 +3,26 @@ import copy
 import html
 
 
+def document_info_label(block):
+    """Recognize an explicitly named metadata section, never infer from language.
+
+    Writers can label bibliographic sections as explanation blocks. Only a
+    single, explicit metadata heading earns a reversible disclosure; a mixed
+    section or ordinary English prose stays visible.
+    """
+    labels={'文章标题、作者与机构信息','作者与机构信息','作者及机构信息',
+            '出版信息','文章元数据','文献元数据','Author Affiliations',
+            'Publication Information','Article Metadata'}
+    first=block['markdown'].lstrip().split('\n',1)[0]
+    if not first.startswith('#') or first.lstrip('#').strip() not in labels:return None
+    from markdown_it import MarkdownIt
+    tokens=MarkdownIt('commonmark',{'html':True}).parse(block['markdown'])
+    headings=[tokens[i+1].content for i,t in enumerate(tokens)
+              if t.type=='heading_open' and i+1<len(tokens)]
+    if len(headings)==1 and headings[0] in labels:return headings[0]
+    return None
+
+
 def image_markup(obj, legacy=False):
     description=obj.get('text') or obj['locator']
     if not legacy:
@@ -50,8 +70,9 @@ def reading_draft(project):
         # Long literal quotations remain accessible without dominating the rewrite.
         if block.get('kind')=='source' and len(block['markdown'])>600 and block['markdown'].lstrip().startswith('>'):
             block['markdown']='<details><summary>查看这段原文</summary>\n\n'+block['markdown']+'\n\n</details>'
-        if block.get('kind')=='document_info' and not block['markdown'].startswith('<details>'):
-            block['markdown']='<details><summary>查看材料附记</summary>\n\n'+block['markdown']+'\n\n</details>'
+        label='查看材料附记' if block.get('kind')=='document_info' else document_info_label(block)
+        if label and not block['markdown'].startswith('<details>'):
+            block['markdown']='<details><summary>'+html.escape(label)+'</summary>\n\n'+block['markdown']+'\n\n</details>'
     return result
 
 

@@ -69,6 +69,23 @@ def test_reading_projection_is_idempotent_and_legacy_images_are_not_editable():
     assert not any('OPEN ACCESS' in row['text'] or 'quoted' in row['text'] for row in editable_lines(p['draft'],p['inventory'],{'b1'}))
 
 
+def test_explicit_bibliographic_section_folds_without_changing_saved_words_or_anchors():
+    p=image_project();p['draft']['blocks'][0].update(kind='explanation',object_ids=[],embedded_object_ids=[],
+        markdown='## Author Affiliations\n\nA. Researcher <sup>1</sup>\n\n1 Example University')
+    before=copy.deepcopy(p);doc=BeautifulSoup(render(p),'html.parser')
+    assert doc.section['data-readweave-anchor-id']=='b1'
+    assert doc.details and not doc.details.has_attr('open')
+    assert doc.details.h2.text=='Author Affiliations' and doc.details.sup.text=='1'
+    assert 'Example University' in doc.details.get_text() and p==before
+    projection=reading_draft(p)
+    assert reading_draft(p|{'draft':projection})==projection
+    for text in ['## Ordinary English\n\nA long source paragraph',
+                 '## Author Affiliations\n\nA\n\n## Research Findings\n\nB',
+                 '```markdown\n## Author Affiliations\n```']:
+        p['draft']['blocks'][0]['markdown']=text
+        assert reading_draft(p)==p['draft']
+
+
 def test_native_money_never_relabels_historical_dollars_or_subscription_allocation():
     from sourceloom.money import summary,usage_cost
     assert usage_cost({'prompt_tokens':1000,'completion_tokens':200,'prompt_cache_hit_tokens':500}, {'input':9,'cached_input':.3,'output':27})==pytest.approx(.01005)
