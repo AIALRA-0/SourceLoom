@@ -352,7 +352,8 @@ def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code(
     assert not respect_original_format(fence_report,fixed,inv)['format']['findings']
 
 
-def test_intact_content_link_still_requires_its_explanation(tmp_path,skill,monkeypatch):
+@pytest.mark.parametrize('reference_id',['link','term-reference'])
+def test_intact_content_link_still_requires_its_explanation(tmp_path,skill,monkeypatch,reference_id):
     from sourceloom.writing import protected_objects
     store,_,project,bundle=prepared(tmp_path,skill)
     src=source();src['objects']=[dict(id='link',kind='link',text='Reference',
@@ -365,15 +366,21 @@ def test_intact_content_link_still_requires_its_explanation(tmp_path,skill,monke
     job=dict(id='review-fixture',calls=[],stage='active_review',writing_skill=bundle,verified_terminology=[],source=src,
         inventory=src,unit_index=0,draft={'blocks':[]},writing_batches=[node],
         active_plans=[plan()|dict(obligations=[obligation],concepts=[])],
+        visual_cards=[dict(source_id='link',source_text='Reference',visible_content='A visible diagram')],
         active_candidate=dict(draft=draft))
-    review=dict(findings=[dict(block_id='n1-b1',output_quote=literal,source_id='link',
+    review=dict(findings=[dict(block_id='n1-b1',output_quote=literal,source_id=reference_id,
         source_quote='Reference',problem='Missing destination explanation',
         required_change='Explain the destination beside the unchanged link')],checked_obligation_ids=['f1'])
     engine=ActiveComposition(Production(store,{}))
     mechanical=dict(id='format-first',rule_id='FMT-017',location='LINE-2',
                     old_text='需要修正的标点。',message='Fixture format finding')
     monkeypatch.setattr('sourceloom.active_composition.scan',lambda *a:dict(format=dict(findings=[mechanical],candidates=[])))
-    monkeypatch.setattr(engine,'turn',lambda job,key,role,schema,source,ids,payload,validate:validate(review,None))
+    resources=Resources(store,src)
+    resources.add('term-reference','Reference',kind='external',locator='https://example.org/name')
+    def review_turn(job,key,role,schema,source,ids,payload,validate):
+        assert payload['visual_cards']==[dict(source_id='link',visible_content='A visible diagram')]
+        return validate(review,resources)
+    monkeypatch.setattr(engine,'turn',review_turn)
     assert engine.step(job)=='queued'
     assert job['stage']=='active_revision'
     assert job['active_candidate']['revision_issues']['findings'][0]['output_quote']==literal

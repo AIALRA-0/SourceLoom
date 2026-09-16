@@ -841,6 +841,7 @@ class ActiveComposition:
         if stage=='active_review':
             node=nodes[job['unit_index']];candidate=job['active_candidate']
             draft=candidate['draft'];round_=int(candidate.get('content_review_round',0))
+            visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job.get('visual_cards',[]) if c['source_id'] in node['source_ids']]
             preflight=respect_original_format(scan(bundle,draft,self.store.root/'production'/job['id']/node['id']/('review-preflight-'+digest(canonical(draft).encode())[:16])),draft,job['inventory'])
             format_issues=located_format_issues(preflight,draft)
             obligations=[f for p in job['active_plans'] for f in p['obligations'] if f['id'] in node['obligation_ids']]
@@ -861,14 +862,19 @@ class ActiveComposition:
                         raise ValueError('核对意见未准确引用实际正文')
                     if finding['source_id']:
                         sid=finding['source_id']
-                        if sid not in node['source_ids']:raise ValueError('核对意见引用了其他单元的原文')
-                        exact=next((q for text in (objects[sid]['text'],literals.get(sid,''))
-                            if (q:=exact_source_quote(finding['source_quote'],text,objects[sid]['kind']=='page')) is not None),None)
+                        external=resources.state['entries'].get(sid,{}) if resources else {}
+                        if sid not in node['source_ids'] and external.get('kind')!='external':
+                            raise ValueError('核对意见引用了其他单元的原文')
+                        original=sid in node['source_ids']
+                        texts=(objects[sid]['text'],literals.get(sid,'')) if original else (resources.text(sid),)
+                        pdf_wrap=original and objects[sid]['kind']=='page'
+                        exact=next((q for text in texts
+                            if (q:=exact_source_quote(finding['source_quote'],text,pdf_wrap)) is not None),None)
                         if exact is None:raise ValueError('核对意见未准确引用当前原文')
                         if exact!=finding['source_quote']:
                             result.setdefault('source_quote_alignments',[]).append(dict(source_id=sid,
                                 submitted_quote=finding['source_quote'],actual_quote=exact,
-                                operation='source_pdf_wrap_alignment' if objects[sid]['kind']=='page' else 'source_whitespace_only'))
+                                operation='source_pdf_wrap_alignment' if pdf_wrap else 'source_whitespace_only'))
                             finding['source_quote']=exact
                 # A collapsed facsimile is an original reference, not a new
                 # teaching diagram whose immutable bytes a writer should edit
@@ -890,7 +896,7 @@ class ActiveComposition:
                         required_change='按完整写作技能修复这处已确认格式问题，与本轮内容修复合并为局部事务，保留原意与原对象'))
                 return result
             base='active-review-'+node['id']+'-'+str(round_)
-            review_key=base+'-'+digest(canonical(draft).encode())[:16]
+            review_key=base+'-'+digest([canonical(draft),visual_cards,'named-evidence-v2'])[:16]
             # Compatibility for already-returned reviews: replay only after the
             # archived request proves it reviewed this exact candidate.
             old_calls=[c for c in job['calls'] if c.get('step_key','').startswith(base+'-turn-') and c.get('wire_request_blob')]
@@ -907,6 +913,7 @@ class ActiveComposition:
                     actual_draft=draft,obligations=obligations,prior_findings=candidate.get('content_findings',[]),
                     concepts=[c for part in job['active_plans'] for c in part['concepts'] if c['id'] in node['establishes_concepts']+node['requires_concepts']],
                     format_preflight=format_issues,
+                    visual_cards=visual_cards,
                     review_obligation_ids=sorted(review_ids),
                     exact_revision=candidate.get('last_patch'),
                     protected_originals=protected_objects(job['inventory']),
@@ -1093,6 +1100,7 @@ class ActiveComposition:
                     source,node['source_ids'],dict(contract=job['active_plans'][0]['contract'],node=node,
                         document_digest=digest(canonical(previous).encode()),original_draft=previous,
                         editable_block_ids=sorted(allowed),issues=candidate['revision_issues'],
+                        visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job.get('visual_cards',[]) if c['source_id'] in node['source_ids']],
                         obligations=[f for part in job['active_plans'] for f in part['obligations'] if f['id'] in node['obligation_ids']],
                         previous_final_tail=[b['markdown'] for b in job['draft']['blocks'][-2:]]),validate_patch)
                 candidate.setdefault('patch_history',[]).append(dict(before=proposal['document_digest'],
