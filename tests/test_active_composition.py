@@ -486,3 +486,15 @@ def test_resource_rounds_keep_prior_queries_and_negative_results(tmp_path,skill,
     assert len(requests[-1]['action_history'])==2
     assert requests[-1]['action_history'][0]['result']['matches']==[]
     assert requests[-1]['action_history'][1]['result']['matches']
+
+def test_grouped_review_findings_expand_only_exact_individual_quotes():
+    from sourceloom.active_composition import expand_exact_grouped_findings
+    draft={'blocks':[{'id':'a','markdown':'## First\nBody A'},{'id':'b','markdown':'## Second\nBody B'}]}
+    issue={'block_id':'a, b','output_quote':'## First\n## Second','problem':'Same heading defect','source_quote':'unchanged'}
+    result=expand_exact_grouped_findings({'findings':[issue]},draft)
+    assert [f['block_id'] for f in result['findings']]==['a','b']
+    assert [f['output_quote'] for f in result['findings']]==['## First','## Second']
+    assert all(f['source_quote']=='unchanged' for f in result['findings'])
+    assert result['grouped_finding_expansions'][0]['submitted']==issue
+    for bad in [issue|{'block_id':'a, missing'},issue|{'output_quote':'## Second\n## First'},issue|{'output_quote':'## First'},issue|{'block_id':'a, a'}]:
+        assert expand_exact_grouped_findings({'findings':[bad]},draft)['findings']==[bad]

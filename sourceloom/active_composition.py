@@ -62,6 +62,24 @@ def exact_source_quote(quote, source, pdf_wrap=False):
     return matches[0].group() if len(matches)==1 else None
 
 
+def expand_exact_grouped_findings(result,draft):
+    """Split grouped IDs only when every quoted line maps exactly and uniquely."""
+    result=copy.deepcopy(result);blocks={b['id']:b['markdown'] for b in draft['blocks']};expanded=[]
+    for finding in result['findings']:
+        if finding['block_id'] in blocks:
+            expanded.append(finding);continue
+        ids=[part.strip() for part in re.split(r'[,，]',finding['block_id'])]
+        quotes=finding['output_quote'].splitlines()
+        if (len(ids)<2 or len(ids)!=len(quotes) or len(ids)!=len(set(ids)) or
+                any(bid not in blocks or not quote or blocks[bid].count(quote)!=1 for bid,quote in zip(ids,quotes))):
+            expanded.append(finding);continue
+        result.setdefault('grouped_finding_expansions',[]).append(dict(
+            submitted=finding,block_ids=ids,operation='exact_individual_quote_mapping'))
+        expanded.extend(finding|dict(block_id=bid,output_quote=quote) for bid,quote in zip(ids,quotes))
+    result['findings']=expanded
+    return result
+
+
 def initialize(job):
     role_names=('active_plan','active_write','active_review','active_format','active_revision','active_patch','active_protocol','active_visual','rewrite_scope')
     policy={name:(Path(__file__).parent/'roles'/f'{name}.md').read_text(encoding='utf8') for name in role_names}
@@ -726,7 +744,7 @@ class ActiveComposition:
                 changed_ids={e['block_id'] for e in patch['edits']}
                 review_ids={fid for b in draft['blocks'] if b['id'] in changed_ids for fid in b['obligation_ids']}
             def validate_review(value,resources):
-                result=A.ContentReview.model_validate(value).model_dump()
+                result=expand_exact_grouped_findings(A.ContentReview.model_validate(value).model_dump(),draft)
                 checked=set(result['checked_obligation_ids'])
                 if not review_ids<=checked<=set(node['obligation_ids']):
                     raise ValueError('核对遗漏本次影响的原信息，或引用了其他单元')
