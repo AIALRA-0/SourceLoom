@@ -867,6 +867,8 @@ class ActiveComposition:
             draft=candidate['draft'];round_=int(candidate.get('content_review_round',0))
             visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job.get('visual_cards',[]) if c['source_id'] in node['source_ids']]
             preflight=respect_original_format(scan(bundle,draft,self.store.root/'production'/job['id']/node['id']/('review-preflight-'+digest(canonical(draft).encode())[:16])),draft,job['inventory'])
+            preflight['format']['candidates']=[c for c in preflight['format']['candidates']
+                if candidate_key(c,draft) not in candidate.get('dismissed_keys',[])]
             format_issues=located_format_issues(preflight,draft)
             obligations=[f for p in job['active_plans'] for f in p['obligations'] if f['id'] in node['obligation_ids']]
             review_ids=set(node['obligation_ids'])

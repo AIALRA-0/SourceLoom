@@ -388,11 +388,16 @@ def test_intact_content_link_still_requires_its_explanation(tmp_path,skill,monke
     engine=ActiveComposition(Production(store,{}))
     mechanical=dict(id='format-first',rule_id='FMT-017',location='LINE-2',
                     old_text='需要修正的标点。',message='Fixture format finding')
-    monkeypatch.setattr('sourceloom.active_composition.scan',lambda *a:dict(format=dict(findings=[mechanical],candidates=[])))
+    contextual=dict(id='candidate-previous',rule_id='PARALLEL_REVIEW',location='LINE-2',old_text='需要修正的标点。')
+    from sourceloom.active_composition import candidate_key
+    job['joint_review_contract_version']=1
+    job['active_candidate']['dismissed_keys']=[candidate_key(contextual,draft)]
+    monkeypatch.setattr('sourceloom.active_composition.scan',lambda *a:dict(format=dict(findings=[mechanical],candidates=[contextual])))
     resources=Resources(store,src)
     resources.add('term-reference','Reference',kind='external',locator='https://example.org/name')
     def review_turn(job,key,role,schema,source,ids,payload,validate):
         assert payload['visual_cards']==[dict(source_id='link',visible_content='A visible diagram')]
+        assert payload['format_preflight']['candidates']==[]
         return validate(review,resources)
     monkeypatch.setattr(engine,'turn',review_turn)
     assert engine.step(job)=='queued'
