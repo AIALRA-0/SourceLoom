@@ -5,6 +5,10 @@ import http.client
 import time
 
 CATALOG=[
+    {'triggers':['HTML','html'],'abbr':'HTML','zh':'超文本标记语言','en':'HyperText Markup Language',
+     'url':'https://www.w3.org/TR/html401/intro/intro.html',
+     'fallback_urls':['https://www.w3.org/MarkUp/html-spec/html-spec_1.html'],
+     'note':'仅用官方历史规范确认名称与基本用途，不据此把旧版语言规则当成当前规范；文件名及原始代码中的小写字符保持原样'},
     {'triggers':['CVE','CVEs'],'abbr':'CVE','zh':'通用漏洞披露','en':'Common Vulnerabilities and Exposures',
      'url':'https://www.cve.org/ResourcesSupport/FAQs','fallback_urls':['https://www.cve.org/'],
      'reference_urls':['https://raw.githubusercontent.com/CVEProject/cve-website/dev/src/assets/data/faqs.json'],

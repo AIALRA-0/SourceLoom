@@ -569,7 +569,8 @@ class ActiveComposition:
             session['resources'] = resources.state
             self.store.put_job(job)
             request = payload | dict(catalog=resources.catalog(), opened_resources=resources.context(),
-                                     previous_action_results=session.get('action_results', []))
+                                     previous_action_results=session.get('action_results', []),
+                                     action_history=session.get('action_history', []))
             if session.get('correction'):
                 request['protocol_correction'] = session['correction']
             raw = self.call(job, key + '-turn-' + str(session['round']), role, request, A.Turn[schema])
@@ -579,6 +580,8 @@ class ActiveComposition:
                     if response['result'] is not None or not response['gaps']:
                         raise ValueError('读取动作必须说明缺口，不能同时提交结果')
                     session['action_results'] = [resources.execute(a) for a in response['actions']]
+                    session.setdefault('action_history',[]).extend(
+                        dict(action=a,result=r) for a,r in zip(response['actions'],session['action_results']))
                     session['round'] += 1
                     session.pop('correction', None)
                     continue
@@ -606,6 +609,10 @@ class ActiveComposition:
     def step(self, job):
         stage = job['stage']
         bundle = load_bundle(job['writing_skill']['root'], job['writing_skill']['package_digest'])
+        if 'verified_terminology' not in job:
+            from .terminology import verified_terms
+            job['verified_terminology']=verified_terms(self.store,job['source'])
+            self.store.put_job(job)
         if stage == 'active_index':
             from .word_structures import resolve_word_structures
             from .visual_sources import classify_transparent

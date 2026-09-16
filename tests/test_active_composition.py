@@ -454,3 +454,35 @@ def test_term_pair_compiler_leaves_word_changing_proposals_for_recheck():
     assert len(proposal['edits'])==1
     assert proposal['edits'][0]['new_text'].endswith('工作流（Workflow）')
     assert draft['blocks'][0]['markdown'].endswith('可选择甲，也可选择乙')
+
+def test_active_composition_loads_verified_names_once_before_generation(tmp_path,skill,monkeypatch):
+    store,queue,p,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v1').enqueue(p['id'],bundle)
+    calls=[]
+    def lookup(store,source):
+        calls.append(source['id']);return [{'abbr':'EX','quote':'Synthetic exact evidence'}]
+    monkeypatch.setattr('sourceloom.terminology.verified_terms',lookup)
+    engine=ActiveComposition(Production(store,{}))
+    assert engine.step(job)=='queued'
+    assert job['verified_terminology'][0]['quote']=='Synthetic exact evidence'
+    assert engine.step(job)=='queued'
+    assert len(calls)==1
+
+
+def test_resource_rounds_keep_prior_queries_and_negative_results(tmp_path,skill,monkeypatch):
+    from pydantic import BaseModel
+    class Answer(BaseModel):
+        value:int
+    store,queue,p,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v1').enqueue(p['id'],bundle)
+    engine=ActiveComposition(Production(store,{}));requests=[]
+    def call(job,key,role,payload,schema):
+        requests.append(copy.deepcopy(payload))
+        if len(requests)<3:
+            return dict(gaps=['Need exact location'],actions=[dict(kind='find',resource_id='s1',query='absent' if len(requests)==1 else 'ready')],result=None,ready_reason='')
+        return dict(gaps=[],actions=[],result={'value':1},ready_reason='Compared source and search results')
+    monkeypatch.setattr(engine,'call',call)
+    assert engine.turn(job,'test','active_review',Answer,source(),['s1'],{},lambda value,r:value)=={'value':1}
+    assert len(requests[-1]['action_history'])==2
+    assert requests[-1]['action_history'][0]['result']['matches']==[]
+    assert requests[-1]['action_history'][1]['result']['matches']
