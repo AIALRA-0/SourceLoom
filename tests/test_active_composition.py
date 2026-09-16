@@ -405,3 +405,52 @@ def test_quota_rejection_can_resume_after_fallback_budget_preflight(tmp_path,ski
     store.change(p['id'],lambda p:p.update(active_job=None))
     with pytest.raises(Conflict,match='只允许'):
         queue.retry_validation(job['id'])
+
+def test_confirmed_existing_term_pair_is_a_bounded_format_patch():
+    from sourceloom.active_composition import compiled_term_format_proposal
+    from sourceloom.writing import canonical
+    draft={'blocks':[{'id':'a','kind':'explanation','markdown':'- 工作流（Workflow）：原有定义\n- 构建文件（Makefile）：用于描述工作流'}]}
+    issue={'id':'candidates-1','rule_id':'FORMAT_NESTED_DEFINED_TERM_REVIEW','old_text':'工作流','location':'LINE-0002'}
+    request={'findings':[issue],'format_response':{'requires_revision':['candidates-1'],'document_digest':digest(canonical(draft).encode()),'edits':[]}}
+    patch=compiled_term_format_proposal(draft,request)
+    assert patch['edits'][0]['old_text']=='- 构建文件（Makefile）：用于描述工作流'
+    assert patch['edits'][0]['new_text']=='- 构建文件（Makefile）：用于描述工作流（Workflow）'
+    assert draft['blocks'][0]['markdown'].endswith('描述工作流')
+    request['format_response']['requires_revision']=[]
+    assert compiled_term_format_proposal(draft,request) is None
+
+
+def test_term_pair_compiler_rejects_ambiguous_unsupported_or_stale_evidence():
+    from sourceloom.active_composition import compiled_term_format_proposal
+    from sourceloom.writing import canonical
+    for declaration in ['- 工作流（Workflow）：定义\n- 工作流（Process）：另一含义', '```text\n- 工作流（Workflow）：只是代码\n```', '- 未知词（Workflow）：不对应']:
+        draft={'blocks':[{'id':'a','kind':'explanation','markdown':declaration},{'id':'b','kind':'explanation','markdown':'- 构建文件（Makefile）：用于描述工作流'}]}
+        line=declaration.count('\n')+3
+        issue={'id':'candidates-1','rule_id':'FORMAT_NESTED_DEFINED_TERM_REVIEW','old_text':'工作流','location':f'LINE-{line:04d}'}
+        request={'findings':[issue],'format_response':{'requires_revision':['candidates-1'],'document_digest':digest(canonical(draft).encode()),'edits':[]}}
+        assert compiled_term_format_proposal(draft,request) is None
+    draft['blocks'][0]['markdown']='- 工作流（Workflow）：定义'
+    assert compiled_term_format_proposal(draft,request) is None
+
+
+def test_term_pair_compiler_does_not_drop_other_confirmed_defects():
+    from sourceloom.active_composition import compiled_term_format_proposal
+    from sourceloom.writing import canonical
+    draft={'blocks':[{'id':'a','kind':'explanation','markdown':'- 工作流（Workflow）：定义\n- 构建文件（Makefile）：描述工作流'}]}
+    issues=[{'id':'candidates-1','rule_id':'FORMAT_NESTED_DEFINED_TERM_REVIEW','old_text':'工作流','location':'LINE-0002'},
+            {'id':'findings-1','rule_id':'OTHER','old_text':'未处理的另一问题','location':'LINE-0001'}]
+    request={'findings':issues,'format_response':{'requires_revision':['candidates-1'],'document_digest':digest(canonical(draft).encode()),'edits':[]}}
+    assert compiled_term_format_proposal(draft,request) is None
+
+def test_term_pair_compiler_leaves_word_changing_proposals_for_recheck():
+    from sourceloom.active_composition import compiled_term_format_proposal
+    from sourceloom.writing import canonical
+    draft={'blocks':[{'id':'a','kind':'explanation','markdown':'- 工作流（Workflow）：定义\n- 构建文件（Makefile）：描述工作流\n可选择甲，也可选择乙'}]}
+    issues=[{'id':'candidates-1','rule_id':'FORMAT_NESTED_DEFINED_TERM_REVIEW','old_text':'工作流','location':'LINE-0002'},
+            {'id':'candidates-2','rule_id':'PARALLEL','old_text':'可选择甲，也可选择乙','location':'LINE-0003'}]
+    request={'findings':issues,'format_response':{'requires_revision':['candidates-1'],'document_digest':digest(canonical(draft).encode()),
+        'edits':[{'block_id':'a','old_text':'可选择甲，也可选择乙','new_text':'- 甲\n- 乙','rule':'candidates-2'}]}}
+    proposal=compiled_term_format_proposal(draft,request)
+    assert len(proposal['edits'])==1
+    assert proposal['edits'][0]['new_text'].endswith('工作流（Workflow）')
+    assert draft['blocks'][0]['markdown'].endswith('可选择甲，也可选择乙')

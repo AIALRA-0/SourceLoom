@@ -82,6 +82,61 @@ def format_signature(text):
     return ''.join(c.casefold() for c in text if unicodedata.category(c)[0] in {'L','N','S'}),numeric
 
 
+def compiled_term_format_proposal(draft, issues):
+    """Reuse an existing exact name only after contextual model confirmation.
+
+    No translation, term inference, source edits, or newly invented English names.
+    Ambiguous definitions and locations still need ordinary content revision.
+    """
+    result=issues.get('format_response',{})
+    required=set(result.get('requires_revision',[]))
+    if not required or result.get('document_digest')!=digest(canonical(draft).encode()):return None
+    definition=re.compile(r'^\s*-\s+([^（\n]+)（([A-Za-z][A-Za-z0-9 -]*)）：')
+    registry={};lines={};start=1
+    for block in draft['blocks']:
+        if block['kind'] not in {'source','object','document_info'}:
+            fence=None
+            for index,line in enumerate(block['markdown'].split('\n')):
+                marker=re.match(r'^\s*(`{3,}|~{3,})',line)
+                if marker:
+                    if fence is None:fence=marker[1]
+                    elif marker[1][0]==fence[0] and len(marker[1])>=len(fence):fence=None
+                    continue
+                if fence:continue
+                lines[start+index]=(block,line)
+                match=definition.match(line)
+                if match:registry.setdefault(match[1].strip(),set()).add(match[2])
+        start+=block['markdown'].count('\n')+2
+    edits=[]
+    for edit in result.get('edits',[]):
+        # Leave word-changing proposals untouched for the next actual scan/review.
+        # Compiling the independent confirmed label never declares those fixed.
+        if format_signature(edit['old_text'])!=format_signature(edit['new_text']):continue
+        edits.append(dict(block_id=edit['block_id'],old_text=edit['old_text'],new_text=edit['new_text'],reason=edit['rule']))
+    found=set()
+    for issue in issues.get('findings',[])+issues.get('candidates',[]):
+        if issue['id'] not in required:
+            if not issue.get('old_text') or not any(issue['old_text'] in e['old_text'] for e in result.get('edits',[])):return None
+            continue
+        if issue['id'] in found or issue['rule_id']!='FORMAT_NESTED_DEFINED_TERM_REVIEW':return None
+        found.add(issue['id']);name=issue.get('old_text','')
+        names=registry.get(name,set());location=re.fullmatch(r'LINE-(\d+)',issue.get('location',''))
+        if len(names)!=1 or not location or int(location[1]) not in lines:return None
+        block,line=lines[int(location[1])];match=definition.match(line)
+        if not match or line[match.end():].count(name)!=1:return None
+        # Replace the unique full definition line, never a similarly named term elsewhere.
+        if block['markdown'].count(line)!=1 or name+'（' in line[match.end():]:return None
+        replacement=line[:match.end()]+line[match.end():].replace(name,name+'（'+next(iter(names))+'）',1)
+        edits.append(dict(block_id=block['id'],old_text=line,new_text=replacement,
+            reason=issue['id']+': confirmed same concept; reuse exact existing bilingual name'))
+    if found!=required:return None
+    # Reject overlapping line/phrase proposals before the transactional committer.
+    for i,edit in enumerate(edits):
+        for prior in edits[:i]:
+            if prior['block_id']==edit['block_id'] and (prior['old_text'] in edit['old_text'] or edit['old_text'] in prior['old_text']):return None
+    return dict(document_digest=result['document_digest'],edits=edits)
+
+
 def normalize_authored_spacing(draft,inventory):
     changed=copy.deepcopy(draft)
     literals=protected_objects(inventory)
@@ -846,6 +901,29 @@ class ActiveComposition:
             return 'queued'
         if stage=='active_revision':
             candidate=job['active_candidate'];node=nodes[job['unit_index']]
+            issues=candidate.get('revision_issues',{})
+            compiled=compiled_term_format_proposal(candidate['draft'],issues) if issues.get('format_check_version')==2 else None
+            if compiled and sum(bool(r.get('edits')) for r in candidate.get('format_records',[]))<2:
+                previous=candidate['draft']
+                changed=repair(bundle,previous,compiled,set(candidate['revision_blocks']),
+                    self.store.root/'production'/job['id']/node['id']/('confirmed-term-format-'+digest(canonical(previous).encode())[:16]))
+                for literal in protected_objects(job['inventory']).values():
+                    if literal and canonical(previous).count(literal)!=canonical(changed).count(literal):
+                        raise ValueError('术语格式补丁改变了原对象')
+                candidate['draft']=changed
+                blocks={b['id']:b for b in changed['blocks']}
+                for binding in candidate['coverage']:
+                    binding['output_quote']=blocks[binding['block_id']]['markdown']
+                for binding in candidate['delta'].get('concept_evidence',[]):
+                    for edit in compiled['edits']:
+                        if binding['block_id']==edit['block_id']:
+                            binding['output_quote']=binding['output_quote'].replace(edit['old_text'],edit['new_text'])
+                candidate['delta']['concept_evidence']=[e for e in candidate['delta'].get('concept_evidence',[])
+                    if e['output_quote'] in blocks[e['block_id']]['markdown']]
+                candidate.setdefault('format_records',[]).append(dict(**compiled,
+                    operation='confirmed_existing_term_pair',confirmation=candidate['revision_issues']['format_response']))
+                job['stage']='active_format'
+                return 'queued'
             if 'format_response' in candidate.get('revision_issues',{}) and candidate['revision_issues'].get('format_check_version')!=2:
                 candidate.setdefault('superseded_format_reports',[]).append(candidate['revision_issues'])
                 job['stage']='active_format'
