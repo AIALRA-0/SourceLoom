@@ -1036,7 +1036,8 @@ class ActiveComposition:
                 actual = {'blocks': [b for b in job['draft']['blocks'] if b['unit_id']==point['node_id']]}
                 if digest(canonical(actual).encode()) != point['draft_digest']:
                     raise ValueError('交付正文与已检查单元版本不同')
-            job['delivery_checks'] = dict(source_digest=job['source_digest'],
+            job['delivery_checks'] = dict(source_digest=job['source_snapshot_digest'],
+                source_digest_kind='initial_inventory_snapshot',compiled_inventory_digest=job['inventory']['digest'],
                 draft_digest=digest(canonical(job['draft']).encode()), source_objects=len(source['objects']),
                 obligation_count=len(job['inventory']['obligations']), unit_count=len(nodes),
                 structural_status='passed', semantic_status='not_independently_reviewed',

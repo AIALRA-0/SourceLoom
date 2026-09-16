@@ -325,6 +325,9 @@ def test_content_correction_routes_through_committer_and_scoped_review(tmp_path,
     assert calls==['active_plan','active_write','active_review','active_patch','active_review']
     assert canonical(saved['draft'])=='## 适用条件\n\n我们假设 `x` 为正\n'
     assert saved['active_checkpoints'][0]['content_patches'][0]['edits'][0]['old_text']=='为负'
+    assert saved['delivery_checks']['source_digest']==saved['source_snapshot_digest']
+    assert saved['delivery_checks']['source_digest_kind']=='initial_inventory_snapshot'
+    assert saved['delivery_checks']['compiled_inventory_digest']==saved['inventory']['digest']
 
 
 def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code():
