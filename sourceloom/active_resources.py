@@ -12,8 +12,14 @@ class Resources:
         self.state = copy.deepcopy(state or {'entries': {}, 'opened': {}, 'reads': [], 'spans': {}})
         self.order = [o['id'] for o in source['objects']]
         for obj in source['objects']:
+            targets={k:obj[k] for k in ('target','original_target') if k in obj}
+            old=self.state['entries'].get(obj['id'])
+            # Older checkpoints omitted addresses from the catalog. Fill only
+            # absent metadata after verifying that the source text is unchanged.
+            if old and old['blob']==digest(obj.get('text','').encode()):
+                for key,value in targets.items():old.setdefault(key,value)
             self.add(obj['id'], obj.get('text', ''), kind=obj['kind'], locator=obj['locator'],
-                     resource_id=obj.get('resource_id'), raw=obj.get('raw', ''))
+                     resource_id=obj.get('resource_id'), raw=obj.get('raw', ''), **targets)
 
     def add(self, key, text, **metadata):
         blob = self.store.blob(text.encode())

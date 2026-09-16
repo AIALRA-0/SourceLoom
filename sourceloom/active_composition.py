@@ -81,6 +81,7 @@ def expand_exact_grouped_findings(result,draft):
 
 
 def initialize(job):
+    job['naming_contract_version']=1
     role_names=('active_plan','active_write','active_review','active_format','active_revision','active_patch','active_protocol','active_visual','rewrite_scope')
     policy={name:(Path(__file__).parent/'roles'/f'{name}.md').read_text(encoding='utf8') for name in role_names}
     job.update(pipeline=PIPELINE, stage='active_index', teaching_version=0,
@@ -92,6 +93,20 @@ def initialize(job):
 def unique(values, label):
     if len(values) != len(set(values)) or '' in values:
         raise ValueError(label + '身份为空或重复')
+
+
+def patch_rounds(candidate):
+    """Share two attempts across content and format, including failed commits."""
+    recorded=(len(candidate.get('patch_history', []))
+            + len(candidate.get('revision_history', []))
+            + sum(bool(r.get('edits')) for r in candidate.get('format_records', [])))
+    return max(recorded,candidate.get('local_patch_attempts',0))
+
+
+def reserve_patch_attempt(candidate):
+    used=patch_rounds(candidate)
+    if used>=2:raise ValueError('两轮局部补丁已用完，保留具体问题与原稿')
+    candidate['local_patch_attempts']=used+1
 
 
 def format_signature(text):
@@ -260,6 +275,41 @@ def source_spans(source,ids):
                               preview=text[start:min(end,start+140)]))
             start=end
     return spans
+
+
+def validate_names(plan, resources):
+    """Evidence addresses are checked mechanically; meaning remains a review duty."""
+    for concept in plan['concepts']:
+        if not concept['chinese_name'].strip():raise ValueError('概念缺少中文名称：'+concept['id'])
+        if concept['naming_status']=='unsearched':raise ValueError('术语名称尚未查证：'+concept['id'])
+        if concept['naming_status']=='verified':
+            if not concept['english_name'].strip() or not concept['name_evidence']:
+                raise ValueError('已核实术语缺少英文或来源：'+concept['id'])
+            evidence=[]
+            for item in concept['name_evidence']:
+                key=item['resource_id']
+                if key not in resources.state['entries'] or item['quote'] not in resources.text(key):
+                    raise ValueError('术语名称证据不在已保存来源中：'+concept['id'])
+                evidence.append(item['quote'].casefold())
+            names=[concept['english_name']]+[a['english'] for a in concept['abbreviations']]
+            if any(not name.strip() or not any(name.casefold() in q for q in evidence) for name in names):
+                raise ValueError('英文名称或缩写展开没有对应的原文证据：'+concept['id'])
+        elif not concept['naming_note'].strip():
+            raise ValueError('未确认名称需要保留具体查证缺口：'+concept['id'])
+    return plan
+
+
+def concept_presence(concepts, draft):
+    """Catch a planned verified name disappearing, without certifying its meaning."""
+    text=canonical(draft).casefold()
+    for concept in concepts:
+        if concept.get('naming_status')!='verified':continue
+        # Chinese wording is reviewed semantically; a planner's awkward label
+        # must not become an immutable phrase the writer is forced to copy.
+        names=[concept['english_name']]
+        names += [v for a in concept['abbreviations'] for v in (a['chinese'],a['english'])]
+        if any(name.casefold() not in text for name in names):
+            raise ValueError('已核实的术语名称或缩写展开在正文中遗漏：'+concept['id'])
 
 
 def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=6500,require_spans=False):
@@ -511,6 +561,7 @@ class ActiveComposition:
         limit=self.config.get('active_revision_limit',4)
         if type(limit) is not int or not 1<=limit<=4:
             raise ValueError('主动编排的定向修订上限必须为一至四，不能重置历史或无限循环')
+        self.config=self.config|{'active_revision_limit':min(limit,2)}
 
     def call(self, job, key, role, payload, schema):
         if key in job['results']:
@@ -582,6 +633,15 @@ class ActiveComposition:
                 resources.state['entries'][entry['id']] = entry
             for entry in job.get('generated_resources', {}).values():
                 resources.state['entries'][entry['id']] = entry
+            # Reuse the already-fetched name evidence, with an address the planner
+            # can cite. It remains outside original-source obligation identities.
+            for term in job.get('verified_terminology', []):
+                if not term.get('snapshot_blob') or not term.get('quote'):continue
+                rid='term-'+digest([term['url'],term['en']])[:20]
+                resources.add(rid,term['quote'],kind='external',locator=term['url'],
+                              snapshot_blob=term['snapshot_blob'],scope='name_evidence_excerpt',
+                              abbreviation=term.get('abbr'),english_name=term['en'],note=term['note'])
+                resources.read(rid)
         cap = self.config.get('active_resource_rounds', 8)
         while session['round'] <= cap:
             session['resources'] = resources.state
@@ -677,8 +737,11 @@ class ActiveComposition:
                 return 'queued'
             if source.get('unknown'):
                 raise ValueError('原件仍有无法读取的对象，尚未开始改写：' + json.dumps(source['unknown'], ensure_ascii=False))
+            from .visual_sources import decorative_resource
+            job['archived_layout_source_ids']=[o['id'] for o in source['objects'] if decorative_resource(o)]
             job['active_groups'] = [[o['id'] for o in group] for group in inventory_groups(
-                source['objects'], self.config.get('active_plan_source_chars', 12000))]
+                [o for o in source['objects'] if not decorative_resource(o)], self.config.get('active_plan_source_chars', 12000))]
+            if not job['active_groups']:raise ValueError('原件仅含已存档的排版资源，没有可改写正文')
             job['active_partition_count']=len(job['active_groups'])
             job['stage'] = 'active_plan'
             return 'queued'
@@ -697,9 +760,11 @@ class ActiveComposition:
                 future_headings=[dict(id=o['id'], text=o['text']) for o in source['objects']
                                  if o['kind']=='heading' and o['id'] not in {s for g in job['active_groups'][:index+1] for s in g}],
                 visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in ids])
-            result = self.turn(job, 'active-plan-'+prefix, 'active_plan', A.CompositionPart if prior else A.CompositionPlan, source, ids, payload,
-                lambda value, resources: validate_plan(value|({'contract':prior[0]['contract']} if prior else {}), source, ids, prior, job['transformation_mode'],
-                                                       self.config.get('active_node_source_chars',6500),require_spans=True))
+            def validate_planning(value,resources):
+                plan=validate_plan(value|({'contract':prior[0]['contract']} if prior else {}),source,ids,prior,
+                    job['transformation_mode'],self.config.get('active_node_source_chars',6500),require_spans=True)
+                return validate_names(plan,resources) if job.get('naming_contract_version') else plan
+            result = self.turn(job, 'active-plan-'+prefix, 'active_plan', A.CompositionPart if prior else A.CompositionPlan, source, ids, payload,validate_planning)
             job['active_plans'].append(result)
             job['active_partition_index'] += 1
             if job['active_partition_index'] == len(job['active_groups']):
@@ -728,7 +793,9 @@ class ActiveComposition:
                 next_node=nodes[job['unit_index']+1] if job['unit_index']+1<len(nodes) else None,
                 visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in node['source_ids']])
             def validate(value, resources):
-                return validate_written(value, node, job['inventory'], bundle, job['draft'],obligations)
+                result=validate_written(value, node, job['inventory'], bundle, job['draft'],obligations)
+                concept_presence([c for c in payload['concepts'] if c['id'] in node['establishes_concepts']],result[0])
+                return result
             draft, coverage, delta = self.turn(job, 'active-write-'+node['id'], 'active_write', A.WrittenUnit,
                 source, node['source_ids'], payload, validate)
             job['active_candidate'] = dict(draft=draft, coverage=coverage, delta=delta, rounds=0)
@@ -793,6 +860,7 @@ class ActiveComposition:
             result=self.turn(job,review_key,'active_review',A.ContentReview,
                 source,node['source_ids'],dict(contract=job['active_plans'][0]['contract'],node=node,
                     actual_draft=draft,obligations=obligations,prior_findings=candidate.get('content_findings',[]),
+                    concepts=[c for part in job['active_plans'] for c in part['concepts'] if c['id'] in node['establishes_concepts']+node['requires_concepts']],
                     review_obligation_ids=sorted(review_ids),
                     exact_revision=candidate.get('last_patch'),
                     protected_originals=protected_objects(job['inventory']),
@@ -833,7 +901,7 @@ class ActiveComposition:
             findings = report['format']['findings']
             candidates = [c for c in report['format']['candidates'] if candidate_key(c,draft) not in candidate.get('dismissed_keys', [])]
             if findings or candidates:
-                if candidate['format_rounds'] >= 2:
+                if findings and patch_rounds(candidate) >= 2:
                     raise ValueError('本单元两轮局部格式修复后仍有问题，保留原稿与具体检查记录')
                 result = A.FormatResolution.model_validate(self.call(job,
                     'active-format-'+node['id']+'-'+str(candidate['format_rounds'])+'-'+report['canonical_digest'][:16], 'active_format',
@@ -867,8 +935,10 @@ class ActiveComposition:
                     job['stage']='active_revision'
                     return 'queued'
                 if result['edits']:
+                    if patch_rounds(candidate)>=2:raise ValueError('两轮局部补丁已用完，保留具体问题与原稿')
                     proposal = dict(document_digest=result['document_digest'], edits=[dict(
                         block_id=e['block_id'], old_text=e['old_text'], new_text=e['new_text'], reason=e['rule']) for e in result['edits']])
+                    reserve_patch_attempt(candidate);self.store.put_job(job)
                     changed = repair(bundle, draft, proposal, {b['id'] for b in draft['blocks']},
                         self.store.root/'production'/job['id']/node['id']/('format-'+str(candidate['format_rounds'])))
                     # Preserve source literals even if a skill runtime changes its protection behavior
@@ -894,6 +964,8 @@ class ActiveComposition:
                 candidate['format_rounds'] += 1
                 return 'queued'
             candidate['draft'] = draft
+            concept_presence([c for part in job['active_plans'] for c in part['concepts']
+                              if c['id'] in node['establishes_concepts']], draft)
             blocks = {b['id']: b for b in draft['blocks']}
             for binding in candidate['coverage']:
                 if binding['output_quote'] not in blocks[binding['block_id']]['markdown']:
@@ -928,8 +1000,10 @@ class ActiveComposition:
             candidate=job['active_candidate'];node=nodes[job['unit_index']]
             issues=candidate.get('revision_issues',{})
             compiled=compiled_term_format_proposal(candidate['draft'],issues) if issues.get('format_check_version')==2 else None
-            if compiled and sum(bool(r.get('edits')) for r in candidate.get('format_records',[]))<2:
+            if patch_rounds(candidate)>=2:raise ValueError('两轮局部补丁已用完，保留具体问题与原稿')
+            if compiled:
                 previous=candidate['draft']
+                reserve_patch_attempt(candidate);self.store.put_job(job)
                 changed=repair(bundle,previous,compiled,set(candidate['revision_blocks']),
                     self.store.root/'production'/job['id']/node['id']/('confirmed-term-format-'+digest(canonical(previous).encode())[:16]))
                 for literal in protected_objects(job['inventory']).values():
@@ -962,6 +1036,7 @@ class ActiveComposition:
                 def validate_patch(value,resources):
                     proposal=LocalRepair.model_validate(value).model_dump()
                     if not proposal['edits']:raise ValueError('已确认的问题需要实际补丁')
+                    reserve_patch_attempt(candidate);self.store.put_job(job)
                     changed=repair(bundle,previous,proposal,allowed,
                         self.store.root/'production'/job['id']/node['id']/('content-patch-'+str(attempt)))
                     for literal in protected_objects(job['inventory']).values():

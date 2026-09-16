@@ -23,7 +23,7 @@ def test_heading_numbering_is_reversible_and_code_untouched(tmp_path):
     original=copy.deepcopy(p)
     numbered=presentation(p,'numbered')
     text=numbered['draft']['blocks'][0]['markdown']
-    assert '## 1 主节' in text and '### 1.1 子节' in text and '## 2 下节' in text
+    assert '## 1. 主节' in text and '### 1.1. 子节' in text and '## 2. 下节' in text
     assert '```md\n# 不能改的代码\n```' in text and p==original
     assert presentation(numbered,'none')['draft']['blocks'][0]['markdown']==p['draft']['blocks'][0]['markdown']
 

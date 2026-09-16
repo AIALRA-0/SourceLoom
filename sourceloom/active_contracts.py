@@ -26,12 +26,29 @@ class SourceObligation(Strict):
     referents: list[str]
 
 
+class NameEvidence(Strict):
+    resource_id: str
+    quote: str = Field(min_length=1)
+
+
+class Abbreviation(Strict):
+    short: str
+    chinese: str
+    english: str
+
+
 class Concept(Strict):
     id: str
     name: str
     definition: str
     source_ids: list[str]
     requires: list[str]
+    chinese_name: str = ''
+    english_name: str = ''
+    naming_status: Literal['unsearched','verified','ambiguous','unavailable','not_applicable'] = 'unsearched'
+    name_evidence: list[NameEvidence] = []
+    abbreviations: list[Abbreviation] = []
+    naming_note: str = ''
 
 
 class ExplanationPlan(Strict):

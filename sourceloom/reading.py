@@ -40,7 +40,7 @@ def presentation(project, numbering=None):
             label=match[2]
             # An existing leading number may be a year, quantity, or source label.
             # Keep it verbatim; never guess that it is safe to delete.
-            prefix='' if re.match(r'^\d+(?:\.\d+)*[.)]?\s+',label) else '.'.join(map(str,counters))+' '
+            prefix='' if re.match(r'^\d+(?:\.\d+)*[.)]?\s+',label) else '.'.join(map(str,counters))+'. '
             changes.append((start,match[1]+prefix+label+(match[3] or '')))
         for start,line in changes:lines[start]=line
         block['markdown']=''.join(lines)

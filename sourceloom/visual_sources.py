@@ -9,6 +9,13 @@ from PIL import Image
 from .store import digest
 
 
+def decorative_resource(obj):
+    evidence=obj.get('visual_classification') or {}
+    return (evidence.get('method')=='all_pixels_alpha_zero'
+            and evidence.get('source_role')=='explicit_empty_alt'
+            and not obj.get('original_extracted_text',obj.get('text','')).strip())
+
+
 def classify_transparent(store,source):
     result=copy.deepcopy(source);resolved=[];checked={}
     for obj in result['objects']:
@@ -19,9 +26,21 @@ def classify_transparent(store,source):
                 blank=getattr(image,'n_frames',1)==1 and image.convert('RGBA').getchannel('A').getextrema()==(0,0)
                 checked[key]={'method':'all_pixels_alpha_zero','resource_id':key,'size':list(image.size)} if blank else None
         if not checked[key]:continue
-        obj['visual_classification']=checked[key]
+        obj['visual_classification']=dict(checked[key])
         obj.setdefault('original_extracted_text',obj.get('text',''))
-        obj['text']=obj.get('text') or '透明占位图，无可见文字或图形'
+        # Alpha proves invisibility, not decorative intent. Require source markup
+        # explicitly declaring empty alt, without another meaningful label.
+        from bs4 import BeautifulSoup
+        images=BeautifulSoup(obj.get('raw',''),'html.parser').find_all('img')
+        if not images:
+            for original in source.get('originals',[]):
+                if not original['name'].lower().endswith(('.html','.htm')):continue
+                doc=BeautifulSoup(store.read_blob(original['sha256']),'html.parser')
+                images.extend(i for i in doc.find_all('img') if i.get('src')==obj.get('target'))
+        if images and all(i.has_attr('alt') and not i.get('alt','').strip()
+                          and not i.get('title') and not i.get('aria-label')
+                          and not i.get('aria-labelledby') for i in images) and not obj['original_extracted_text'].strip():
+            obj['visual_classification']['source_role']='explicit_empty_alt'
         resolved.append(obj['id'])
     if resolved:
         result['resolved_visual_gaps']=result.get('resolved_visual_gaps',[])+[g for g in result.get('unknown',[]) if g['object_id'] in resolved]

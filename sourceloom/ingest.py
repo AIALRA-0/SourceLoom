@@ -169,7 +169,8 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
             if node.name == "img":
                 ref = node.get("src", node.get("data-src", ""))
                 key = resolve_asset(ref, name)
-                obj = add("image", node.get("alt", ""), locator, resource_id=key, target=ref)
+                obj = add("image", node.get("alt", ""), locator, resource_id=key, target=ref,
+                          raw=str(node))
                 if not key:
                     gap("图片资源尚未取得，原地址已保留", locator, obj["id"])
                 return

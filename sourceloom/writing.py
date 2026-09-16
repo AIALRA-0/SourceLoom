@@ -84,8 +84,10 @@ def available_draft(job):
 
 
 def protected_objects(inventory):
+    from .visual_sources import decorative_resource
     result={}
     for o in inventory['objects']:
+        if decorative_resource(o):continue
         kind=o['kind']
         if kind in {'text','heading'}:
             continue

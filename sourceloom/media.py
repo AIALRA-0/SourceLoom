@@ -80,6 +80,10 @@ def fold_media(raw):
     """Add presentation controls without modifying image or table contents."""
     from bs4 import BeautifulSoup
     doc=BeautifulSoup(raw,'html.parser')
+    for table in doc.select('table'):
+        if table.find_parent('table') or table.find_parent(class_='table-scroll'):continue
+        wrapper=doc.new_tag('div');wrapper['class']='table-scroll'
+        table.wrap(wrapper)
     for image in doc.select('img'):
         if 'source-spacer' in image.get('class',[]):continue
         parent=image.find_parent('details')

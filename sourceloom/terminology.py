@@ -5,6 +5,12 @@ import http.client
 import time
 
 CATALOG=[
+    {'triggers':['NP'],'abbr':'P','zh':'多项式时间','en':'Polynomial Time',
+     'url':'https://courses.cs.washington.edu/courses/cse417/25au/readings/pnp.html',
+     'note':'计算复杂性中的判定问题类名称，不能将 easy to find 这种直觉解释当成英文全称'},
+    {'triggers':['NP'],'abbr':'NP','zh':'非确定性多项式时间','en':'Nondeterministic Polynomial Time',
+     'url':'https://courses.cs.washington.edu/courses/cse417/25au/readings/pnp.html',
+     'note':'这是计算复杂性中的名称，easy to check 仅是直觉说明，不能当成名称展开；不是 Not Polynomial'},
     {'triggers':['HTML','html'],'abbr':'HTML','zh':'超文本标记语言','en':'HyperText Markup Language',
      'url':'https://www.w3.org/TR/html401/intro/intro.html',
      'fallback_urls':['https://www.w3.org/MarkUp/html-spec/html-spec_1.html'],
@@ -32,7 +38,7 @@ def verified_terms(store,source,fetcher=None):
     directory=store.root/'terminology';directory.mkdir(exist_ok=True)
     for entry in CATALOG:
         if not any(re.search(r'(?<![A-Za-z])'+re.escape(t)+r'(?![A-Za-z])',text) for t in entry['triggers']):continue
-        path=directory/(digest(entry['url'].encode())+'.json')
+        path=directory/(digest((entry['url']+'|'+entry['en']).encode())+'.json')
         snapshot=None
         if path.exists():
             try:snapshot=json.loads(path.read_text(encoding='utf-8'))

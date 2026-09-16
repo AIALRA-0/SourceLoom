@@ -98,6 +98,11 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
     for oid in obligations.keys() - covered:
         error("omission", "冻结义务在候选中没有落点", obligation_id=oid)
     for sid, src in sources.items():
+        from .visual_sources import decorative_resource
+        if decorative_resource(src):
+            if src.get('resource_id') not in resources:
+                error('resource','排版资源没有保存在原件资源清单中')
+            continue
         if src["kind"] in {"image", "table", "code", "formula", "link", "page", "attachment", "footnote"} and sid not in object_coverage and sid not in earlier:
             error("protected_object", "受保护对象没有插入候选", obligation_id=next((o["id"] for o in obligations.values() if o["object_id"]==sid), ""))
         if require_heading_structure and src['kind']=='heading' and not any(
