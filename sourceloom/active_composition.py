@@ -229,6 +229,27 @@ def candidate_key(issue,draft):
     return digest([issue,canonical(draft)])
 
 
+def located_format_issues(report,draft):
+    """Give the joint first review concrete block addresses for scanner output."""
+    result={}
+    for category in ('findings','candidates'):
+        rows=[]
+        for issue in report['format'][category]:
+            match=re.fullmatch(r'LINE-(\d+)',issue.get('location',''))
+            row=int(match[1]) if match else -1;start=1
+            for block in draft['blocks']:
+                end=start+block['markdown'].count('\n')
+                if start<=row<=end:
+                    quote=issue.get('old_text','').strip()
+                    if not quote or quote not in block['markdown']:
+                        quote=block['markdown'].split('\n')[row-start]
+                    if quote.strip():rows.append(issue|dict(block_id=block['id'],output_quote=quote))
+                    break
+                start=end+2
+        result[category]=rows
+    return result
+
+
 def planned_heading_depth(draft,level,inventory):
     from markdown_it import MarkdownIt
     result=copy.deepcopy(draft)
@@ -288,12 +309,28 @@ def validate_names(plan, resources):
             evidence=[]
             for item in concept['name_evidence']:
                 key=item['resource_id']
-                if key not in resources.state['entries'] or item['quote'] not in resources.text(key):
+                exact=exact_source_quote(item['quote'],resources.text(key)) if key in resources.state['entries'] else None
+                if exact is None:
                     raise ValueError('术语名称证据不在已保存来源中：'+concept['id'])
-                evidence.append(item['quote'].casefold())
-            names=[concept['english_name']]+[a['english'] for a in concept['abbreviations']]
-            if any(not name.strip() or not any(name.casefold() in q for q in evidence) for name in names):
-                raise ValueError('英文名称或缩写展开没有对应的原文证据：'+concept['id'])
+                item['quote']=exact
+                evidence.append(' '.join(exact.casefold().split()))
+            names=[(concept['english_name'],None)]+[(a['english'],a['short']) for a in concept['abbreviations']]
+            for name,short in names:
+                normalized=' '.join(name.casefold().split())
+                if not normalized:raise ValueError('术语英文名称为空：'+concept['id'])
+                if any(normalized in q for q in evidence):continue
+                # Reuse an existing primary-source glossary pairing only when
+                # its exact name and abbreviation agree; never infer a new name.
+                entry=next((e for e in resources.state['entries'].values()
+                            if e.get('scope')=='name_evidence_excerpt'
+                            and e.get('english_name','').casefold()==name.casefold()
+                            and (short is None or e.get('abbreviation')==short)),None)
+                quote=resources.text(entry['id']) if entry else ''
+                if not entry or normalized not in ' '.join(quote.casefold().split()):
+                    raise ValueError('英文名称或缩写展开没有对应的原文证据：'+concept['id'])
+                item=dict(resource_id=entry['id'],quote=quote)
+                if item not in concept['name_evidence']:concept['name_evidence'].append(item)
+                evidence.append(' '.join(quote.casefold().split()))
         elif not concept['naming_note'].strip():
             raise ValueError('未确认名称需要保留具体查证缺口：'+concept['id'])
     return plan
@@ -804,6 +841,8 @@ class ActiveComposition:
         if stage=='active_review':
             node=nodes[job['unit_index']];candidate=job['active_candidate']
             draft=candidate['draft'];round_=int(candidate.get('content_review_round',0))
+            preflight=respect_original_format(scan(bundle,draft,self.store.root/'production'/job['id']/node['id']/('review-preflight-'+digest(canonical(draft).encode())[:16])),draft,job['inventory'])
+            format_issues=located_format_issues(preflight,draft)
             obligations=[f for p in job['active_plans'] for f in p['obligations'] if f['id'] in node['obligation_ids']]
             review_ids=set(node['obligation_ids'])
             patch=candidate.get('last_patch')
@@ -836,13 +875,19 @@ class ActiveComposition:
                 references={b['id'] for b in draft['blocks'] if b['kind']=='document_info'
                     and b['id']==node['id']+'-source-'+next(iter(b.get('object_ids',[])),'')
                     and all(objects[s]['kind'] in {'page','metadata'} for s in b.get('object_ids',[]))}
-                # An exact compiler-owned literal is not authored prose. Keep
-                # comments about it as evidence without asking the writer to
-                # mutate that object. Its bytes are checked by the compiler.
+                # A finding may quote an intact link/image precisely because
+                # its adjacent explanation is missing. Literal preservation
+                # does not exempt that explanation from review; the committer
+                # separately prevents changing the protected source object.
                 def reference_only(f):
-                    return f['block_id'] in references or any(f['output_quote']==literal for literal in literals.values() if literal)
+                    return f['block_id'] in references
                 result['protected_reference_notes']=[f for f in result['findings'] if reference_only(f)]
                 result['findings']=[f for f in result['findings'] if not reference_only(f)]
+                for issue in format_issues['findings']:
+                    if any(f['block_id']==issue['block_id'] and issue['output_quote'] in f['output_quote'] for f in result['findings']):continue
+                    result['findings'].append(dict(block_id=issue['block_id'],output_quote=issue['output_quote'],
+                        source_id='',source_quote='',problem=issue['rule_id']+': '+issue.get('message',issue.get('reason','')),
+                        required_change='按完整写作技能修复这处已确认格式问题，与本轮内容修复合并为局部事务，保留原意与原对象'))
                 return result
             base='active-review-'+node['id']+'-'+str(round_)
             review_key=base+'-'+digest(canonical(draft).encode())[:16]
@@ -861,6 +906,7 @@ class ActiveComposition:
                 source,node['source_ids'],dict(contract=job['active_plans'][0]['contract'],node=node,
                     actual_draft=draft,obligations=obligations,prior_findings=candidate.get('content_findings',[]),
                     concepts=[c for part in job['active_plans'] for c in part['concepts'] if c['id'] in node['establishes_concepts']+node['requires_concepts']],
+                    format_preflight=format_issues,
                     review_obligation_ids=sorted(review_ids),
                     exact_revision=candidate.get('last_patch'),
                     protected_originals=protected_objects(job['inventory']),

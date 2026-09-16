@@ -1,7 +1,20 @@
 // One text index per loaded original, shared by both directions of navigation.
 const indexes=new WeakMap(),bindings=new WeakMap();
 const norm=text=>text.replace(/\s+/gu,' ').trim();
-function loaded(frame,callback){frame.addEventListener('load',callback);if(frame.contentDocument?.readyState==='complete'&&frame.contentDocument.body?.childNodes.length)callback()}
+function loaded(frame,callback){
+ let attached=null,checks=0,timer;
+ function ready(){
+  clearTimeout(timer);
+  if(!frame.isConnected){navigation.disconnect();return}
+  const doc=frame.contentDocument;
+  const current=doc&&doc.URL!=='about:blank'&&(frame.hasAttribute('srcdoc')||doc.URL===frame.src);
+  if(current&&doc.readyState!=='loading'&&doc.body&&doc!==attached){attached=doc;callback()}
+  if((!current||doc!==attached)&&++checks<600&&(frame.getAttribute('src')||frame.hasAttribute('srcdoc')))timer=setTimeout(ready,100);
+ }
+ const navigation=new MutationObserver(()=>{checks=0;ready()});
+ navigation.observe(frame,{attributes:true,attributeFilter:['src','srcdoc']});
+ frame.addEventListener('load',ready);ready();
+}
 function indexDocument(doc){if(indexes.has(doc))return indexes.get(doc);const rawNodes=[],nodes=[],walker=doc.createTreeWalker(doc.body,4,{acceptNode:node=>node.parentElement?.closest('script,style,noscript')?2:1});let capacity=0;
  while(walker.nextNode()){rawNodes.push(walker.currentNode);capacity+=walker.currentNode.data.length}
  const offsets=new Uint32Array(capacity),parts=[];let length=0,lastSpace=false;

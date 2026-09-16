@@ -58,6 +58,22 @@ def test_name_evidence_must_match_saved_resource(tmp_path):
         validate_names(bad, resources)
 
 
+def test_name_evidence_resolves_only_whitespace_and_existing_verified_pairing(tmp_path):
+    resources=Resources(Store(tmp_path),{'objects':[]})
+    resources.add('reference','Polynomial\nTime')
+    resources.add('np','NP stands for Nondeterministic Polynomial Time.',kind='external',
+                  scope='name_evidence_excerpt',abbreviation='NP',english_name='Nondeterministic Polynomial Time')
+    concept=term()
+    concept['abbreviations']=[dict(short='NP',chinese='非确定性多项式时间',english='Nondeterministic Polynomial Time')]
+    result=validate_names({'concepts':[concept]},resources)['concepts'][0]
+    assert result['name_evidence'][0]['quote']=='Polynomial\nTime'
+    assert result['name_evidence'][1]['resource_id']=='np'
+    concept=term();concept['abbreviations']=[dict(short='WRONG',chinese='名称',english='Nondeterministic Polynomial Time')]
+    with pytest.raises(ValueError,match='对应的原文证据'):
+        validate_names({'concepts':[concept]},resources)
+
+
+
 def test_abbreviations_must_reach_actual_body():
     concept = term()
     concept['abbreviations'] = [dict(short='NP', chinese='非确定性多项式时间',

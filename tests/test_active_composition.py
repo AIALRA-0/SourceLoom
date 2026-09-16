@@ -352,6 +352,48 @@ def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code(
     assert not respect_original_format(fence_report,fixed,inv)['format']['findings']
 
 
+def test_intact_content_link_still_requires_its_explanation(tmp_path,skill,monkeypatch):
+    from sourceloom.writing import protected_objects
+    store,_,project,bundle=prepared(tmp_path,skill)
+    src=source();src['objects']=[dict(id='link',kind='link',text='Reference',
+        locator='input/a',target='https://example.org/topic')]
+    node=plan()['nodes'][0]|dict(source_ids=['link'],obligation_ids=['f1'])
+    obligation=plan()['obligations'][0]|dict(source_id='link',quote='Reference')
+    literal=protected_objects(src)['link']
+    draft={'blocks':[dict(id='n1-b1',kind='explanation',markdown=literal+'\n需要修正的标点。',
+                         obligation_ids=['f1'],object_ids=['link'])]}
+    job=dict(id='review-fixture',calls=[],stage='active_review',writing_skill=bundle,verified_terminology=[],source=src,
+        inventory=src,unit_index=0,draft={'blocks':[]},writing_batches=[node],
+        active_plans=[plan()|dict(obligations=[obligation],concepts=[])],
+        active_candidate=dict(draft=draft))
+    review=dict(findings=[dict(block_id='n1-b1',output_quote=literal,source_id='link',
+        source_quote='Reference',problem='Missing destination explanation',
+        required_change='Explain the destination beside the unchanged link')],checked_obligation_ids=['f1'])
+    engine=ActiveComposition(Production(store,{}))
+    mechanical=dict(id='format-first',rule_id='FMT-017',location='LINE-2',
+                    old_text='需要修正的标点。',message='Fixture format finding')
+    monkeypatch.setattr('sourceloom.active_composition.scan',lambda *a:dict(format=dict(findings=[mechanical],candidates=[])))
+    monkeypatch.setattr(engine,'turn',lambda job,key,role,schema,source,ids,payload,validate:validate(review,None))
+    assert engine.step(job)=='queued'
+    assert job['stage']=='active_revision'
+    assert job['active_candidate']['revision_issues']['findings'][0]['output_quote']==literal
+    assert job['active_candidate']['revision_issues']['protected_reference_notes']==[]
+    assert job['active_candidate']['revision_issues']['findings'][1]['output_quote']=='需要修正的标点。'
+
+
+def test_joint_review_maps_format_lines_to_actual_blocks():
+    from sourceloom.active_composition import located_format_issues
+    draft={'blocks':[dict(id='first',markdown='## Heading\nFirst paragraph'),
+                     dict(id='second',markdown='Second paragraph\nLast line') ]}
+    report={'format':{'findings':[dict(location='LINE-4',old_text='stale scanner text')],
+                      'candidates':[dict(location='LINE-5',old_text='Last line')]}}
+    result=located_format_issues(report,draft)
+    assert result['findings'][0]['block_id']=='second'
+    assert result['findings'][0]['output_quote']=='Second paragraph'
+    assert result['candidates'][0]['block_id']=='second'
+    assert result['candidates'][0]['output_quote']=='Last line'
+
+
 def test_candidate_dismissal_is_bound_to_the_actual_unchanged_block():
     from sourceloom.active_composition import candidate_key
     draft={'blocks':[dict(id='a',markdown='First'),dict(id='b',markdown='Other') ]}
