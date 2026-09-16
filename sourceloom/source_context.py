@@ -65,3 +65,24 @@ def classify_inert_markup(source):
     result['unknown']=[g for g in result.get('unknown',[]) if g not in resolved]
     if resolved:result['resolved_markup_gaps']=result.get('resolved_markup_gaps',[])+resolved
     return result
+
+
+def classify_layout_tables(source):
+    """Unwrap an unambiguous one-row web layout, never a data table.
+
+    The original HTML bytes stay in raw and the original file; extracted images
+    and links keep their own source identities and normal preservation rules.
+    """
+    import copy
+    from bs4 import BeautifulSoup
+    result=copy.deepcopy(source)
+    for obj in result['objects']:
+        if obj['kind']!='table' or not obj.get('raw','').lstrip().startswith('<table'):continue
+        table=BeautifulSoup(obj['raw'],'html.parser').find('table')
+        if not table or table.find(['th','caption']) or len(table.find_all('tr'))!=1:continue
+        cells=table.find_all('td')
+        content=[c for c in cells if c.get_text(strip=True)]
+        if len(content)!=1 or not content[0].find(['p','ul','ol']):continue
+        if not any(c.find('img') for c in cells if c is not content[0]):continue
+        obj.update(kind='text',original_kind='table',layout_classification='single-row-one-text-cell-with-image-layout')
+    return result

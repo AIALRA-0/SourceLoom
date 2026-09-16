@@ -1,7 +1,6 @@
 """Readable resource projections; original objects and saved drafts remain intact."""
 import copy
 import html
-import re
 
 
 def image_markup(obj, legacy=False):
@@ -34,22 +33,48 @@ def reading_draft(project):
     for block in result['blocks']:
         for sid in block.get('embedded_object_ids',[]):
             obj=objects.get(sid)
-            if obj and layout_reference(obj):
+            if obj and (layout_reference(obj) or obj.get('kind')=='table' and '<img' in obj.get('raw','').lower()):
                 raw=obj['raw'];replacement='<details><summary>查看原文版式与配图</summary>\n\n'+raw+'\n\n</details>'
                 if replacement not in block['markdown']:block['markdown']=block['markdown'].replace(raw,replacement)
             if not obj or obj['kind'] not in {'image','page'} or not obj.get('resource_id'):continue
             current=image_markup(obj)
             old=image_markup(obj,legacy=True)
             block['markdown']=block['markdown'].replace(old,current)
-            if obj['kind']=='page':
-                # Complete page facsimiles are optional reference, not article prose.
-                label=html.escape('查看原件页面 · '+obj['locator'])
-                replacement='<details><summary>'+label+'</summary>\n\n'+current+'\n\n</details>'
-                if replacement not in block['markdown']:
-                    block['markdown']=block['markdown'].replace(current,replacement)
+            label=html.escape(('原件页面' if obj['kind']=='page' else '材料配图')+' · '+obj['locator'])
+            replacement='<details><summary>'+label+'</summary>\n\n'+current+'\n\n</details>'
+            # Existing page wrappers retain their labels without nested controls.
+            from bs4 import BeautifulSoup
+            existing=BeautifulSoup(block['markdown'],'html.parser')
+            wrapped=any(i.find_parent('details') for i in existing.select('img') if i.get('src')=='assets/'+obj['resource_id'])
+            if not wrapped:block['markdown']=block['markdown'].replace(current,replacement)
         # Long literal quotations remain accessible without dominating the rewrite.
         if block.get('kind')=='source' and len(block['markdown'])>600 and block['markdown'].lstrip().startswith('>'):
             block['markdown']='<details><summary>查看这段原文</summary>\n\n'+block['markdown']+'\n\n</details>'
         if block.get('kind')=='document_info' and not block['markdown'].startswith('<details>'):
             block['markdown']='<details><summary>查看材料附记</summary>\n\n'+block['markdown']+'\n\n</details>'
     return result
+
+
+def fold_media(raw):
+    """Add presentation controls without modifying image or table contents."""
+    from bs4 import BeautifulSoup
+    doc=BeautifulSoup(raw,'html.parser')
+    for image in doc.select('img'):
+        if 'source-spacer' in image.get('class',[]):continue
+        parent=image.find_parent('details')
+        if parent is None:
+            target=image.find_parent('table') or image.find_parent('figure') or image.find_parent('a') or image
+            paragraph=image.find_parent('p')
+            if paragraph is not None and (target is image or paragraph in target.parents):
+                if not paragraph.get_text(strip=True):target=paragraph
+                else:
+                    # A disclosure cannot live inside <p>: browsers otherwise
+                    # split it and manufacture an empty trailing paragraph.
+                    paragraph.name='div'
+                    paragraph['class']=[*paragraph.get('class',[]),'media-paragraph']
+            parent=doc.new_tag('details');label=doc.new_tag('summary');label.string='材料配图'
+            target.wrap(parent);parent.insert(0,label)
+        # Open all ancestor disclosures together, including layout references.
+        for region in [parent,*parent.find_parents('details')]:
+            region['data-media']='true';region.attrs.pop('open',None)
+    return str(doc)

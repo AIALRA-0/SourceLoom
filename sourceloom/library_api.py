@@ -5,17 +5,29 @@ import json
 import time
 import html
 import re
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 
 from fastapi.responses import HTMLResponse, Response
 from .checks import inspect_draft
 from .durable import Queue
-from .export import render, safe_html
+from .export import render, safe_html, reading_page, article_style
 from .skills import deploy_skill
 from .store import Conflict, identity, digest
 from .writing import canonical, available_draft
 from .reading import reader_summary, presentation
+
+
+@lru_cache(maxsize=32)
+def cached_output(pid,numbering,format,project_json):
+    """Render an immutable project snapshot once for repeated view switches."""
+    p=presentation(json.loads(project_json),numbering or None)
+    if format=='markdown':
+        from .media import reading_draft
+        return canonical(reading_draft(p)).encode()
+    content=render(p,lambda key:f'/api/projects/{pid}/assets/{key}')
+    return reading_page(content).encode()
 
 
 def source_locations(project):
@@ -48,7 +60,7 @@ def source_locations(project):
 
 
 def register(app, store, config):
-    queue=Queue(store)
+    queue=Queue(store,pipeline=config.get('generation_pipeline','legacy'))
 
     def latest_production(pid):
         with store.connect() as cx:
@@ -75,7 +87,7 @@ def register(app, store, config):
         p=store.get(pid)
         if not p.get('inventory'):
             raise Conflict('先保存原件才能估算处理规模')
-        return Queue.estimate(p['inventory'])|{'document_budget_usd':p['budget_usd']}
+        return Queue.estimate(p['inventory'],pipeline=config.get('generation_pipeline','legacy'))|{'document_budget_usd':p['budget_usd'],'document_budget_cny':p.get('budget_cny')}
 
     @app.post('/api/library/actions')
     def library_action(body:dict):
@@ -152,14 +164,17 @@ def register(app, store, config):
             (p.get('production') or {}).get('job')!=j['id'])
         candidate_url=f"/api/projects/{pid}/attempts/{j['id']}/output" if newer_candidate else None
         j['role']='production'
-        return {k:j.get(k) for k in ('id','status','stage','created','started','finished','error','quality_issues','repair_rounds')} | {
+        return {k:j.get(k) for k in ('id','status','stage','pipeline','created','started','finished','error','quality_issues','repair_rounds')} | {
             'call_count':j.get('call_count',len(j.get('calls',[]))),'has_output':bool(displayed),
             'output_chars':len(output_text),
             'output_digest':digest(output_text.encode()) if displayed else None,
             'candidate_url':candidate_url,
             'candidate_markdown_url':candidate_url+'?format=markdown' if candidate_url else None,
             'progress':summary(j),
-            'formal':(p.get('production') or {}).get('status')=='completed'}
+            'formal':(p.get('production') or {}).get('status')=='completed' and
+                (p.get('production') or {}).get('pipeline')!='active_composition_v1',
+            'delivery_complete':(p.get('production') or {}).get('status')=='completed',
+            'semantic_status':(p.get('production') or {}).get('semantic_status')}
 
     @app.get('/api/projects/{pid}/intakes/{jid}/original/{key}')
     def intake_original(pid:str,jid:str,key:str):
@@ -184,7 +199,7 @@ def register(app, store, config):
         candidate=p|dict(draft=draft,inventory=job['inventory'],plan=job['plan'],
                          accepted_revision=None,production={'status':'needs_review'})
         content=render(candidate,lambda key:f'/api/projects/{pid}/assets/{key}')
-        return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/article.css"></head><body><p role="status">本次生成的新稿，尚未通过全部核对</p>'+content+'</body></html>',
+        return HTMLResponse(reading_page('<p role="status">本次生成的新稿，尚未通过全部核对</p>'+content),
             headers={'Content-Security-Policy':"sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"})
 
     @app.post('/api/projects/{pid}/rewrite')
@@ -224,15 +239,13 @@ def register(app, store, config):
             if not available:
                 raise Conflict('尚未生成正文')
             p=p|dict(draft=available,inventory=j['inventory'],plan=j['plan'])
-        p=presentation(p,numbering)
+        snapshot=json.dumps(p,ensure_ascii=False,separators=(',',':'))
         if format=='markdown':
-            from .media import reading_draft
-            return Response(canonical(reading_draft(p)).encode(),media_type='text/markdown',
+            return Response(cached_output(pid,numbering,format,snapshot),media_type='text/markdown',
                             headers={'Content-Disposition':"attachment; filename*=UTF-8''"+quote(p['title']+'.md')})
         if format!='html':
             raise ValueError('未知正文格式')
-        content=render(p,lambda key:f'/api/projects/{pid}/assets/{key}')
-        return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/article.css"></head><body>'+content+'</body></html>',
+        return HTMLResponse(cached_output(pid,numbering,format,snapshot),
             headers={'Content-Security-Policy':"sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"})
 
     @app.get('/api/projects/{pid}/original/{key}')
@@ -270,8 +283,14 @@ def register(app, store, config):
                 if asset:
                     pic['src']='assets/'+asset
             parsed=BeautifulSoup(safe_html(str(parsed)),'html.parser')
+            transparent={o['resource_id'] for o in p['inventory']['objects']
+                if o.get('visual_classification',{}).get('method')=='all_pixels_alpha_zero'}
             for pic in parsed.select('img[src^="assets/"]'):
-                pic['src']=f'/api/projects/{pid}/assets/'+pic['src'][7:]
+                resource=pic['src'][7:]
+                pic['src']=f'/api/projects/{pid}/assets/'+resource
+                pic['loading']='lazy';pic['decoding']='async'
+                if resource in transparent:
+                    pic['class']=['source-spacer'];pic['width']='1';pic['height']='1'
             content=str(parsed)
         else:
             content='<p>下面显示本原件已提取的文字，可点击文字定位改写正文；原始排版请查看原始文件</p>'
@@ -280,7 +299,8 @@ def register(app, store, config):
                 page=re.search(r'/page\[(\d+)\]',o['locator'])
                 if page:content+='<h2>第 '+page[1]+' 页</h2>'
                 content+='<pre data-source-id="'+html.escape(o['id'],quote=True)+'">'+html.escape(o.get('text',''))+'</pre>'
-        return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/article.css"></head><body>'+content+'</body></html>',
+        from .media import fold_media
+        return HTMLResponse(reading_page(fold_media(content)),
             headers={'Content-Security-Policy':"sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"})
 
     @app.get('/api/projects/{pid}/versions')
@@ -303,7 +323,7 @@ def register(app, store, config):
         for edit in body.get('edits',[]):
             if edit['block_id'] not in blocks:raise ValueError('正文块不存在')
             blocks[edit['block_id']]['markdown']=str(edit['markdown'])
-        return {'html':render(presentation(p),lambda key:f'/api/projects/{pid}/assets/{key}')}
+        return {'html':render(presentation(p),lambda key:f'/api/projects/{pid}/assets/{key}'),'style':article_style()}
 
     @app.post('/api/projects/{pid}/edit')
     def edit(pid:str,body:dict):

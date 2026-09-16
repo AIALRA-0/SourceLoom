@@ -117,7 +117,7 @@ class IntakeQueue:
                 from .durable import Queue
                 from .skills import deploy_skill
                 try:
-                    Queue(self.store).enqueue(job['project'],deploy_skill(self.config['writing_skill_dir'],self.store.root),expected_intake=job['id'])
+                    Queue(self.store,pipeline=self.config.get('generation_pipeline','legacy')).enqueue(job['project'],deploy_skill(self.config['writing_skill_dir'],self.store.root),expected_intake=job['id'])
                 except (ValueError,Conflict) as exc:
                     job.update(generation_error=str(exc),status='needs_attention');self.save_owned(job,owner)
                     self.store.change(job['project'],lambda p:p.update(active_job=None) if p.get('active_job')==job['id'] else None)
@@ -126,7 +126,8 @@ class IntakeQueue:
                 cx.execute('BEGIN IMMEDIATE')
                 lease=cx.execute('SELECT owner FROM intake_control WHERE id=?',(job['id'],)).fetchone()
                 if lease and lease[0]==owner:
-                    job.update(status='failed',finished=time.time(),error=str(exc)[:300] if isinstance(exc,ValueError) else '接入材料失败，原始文件已保存')
+                    job.update(status='failed',finished=time.time(),error=str(exc)[:300] if isinstance(exc,ValueError) else
+                        ('接入材料失败，收到的原始文件已保存' if job.get('files') else '网页获取失败，地址已保存，尚未收到原始文件'))
                     cx.execute("UPDATE jobs SET status='failed',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),job['id']))
                     p=json.loads(cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()[0])
                     if p.get('active_job')==job['id']:

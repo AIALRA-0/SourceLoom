@@ -193,7 +193,7 @@ class IndependentReview(Strict):
 class LocalEdit(Strict):
     block_id: str
     old_text: str = Field(min_length=1)
-    new_text: str = Field(min_length=1)
+    new_text: str
     reason: str = Field(min_length=1)
 
 
@@ -204,7 +204,7 @@ class LocalRepair(Strict):
 
 class LineEdit(Strict):
     line_id: str
-    replacement: str = Field(min_length=1)
+    replacement: str
     reason: str = Field(min_length=1)
 
 
@@ -223,6 +223,7 @@ class PreparedTerm(Strict):
     mechanism: str = Field(min_length=1)
     when: str = Field(min_length=1)
     boundary: str = Field(min_length=1)
+    reference_urls: list[str] = Field(default_factory=list,max_length=3)
 
 
 class TermPreparation(Strict):

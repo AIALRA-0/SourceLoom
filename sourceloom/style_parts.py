@@ -43,6 +43,24 @@ def decode_indexed(result,payload):
     # Some providers repeat the top-level empty findings inside assessments.
     # Accept only the exact empty list; never discard substantive feedback.
     result=copy.deepcopy(result)
+    _drop_unassigned_empty_groups(result,payload)
+    # A model can echo these two harmless root-schema annotations beside the
+    # requested object. Remove only their exact schema values; every review
+    # verdict, finding and unknown remains subject to the closed schema.
+    if result.get('title')=='StyleReview':result.pop('title')
+    if result.get('additionalProperties') is False:result.pop('additionalProperties')
+    # Extra positive observations have no authority over another partition.
+    # Ignore only known, unassigned pass/NA rows; retain every finding and
+    # reject extra negative/unknown judgments instead of losing criticism.
+    rules=result.get('rules_by_id',{}) if isinstance(result,dict) else {}
+    had_extra_rows=bool(rules)
+    if isinstance(rules,dict):
+        for rid,row in list(rules.items()):
+            if (rid not in payload['rule_catalog'] and rid in payload.get('rule_definitions',{})
+                    and isinstance(row,dict) and row.get('status') in {'pass','not_applicable'}
+                    and set(row)<={'status','reason','evidence_ids','execution_ids','quotes','block_ids'}):
+                del rules[rid]
+        if had_extra_rows and not rules and not payload['rule_catalog']:result.pop('rules_by_id',None)
     for group in ('rules_by_id','checks_by_id'):
         rows=result.get(group,{}) if isinstance(result,dict) else {}
         if isinstance(rows,dict):
@@ -70,6 +88,8 @@ def evidence_catalog(draft):
 def missing_assignments(result,payload):
     """Select missing identities only; malformed or extra answers remain errors."""
     from jsonschema import Draft202012Validator
+    result=copy.deepcopy(result)
+    _drop_unassigned_empty_groups(result,payload)
     errors=list(Draft202012Validator(IndexedReviewSchema(payload).model_json_schema()).iter_errors(result))
     if not errors or any(e.validator!='required' for e in errors) or 'findings' not in result:
         raise ValueError('审核返回结构不是可单独补齐的检查项遗漏')
@@ -95,6 +115,8 @@ def merge_indexed(original,supplement,payload):
 def invalid_assignments(result,payload):
     """Reassess only malformed rows; preserve valid verdicts and all findings."""
     from jsonschema import Draft202012Validator
+    result=copy.deepcopy(result)
+    _drop_unassigned_empty_groups(result,payload)
     errors=list(Draft202012Validator(IndexedReviewSchema(payload).model_json_schema()).iter_errors(result))
     if not errors:raise ValueError('没有需要修正的审核结构')
     rows=set()
@@ -108,6 +130,18 @@ def invalid_assignments(result,payload):
     return retained,missing_assignments(retained,payload)
 
 
+def _drop_unassigned_empty_groups(result,payload):
+    """Ignore only an exact empty object echoed for a group absent from this partition."""
+    expected={
+        'rules_by_id':bool(payload['rule_catalog']),
+        'checks_by_id':any(payload[key] for key in ('mechanical_findings','mechanical_candidates')),
+    }
+    if isinstance(result,dict):
+        for group,assigned in expected.items():
+            if not assigned and result.get(group)=={}:
+                result.pop(group)
+
+
 def partitions(payload,limit=40):
     tasks=[('rule_catalog',rid) for rid in payload['rule_catalog']]
     tasks += [(key,row) for key in ('mechanical_findings','mechanical_candidates') for row in payload[key]]
@@ -117,8 +151,10 @@ def partitions(payload,limit=40):
         part=copy.deepcopy(payload)
         for key in ('rule_catalog','mechanical_findings','mechanical_candidates'):part[key]=[]
         for key,value in tasks[index*limit:(index+1)*limit]:part[key].append(value)
+        if isinstance(part.get('rule_definitions'),dict):
+            part['rule_definitions']={rid:part['rule_definitions'][rid] for rid in part['rule_catalog'] if rid in part['rule_definitions']}
         part['review_partition']={'index':index+1,'count':count,
-            'instruction':'Read the complete skill and whole actual draft. Return judgments only for this assigned rule_catalog and these mechanical items, each exactly once; unassigned fields are empty arrays. Other parts cover all remaining IDs. Never summarize or omit source text. Findings must relate to this part\'s assigned checks.'}
+            'instruction':'Read the complete skill, whole actual draft and every supplied protected source literal. Return judgments only for this assigned rule_catalog and these mechanical items, each exactly once; unassigned fields are empty arrays. Other parts cover all remaining IDs. Never summarize or omit candidate text or supplied protected source spans. Complete original meaning is covered by the separate fidelity review. Findings must relate to this part\'s assigned checks.'}
         result.append(part)
     return result
 

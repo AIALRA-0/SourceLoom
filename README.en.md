@@ -4,7 +4,7 @@
 
 <p><strong>Turn source material into readable, traceable content</strong></p>
 
-<p>Content preparation for ReadWeave · Automatic production under evaluation</p>
+<p>Content preparation for ReadWeave</p>
 
 [中文](README.md) · [Actual trials](reports/AUTOMATIC_TRIAL.md) · [Master plan](docs/MASTER_PLAN.md) · [Deployment](deploy/README.md)
 
@@ -14,9 +14,9 @@
 
 SourceLoom preserves originals and separates inventory, planning, writing, review, and local repair before preparing material for ReadWeave. Default rewriting keeps the source purpose and improves clarity and transitions, without inventing classroom scenarios, exercises, or extensions
 
-Reading performance, the toolbar, bidirectional navigation and the editor have been updated. Actual papers, webpages, documents and plain text exercise background intake and saved outputs. There are still **zero formally accepted automatic outputs**
+New jobs establish the rewrite boundary, source obligations, concept dependencies and article structure before writing in batches. Concrete defects receive exact local patches. See the [implementation and real-case record](docs/ACTIVE_COMPOSITION_IMPLEMENTATION.md) for results and verification scope.
 
-DeepSeek has produced readable drafts, and one independent chat comparison of the complete original and candidate has been recovered successfully. Writing and fidelity requirements remain unmet. See [this iteration's real inputs and results](docs/ITERATION_8.md), [earlier performance measurements](docs/ITERATION_6.md), and [workbench updates](docs/ITERATION_4.md)
+The reading workspace provides a unified toolbar, bidirectional source navigation, editing and version history. Images are collapsed by default with a shared expand/collapse switch. Earlier results remain in [historical trials](docs/ITERATION_8.md), [performance measurements](docs/ITERATION_6.md), and [workbench updates](docs/ITERATION_4.md)
 
 Earlier manually revised examples remain [historical examples](docs/REAL_CASES.md), not evidence of unattended automatic quality
 
@@ -76,11 +76,11 @@ Copy [the example configuration](config.example.json) to a private location. Set
 
 Point `writing_skill_dir` at the complete [Chinese technical writing skill](https://github.com/AIALRA-0/agent-human-readable-technical-writing). Every role receives the unabridged effective instruction files, while the entire package is frozen alongside the job. See [delivery details](docs/SKILL_RUNTIME.md)
 
-Receiving instructions does not prove compliance. Formal output requires teaching review, writing review, and independent source comparison of the same draft revision. Unreviewed output remains a draft
+Receiving instructions does not prove compliance. Source and structure checks, per-batch model review, independent whole-document semantic review, and user acceptance are recorded separately. A successful save is not a proof of perfect fidelity.
 
-Paid API requests default to at most 24 per document, excluding subscription requests, with two prose repair rounds per document. These are workflow settings, not the user's subscription allowance. There is no default document or project elapsed-time limit; individual network requests remain bounded. The default document budget is $0.20
+Subscription and metered requests are accounted for separately. Subscription requests do not consume the metered request allowance. New jobs allow up to four exact content-patch rounds and two format-patch rounds per batch. Existing jobs retain their original pipeline and configuration. These bounds prevent accidental loops; they are not subscription limits. There is no default document or project elapsed-time limit, while each network request remains bounded
 
-Cumulative subscription calls have no default limit. Generation and repair prioritize DeepSeek. Complex-material experiments record their adjusted per-document cash protection and cumulative spending separately. Trial limits and unknown subscription costs are recorded in [the trial report](reports/AUTOMATIC_TRIAL.md)
+Cumulative subscription calls have no default limit. Generation and repair prioritize DeepSeek. Native yuan protection requires the provider's yuan rates for input, cached input, and output; historical dollar records keep their original currency. About ¥0.10 per 1,000 source characters is a long-term comparison target, not a hard reason to truncate information or stop a complex document. Trial limits and unknown subscription costs are recorded in [the trial report](reports/AUTOMATIC_TRIAL.md)
 
 ## 5 Verified scope and limits
 
@@ -89,7 +89,7 @@ Cumulative subscription calls have no default limit. Generation and repair prior
 - Ordinary word-processing documents expose text, tables, links, and media; complex equations, tracked changes, and unsupported objects remain explicit gaps
 - Real browser upload checks cover reopening after closing the page, byte-exact original downloads, available draft downloads and stage progress; malformed model responses are not marked as completed generation
 - One synthetic mixed document completed real ReadWeave import, editing, saving, and reopening with repeated images, tables, code, math, paragraph anchors, and footnote targets preserved
-- The 24-document real and held-out evaluation is incomplete, and a $0.10 average full-pipeline cost has not been demonstrated
+- Broader held-out quality and native-yuan cost calibration remains governed by the published acceptance records; one document cannot establish performance for every material type
 
 ```bash
 # Install test dependencies

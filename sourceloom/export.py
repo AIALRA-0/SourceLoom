@@ -3,8 +3,11 @@
 import copy
 import html
 import json
+import re
 from io import BytesIO
 import zipfile
+from functools import lru_cache
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
@@ -15,6 +18,22 @@ from .math_render import markdown_renderer
 SAFE_TAGS = {"details","summary","div","p","br","strong","em","b","i","u","s","sub","sup","table","thead","tbody","tfoot","tr","td","th","caption","pre","code","blockquote","ul","ol","li","h2","h3","h4","h5","h6","span","a","img","figure","figcaption","hr"}
 MATH_TAGS=set('math mrow mi mn mo msub msup msubsup mfrac mover munder munderover mtable mtr mtd msqrt mroot mtext mspace menclose mpadded mphantom semantics annotation mstyle mfenced'.split())
 SAFE_TAGS |= MATH_TAGS
+
+
+@lru_cache(maxsize=1)
+def article_style():
+    return (Path(__file__).parent/'static/article.css').read_text(encoding='utf-8')
+
+
+def reading_page(content):
+    """Ship the small critical stylesheet with the already sanitized article.
+
+    A separate blocking stylesheet can leave an iframe blank after its text has
+    arrived, particularly on a slow connection. No source CSS is executed here.
+    """
+    return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<style>'+article_style()+'</style></head><body>'+content+'</body></html>')
 
 
 def safe_html(raw):
@@ -134,6 +153,12 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
                 continue
             inserted[sid]=inserted.get(sid,0)+1
             suffix='' if inserted[sid]==1 else '-repeat-'+str(inserted[sid])
+            if (o['kind']=='heading' and b['kind']!='source'
+                    and re.search(r'(?m)^ {0,3}#{1,6}\s+\S',b['markdown'])):
+                # This relationship points at a translated heading already in
+                # the authored block; it is not a second original-title quote
+                parts.append('<span id="loom-source-'+html.escape(sid,quote=True)+suffix+'"></span>')
+                continue
             parts.append('<div id="loom-source-'+html.escape(sid,quote=True)+suffix+'">')
             if o["kind"] in {"image","page"}:
                 if o.get("resource_id"):
@@ -173,6 +198,8 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
             old=link_target[1:] if link_target.startswith('#') else link_target[len(source_url)+1:] if source_url and link_target.startswith(source_url+'#') else None
             if (scope(obj),old) in anchor_map:a['href']='#'+anchor_map[(scope(obj),old)]
         result=str(doc)
+    from .media import fold_media
+    result=fold_media(result)
     if target=='readweave':
         result=editor_storage(result)
     return result

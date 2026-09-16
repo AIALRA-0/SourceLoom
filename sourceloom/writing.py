@@ -17,6 +17,41 @@ def canonical(draft):
     return '\n\n'.join(b['markdown'] for b in draft['blocks']) + '\n'
 
 
+def tighten_list_spacing(draft):
+    """Remove only blank gaps between adjacent same-level Markdown list items."""
+    result=copy.deepcopy(draft);changed=[]
+    marker=re.compile(r'^(\s*)(?:[-+*]|\d+[.)])\s+')
+    fence=re.compile(r'^\s*(`{3,}|~{3,})')
+    for block in result.get('blocks',[]):
+        lines=block['markdown'].splitlines(keepends=True);inside=False;outside=[]
+        for line in lines:
+            outside.append(not inside)
+            if fence.match(line):inside=not inside
+        remove=set();index=0
+        while index<len(lines):
+            if lines[index].strip() or not outside[index]:index+=1;continue
+            end=index
+            while end+1<len(lines) and not lines[end+1].strip() and outside[end+1]:end+=1
+            before=marker.match(lines[index-1]) if index else None
+            after=marker.match(lines[end+1]) if end+1<len(lines) and outside[end+1] else None
+            if before and after and before.group(1)==after.group(1):remove.update(range(index,end+1))
+            index=end+1
+        if remove:
+            block['markdown']=''.join(line for n,line in enumerate(lines) if n not in remove)
+            changed.append(block['id'])
+    return result,changed
+
+
+def trim_block_edges(draft):
+    """Remove redundant blank lines at authored block boundaries only."""
+    result=copy.deepcopy(draft);changed=[]
+    for block in result.get('blocks',[]):
+        text=block['markdown'];trimmed=text.strip('\r\n')
+        if trimmed!=text:
+            block['markdown']=trimmed;changed.append(block['id'])
+    return result,changed
+
+
 def available_draft(job):
     """Display received writing even when later processing failed; never publish it."""
     def display_order(draft):
@@ -310,8 +345,26 @@ def expand_response(response, heading_depths=None):
 
 def validate_layout_repair(original, candidate):
     """Location-only repair cannot become an unreviewed prose rewrite."""
-    old=FlatDraft.model_validate(normalize_definition_encoding(original)).model_dump(exclude_none=True)
-    new=FlatDraft.model_validate(normalize_definition_encoding(candidate)).model_dump(exclude_none=True)
+    original=normalize_definition_encoding(original)
+    candidate=normalize_definition_encoding(candidate)
+    # A layout repair exists precisely because the received structure may be
+    # invalid. Allow it to replace only an unknown type label when the same
+    # block and node retain every other field byte for byte. Text, IDs, source
+    # bindings and order therefore remain independently checkable.
+    repaired=copy.deepcopy(original)
+    declared={'paragraph','term','section','list','list_item','code','formula','source'}
+    candidate_nodes={(b.get('id'),n.get('node_id')):n for b in candidate.get('blocks',[])
+                     for n in b.get('content',[]) if isinstance(n,dict)}
+    for block in repaired.get('blocks',[]):
+        for node in block.get('content',[]):
+            if not isinstance(node,dict) or node.get('type') in declared:continue
+            other=candidate_nodes.get((block.get('id'),node.get('node_id')))
+            semantic=lambda value:{k:v for k,v in value.items() if k not in {'type','node_id','parent_id'}}
+            if not other or other.get('type') not in declared or semantic(node)!=semantic(other):
+                raise ValueError('结构修复不能借未知节点类型改写内容')
+            node['type']=other['type']
+    old=FlatDraft.model_validate(repaired).model_dump(exclude_none=True)
+    new=FlatDraft.model_validate(candidate).model_dump(exclude_none=True)
     def signature(block):
         nodes=[{k:v for k,v in n.items() if k not in {'node_id','parent_id'}} for n in block['content']]
         return {k:v for k,v in block.items() if k!='content'},nodes
@@ -378,6 +431,7 @@ def apply_binding_patch(original,patch,inventory):
 
 
 def compose(bundle, response, inventory):
+    from .checks import source_quote_matches
     heading_depths={}
     body=ComposedDraft.model_validate(expand_response(response,heading_depths)).model_dump(exclude_none=True)
     module_path=Path(bundle['root'])/'runtime/composition.py'
@@ -386,7 +440,11 @@ def compose(bundle, response, inventory):
     spec.loader.exec_module(module)
     sources=protected_objects(inventory)
     protected_ids=set(sources)
-    original_text={o['id']:o['text'] for o in inventory['objects']}
+    # Some container formats retain meaningful XML objects whose extractor has
+    # no human-readable text. A writer may still place that exact source
+    # object. Give the frozen composer its raw bytes-as-text in that narrow
+    # case, rather than handing it an empty literal that it must reject.
+    original_text={o['id']:(o.get('text') or o.get('raw','')) for o in inventory['objects']}
     original_raw={o['id']:o.get('raw','') for o in inventory['objects']}
     fact_sources={f['id']:f['object_id'] for f in inventory.get('obligations',[])}
     source_text='\n'.join(o['text'] for o in inventory['objects'])
@@ -497,12 +555,24 @@ def compose(bundle, response, inventory):
             raise ValueError('普通正文不能冒充逐字原对象，或对象身份不存在')
         depth=heading_depths.get(b['id'],0)
         if depth>4:raise ValueError('跨段落标题超过可用层级')
-        if len(b['content'])==1 and b['content'][0]['type']=='section' and not b['content'][0]['blocks']:
-            # The full skill validates heading text, while this adapter preserves
-            # a heading-only source anchor whose body is in subsequent blocks.
-            # Do not invent child prose or hide a block marker in a paragraph.
-            heading=module._text(b['content'][0]['heading'],'section.heading')
-            text='#'*(2+depth)+' '+heading+'\n'
+        def heading_only(nodes):
+            """Return an exact heading chain, or None when any prose is present."""
+            lines=[]
+            def visit(values,level):
+                if not values:return True
+                for value in values:
+                    if value['type']!='section':return False
+                    if level>6:raise ValueError('section: Markdown headings cannot exceed six levels')
+                    lines.append('#'*level+' '+module._text(value['heading'],'section.heading'))
+                    if not visit(value['blocks'],level+1):return False
+                return True
+            return '\n\n'.join(lines)+'\n' if visit(nodes,2+depth) else None
+        headings=heading_only(b['content'])
+        if headings is not None:
+            # A writer can return adjacent source headings before its completion
+            # pass supplies the body. Preserve every heading and its hierarchy;
+            # do not invent filler text merely to satisfy the generic composer.
+            text=headings
         else:
             content=b['content']
             for _ in range(depth):
@@ -529,7 +599,9 @@ def compose(bundle, response, inventory):
         evidence=list(b['evidence'])
         evidence=[e|dict(quote=original_text[e['source_id']])
                   if e['source_id'] in original_text and e['quote'] and
-                     e['quote'] in (sources.get(e['source_id']),original_raw.get(e['source_id'])) else e
+                     (source_quote_matches(e['quote'],original_text[e['source_id']]) or
+                      e['quote'] in original_raw.get(e['source_id'],'') or
+                      e['quote'] in sources.get(e['source_id'],'')) else e
                   for e in evidence]
         for fid in obligations:
             sid=fact_sources.get(fid)
@@ -601,7 +673,11 @@ def repair(bundle, draft, proposal, allowed, work):
                         '--input',str(source),'--edits',str(transaction),'--output',str(output),
                         '--report',str(report)],capture_output=True,timeout=30)
     if run.returncode or not output.is_file():
-        raise Conflict('技能的精确提交器拒绝补丁，原稿保持完整')
+        detail=(run.stderr or run.stdout).decode('utf8','replace').strip()
+        detail=re.sub(r'\s+',' ',detail)[:500]
+        message='技能的精确提交器拒绝补丁，原稿保持完整'
+        if detail:message+=' · '+detail
+        raise Conflict(message)
     expected=copy.deepcopy(draft)
     for b in expected['blocks']:
         local=[e for e in proposal['edits'] if e['block_id']==b['id']]

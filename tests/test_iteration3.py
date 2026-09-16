@@ -263,7 +263,7 @@ def test_saved_teaching_review_recheck_preserves_candidate_and_prior_calls(tmp_p
     with pytest.raises(Conflict):queue.recheck_teaching_review(job['id'])
 
 
-def test_rejected_teaching_replan_can_be_repaired_once_without_erasing_the_candidate(tmp_path):
+def test_rejected_teaching_replan_can_be_repaired_to_configured_limit_without_erasing_candidate(tmp_path):
     from sourceloom.store import Conflict
     import pytest
 
@@ -286,13 +286,25 @@ def test_rejected_teaching_replan_can_be_repaired_once_without_erasing_the_candi
         cx.execute("UPDATE jobs SET status='needs_attention',body=? WHERE id=?",
                    (json.dumps(job,ensure_ascii=False),job['id']))
         cx.execute("UPDATE production_control SET status='needs_attention' WHERE id=?",(job['id'],))
-    resumed=queue.repair_teaching_replan(job['id'])
+    resumed=queue.repair_teaching_replan(job['id'],{'max_plan_repairs':3})
     assert resumed['stage']=='teaching_replan_repair'
     assert resumed['draft']==draft and resumed['base_revision']==1
     assert resumed['teaching_replan_attempts']==1
     assert resumed['teaching_replan_repair_issues']==['规划没有真正调整讲解顺序']
     assert store.get(project['id'])['active_job']==job['id']
-    with pytest.raises(Conflict):queue.repair_teaching_replan(job['id'])
+    with store.connect() as cx:
+        resumed.update(status='needs_attention',stage='teaching_replan_review',
+            quality_issues=['规划中的定义仍晚于首次使用'])
+        resumed['results']['teaching-replan-review-1-route-v2-repair-1']={'status':'needs_repair'}
+        cx.execute("UPDATE jobs SET status='needs_attention',body=? WHERE id=?",
+                   (json.dumps(resumed,ensure_ascii=False),job['id']))
+        cx.execute("UPDATE production_control SET status='needs_attention',owner=NULL WHERE id=?",(job['id'],))
+        p=store.get(project['id']);p.update(active_job=None,state='needs_attention')
+        cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),p['id']))
+    second=queue.repair_teaching_replan(job['id'],{'max_plan_repairs':3})
+    assert second['teaching_replan_attempts']==2
+    assert second['teaching_replan_repair_history'][-1]['review'].endswith('-repair-1')
+    with pytest.raises(Conflict):queue.repair_teaching_replan(job['id'],{'max_plan_repairs':3})
 
 
 def test_known_truncation_retries_once_only_with_higher_cap(tmp_path):
@@ -364,8 +376,9 @@ def test_strict_tool_surplus_closing_brace_can_be_recovered_without_resubmission
     import pytest
     with pytest.raises(json.JSONDecodeError):
         parse_json('{"decisions":[]} trailing words')
+    assert parse_json('{"decisions":[]}}}') == {'decisions': []}
     with pytest.raises(json.JSONDecodeError):
-        parse_json('{"decisions":[]}}}')
+        parse_json('{"decisions":[]} {"other":true}')
 
 
 def test_coverage_repair_cannot_remove_previous_fact_or_object_assignment():

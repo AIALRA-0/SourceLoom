@@ -6,10 +6,14 @@ import socket
 import ssl
 import time
 import hashlib
+from pathlib import PurePosixPath
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlsplit
 
 from .ingest import MAX_FILE
+
+DOCUMENT_TYPES={'text/html':'html','text/plain':'txt','text/markdown':'md','application/pdf':'pdf',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx'}
 
 
 def public_addresses(host):
@@ -37,7 +41,7 @@ class PinnedHTTPS(http.client.HTTPSConnection):
 
 
 def fetch(url,allowed_types=None,timeout=12):
-    allowed_types=allowed_types or {"text/html","text/plain","application/pdf"}
+    allowed_types=allowed_types or set(DOCUMENT_TYPES)
     deadline=time.monotonic()+timeout
     for _ in range(4):
         parsed=urlsplit(url)
@@ -46,24 +50,32 @@ def fetch(url,allowed_types=None,timeout=12):
         addresses=public_addresses(parsed.hostname)
         remaining=deadline-time.monotonic()
         if remaining<=0:raise ValueError('网页获取已达到等待上限')
-        cx=PinnedHTTPS(parsed.hostname,addresses[0],remaining)
-        try:
-            cx.request("GET",(parsed.path or "/")+("?"+parsed.query if parsed.query else ""),headers={"User-Agent":"SourceLoom/0.1 (+bounded document snapshot)","Accept-Encoding":"identity"})
-            r=cx.getresponse()
-            if r.status in (301,302,303,307,308):
-                url=urljoin(url,r.getheader("Location", ""))
-                continue
-            if r.status!=200:
-                raise ValueError(f"网页返回 {r.status}，未取得完整材料")
-            mime=r.getheader("Content-Type", "").split(";",1)[0]
-            if mime not in allowed_types:
-                raise ValueError("网页类型不在当前接入范围")
-            raw=r.read(MAX_FILE+1)
-            if len(raw)>MAX_FILE:
-                raise ValueError("网页超过 25 MB 上限")
-            return raw,mime,url
-        finally:
-            cx.close()
+        # GET is read-only. Try a second validated address after a connection
+        # failure, within the same total deadline; never retry a rejected URL.
+        candidates=addresses[:2]
+        for index,address in enumerate(candidates):
+            remaining=deadline-time.monotonic()
+            if remaining<=0:raise ValueError('网页获取已达到等待上限')
+            cx=PinnedHTTPS(parsed.hostname,address,min(4,remaining) if index+1<len(candidates) else remaining)
+            try:
+                cx.request("GET",(parsed.path or "/")+("?"+parsed.query if parsed.query else ""),headers={"User-Agent":"SourceLoom/0.1 (+bounded document snapshot)","Accept-Encoding":"identity"})
+                r=cx.getresponse()
+                if r.status in (301,302,303,307,308):
+                    url=urljoin(url,r.getheader("Location", ""))
+                    break
+                if r.status!=200:
+                    raise ValueError(f"网页返回 {r.status}，未取得完整材料")
+                mime=r.getheader("Content-Type", "").split(";",1)[0]
+                if mime not in allowed_types:
+                    raise ValueError("网页类型不在当前接入范围")
+                raw=r.read(MAX_FILE+1)
+                if len(raw)>MAX_FILE:
+                    raise ValueError("网页超过 25 MB 上限")
+                return raw,mime,url
+            except (OSError,http.client.HTTPException) as exc:
+                if index+1==len(candidates):raise ValueError('网页连接暂时失败，地址已保留，可以重试或上传原始文件') from exc
+            finally:
+                cx.close()
     raise ValueError("网页重定向超过三次，已停止")
 
 
@@ -71,7 +83,8 @@ def fetch_bundle(url):
     """Snapshot original HTML and bounded raster assets without rewriting it."""
     deadline=time.monotonic()+60
     raw,mime,final=fetch(url)
-    suffix={"text/html":"html","text/plain":"txt","application/pdf":"pdf"}[mime]
+    suffix=DOCUMENT_TYPES[mime]
+    if mime=='text/plain' and PurePosixPath(urlsplit(final).path).suffix.lower() in {'.md','.markdown'}:suffix='md'
     uploads=[('snapshot.'+suffix,raw)];aliases={};failures=[]
     if mime!='text/html':return uploads,final,aliases,failures
     soup=BeautifulSoup(raw,'html.parser')

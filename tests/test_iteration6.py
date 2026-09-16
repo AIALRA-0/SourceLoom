@@ -144,8 +144,9 @@ def test_composer_removes_only_its_own_terminal_newline(tmp_path,protected):
     if protected:assert protected in canonical(draft)
 
 
-@pytest.mark.parametrize('changed',[None,'goal','skill','partial','policy'])
-def test_explicit_new_rewrite_reuses_only_unchanged_empty_writer_preparation(tmp_path,changed):
+@pytest.mark.parametrize('changed',[None,'goal','skill','partial','policy','source'])
+@pytest.mark.parametrize('has_saved_draft',[True,False])
+def test_explicit_new_rewrite_reuses_only_unchanged_empty_writer_preparation(tmp_path,changed,has_saved_draft):
     from sourceloom.store import Store
     from sourceloom.durable import Queue,planning_policy_digest
     store=Store(tmp_path);queue=Queue(store);p=store.create('A source')
@@ -168,8 +169,23 @@ def test_explicit_new_rewrite_reuses_only_unchanged_empty_writer_preparation(tmp
     if changed=='skill':old['writing_skill']['package_digest']='different'
     if changed=='partial':old['draft']['blocks']=[{'id':'partial'}]
     if changed=='policy':old['planning_policy_digest']='obsolete'
-    store.put_job(old);store.change(p['id'],lambda p:p.update(inventory=inv,draft={'blocks':[{'id':'saved'}]}))
+    saved={'blocks':[{'id':'saved'}]} if has_saved_draft else None
+    old['base_revision']=p['revision']
+    initial=inv if has_saved_draft else inv|{'frozen':False,'digest':None,'inventory_review':None}
+    if changed=='source':
+        from sourceloom.store import digest
+        import copy
+        old['source_snapshot_digest']=digest(initial)
+        initial=copy.deepcopy(initial)
+        initial['objects'][0]['text']='They choose a different option.'
+        if has_saved_draft:initial['digest']='changed-source'
+    store.put_job(old);store.change(p['id'],lambda p:p.update(inventory=initial,draft=saved))
+    if changed=='source' or changed=='partial' and not has_saved_draft:
+        from sourceloom.store import Conflict
+        with pytest.raises(Conflict):queue.rewrite_existing(p['id'],bundle)
+        assert store.job('old')==old
+        return
     job=queue.rewrite_existing(p['id'],bundle)
     assert (job.get('reused_plan_job')=='old')==(changed is None)
     assert job['stage']==('writer' if changed is None else 'planner')
-    assert store.job('old')==old and store.get(p['id'])['draft']=={'blocks':[{'id':'saved'}]}
+    assert store.job('old')==old and store.get(p['id'])['draft']==saved

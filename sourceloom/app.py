@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 import copy
 import json
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -15,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .checks import apply_patch, freeze, inspect_draft, release_issues, review_complete
 from .config import load_config
 from .demo import create_demo
-from .export import export_zip, render
+from .export import export_zip, render, reading_page
 from .ingest import intake, MAX_FILE, SAFE_IMAGE
 from .network import fetch, fetch_bundle
 from .pipeline import Pipeline, SCHEMAS
@@ -72,6 +73,9 @@ def create_app(config=None):
         response.headers["Referrer-Policy"]="no-referrer"
         response.headers["Cache-Control"]=("private, max-age=0, must-revalidate"
                                            if request.url.path.startswith('/static/') else "no-store")
+        if (request.method in {'GET','HEAD'} and response.status_code==200
+                and re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/assets/[0-9a-f]{64}',request.url.path)):
+            response.headers['Cache-Control']='private, max-age=31536000, immutable'
         if "Content-Security-Policy" not in response.headers:
             response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
         return response
@@ -228,10 +232,14 @@ def create_app(config=None):
             return queue.recover_original(jid,config)
         return pipeline.recover(jid)
 
+    @app.post('/api/jobs/{jid}/recheck-fidelity')
+    def recheck_fidelity(jid:str):
+        return queue.recheck_failed_fidelity(jid,config)
+
     @app.post('/api/jobs/{jid}/resume')
     def resume(jid:str):
         if store.job(jid)['role']=='production':
-            return queue.retry_validation(jid)
+            return queue.retry_validation(jid,config)
         return pipeline.resume(jid)
 
     @app.post("/api/projects/{pid}/patch")
@@ -278,8 +286,8 @@ def create_app(config=None):
     def preview(pid:str):
         p=store.get(pid)
         content=render(p,lambda key:f"/api/projects/{pid}/assets/{key}")
-        return HTMLResponse('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><link rel="stylesheet" href="/static/article.css"></head><body>'+content+"</body></html>",
-                            headers={"Content-Security-Policy":"sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self'; frame-ancestors 'self'"})
+        return HTMLResponse(reading_page(content),
+                            headers={"Content-Security-Policy":"sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"})
 
     @app.get("/api/projects/{pid}/assets/{key}")
     def asset(pid:str,key:str):

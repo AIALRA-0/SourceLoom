@@ -24,9 +24,9 @@ def test_existing_multiline_image_renders_and_original_draft_is_unchanged():
     assert p==before and reading_draft(p)['blocks'][0]['markdown']!=p['draft']['blocks'][0]['markdown']
 
 
-def test_real_illustration_remains_visible_with_safe_description():
+def test_real_illustration_is_collapsed_and_keeps_safe_description():
     p=image_project('image');doc=BeautifulSoup(render(p,lambda k:'/files/'+k),'html.parser')
-    assert doc.img and not doc.img.find_parent('details')
+    assert doc.img and doc.img.find_parent('details') and not doc.img.find_parent('details').has_attr('open')
     assert '\n' not in doc.img['alt'] and 'quoted' in doc.img['alt']
 
 

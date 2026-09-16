@@ -169,7 +169,7 @@ class Store:
             total, count = cx.execute("SELECT COALESCE(SUM(COALESCE(actual,reserved)),0), SUM(CASE WHEN "+paid+" THEN 1 ELSE 0 END) FROM spending WHERE project=?", (pid,)).fetchone()
             if not subscription and total + amount > p["budget_usd"] + 1e-9:
                 raise Conflict(f"本篇费用保护暂停：已计费或预留 ${total:.4f}，下一步最多预留 ${amount:.4f}，本篇上限 ${p['budget_usd']:.2f}；这是本篇设置，不是模型账户余额耗尽")
-            if not subscription and (count or 0) >= p["max_calls"]:
+            if not subscription and p.get("max_calls") is not None and (count or 0) >= p["max_calls"]:
                 raise Conflict(f"本篇流程保护暂停：已记录 {count} 次请求，达到本篇设置的 {p['max_calls']} 次；这不是订阅账户额度耗尽，已有产物保留")
             day=int(time.time()//86400)*86400
             global_total,global_calls=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0),SUM(CASE WHEN '+paid+' THEN 1 ELSE 0 END) FROM spending WHERE created>=?',(day,)).fetchone()

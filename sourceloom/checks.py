@@ -113,6 +113,12 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
 
 def review_complete(project):
     production=project.get('production') or {}
+    if production.get('pipeline')=='active_composition_v1':
+        # Completion means a generated, structurally checked candidate, not an independent semantic pass
+        review=project.get('independent_review') or {}
+        from .writing import canonical
+        return (review.get('status')=='passed' and review.get('revision')==project['revision']
+                and review.get('canonical_digest')==digest(canonical(project['draft']).encode()))
     if production.get('automatic') and production.get('status')=='completed':
         from .writing import canonical
         return (production.get('revision')==project['revision'] and production.get('manual_edits')==0

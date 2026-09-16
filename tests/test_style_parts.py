@@ -6,6 +6,7 @@ from tests.test_production import skill
 
 def test_review_partitions_cover_every_assignment_once_with_whole_source_and_draft():
     payload={'rule_catalog':['FMT-'+str(i) for i in range(7)],
+             'rule_definitions':{'FMT-'+str(i):{'text':'Rule '+str(i)} for i in range(7)},
              'mechanical_findings':[{'id':'f1','quote':'exact'}],
              'mechanical_candidates':[{'id':'c'+str(i),'quote':'original'} for i in range(5)],
              'source':{'text':'entire source'},'draft':{'text':'entire candidate'},'protected_originals':['verbatim']}
@@ -15,6 +16,7 @@ def test_review_partitions_cover_every_assignment_once_with_whole_source_and_dra
         assert [item for p in parts for item in p[key]]==payload[key]
     for p in parts:
         for key in ('source','draft','protected_originals'):assert p[key]==payload[key]
+        assert set(p['rule_definitions'])==set(p['rule_catalog'])
         assert sum(len(p[k]) for k in ('rule_catalog','mechanical_findings','mechanical_candidates'))<=4
 
 
@@ -41,7 +43,9 @@ def test_indexed_review_contract_requires_exact_checks_without_invented_rule_arr
     schema=deepseek_schema(IndexedReviewSchema(payload).model_json_schema())
     assert set(schema['required'])=={'checks_by_id','findings'}
     assert schema['properties']['checks_by_id']['required']==['last-1','last-2']
-    for changed in [result|{'assessments':[]},result|{'rules_by_id':{}},result|{'checks_by_id':{'last-1':verdict}}]:
+    echoed_empty=result|{'rules_by_id':{}}
+    assert len(decode_indexed(echoed_empty,payload)['mechanical_assessments'])==2
+    for changed in [result|{'assessments':[]},result|{'checks_by_id':{'last-1':verdict}}]:
         with pytest.raises(ValidationError):decode_indexed(changed,payload)
     assert result['checks_by_id']['last-1']==verdict
 
@@ -75,6 +79,29 @@ def test_indexed_empty_nested_findings_are_inert_but_real_feedback_is_not_discar
     for extra in [{'findings':[{'description':'Must retain this finding'}]}, {'invented':[]}]:
         invalid=copy.deepcopy(original);invalid['rules_by_id']['FMT-044'].update(extra)
         with pytest.raises(ValidationError):decode_indexed(invalid,payload)
+
+
+def test_invalid_assignment_ignores_only_an_empty_unassigned_group():
+    from sourceloom.style_parts import invalid_assignments
+    payload={'rule_catalog':['FMT-026'],'mechanical_findings':[],'mechanical_candidates':[]}
+    result={'findings':[],'checks_by_id':{},'rules_by_id':{
+        'FMT-026':{'status':'not_applicable','reason':'Absent'}}}
+    retained,missing=invalid_assignments(result,payload)
+    assert retained=={'findings':[],'rules_by_id':{}}
+    assert missing['rule_catalog']==['FMT-026']
+    assert result['checks_by_id']=={}
+
+
+def test_indexed_review_accepts_only_exact_inert_root_schema_echo():
+    from sourceloom.style_parts import decode_indexed
+    from jsonschema import ValidationError
+    payload={'rule_catalog':[],'mechanical_findings':[],'mechanical_candidates':[{'id':'c'}]}
+    base={'findings':[],'checks_by_id':{'c':{'verdict':'not_violation','reason':'Checked'}}}
+    echoed=base|{'title':'StyleReview','additionalProperties':False}
+    assert decode_indexed(echoed,payload)['mechanical_assessments'][0]['candidate_id']=='c'
+    assert echoed['title']=='StyleReview'
+    for extra in [base|{'title':'Substantive feedback'},base|{'additionalProperties':True}]:
+        with pytest.raises(ValidationError):decode_indexed(extra,payload)
 
 
 def test_known_billed_truncated_fallback_can_continue_once_with_disjoint_review_parts(tmp_path,skill):
