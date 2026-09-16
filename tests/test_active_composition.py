@@ -186,7 +186,8 @@ def test_resource_search_is_discovery_not_verified_source(tmp_path,monkeypatch):
     assert r.store.read_blob(result['snapshot_blob'])==xml
 
 
-def test_background_restart_completes_planning_writing_review_without_repeating_calls(tmp_path,skill,monkeypatch):
+@pytest.mark.parametrize('residual',['','content','format'])
+def test_background_restart_completes_planning_writing_review_without_repeating_calls(tmp_path,skill,monkeypatch,residual):
     from sourceloom.active_composition import source_spans
     from sourceloom.writing import canonical
     store,_,p,bundle=prepared(tmp_path,skill)
@@ -206,20 +207,33 @@ def test_background_restart_completes_planning_writing_review_without_repeating_
                 knowledge_delta=dict(established_concepts=[],explained_obligations=['f1'],unresolved_prerequisites=[],next_bridge=''))
         elif role=='active_review':
             result=dict(findings=[],checked_obligation_ids=['f1'])
+            if residual:
+                job['active_candidate']['local_patch_attempts']=2
+            if residual=='content':
+                result['findings']=[dict(block_id='n1-b1',output_quote='我们假设 `x` 为正',
+                    source_id='',source_quote='',problem='A remaining meaning issue',required_change='Preserve for inspection')]
+            if residual=='format':
+                result['format_decisions']=[dict(candidate_id='candidate-1',decision='fix',reason='Confirmed in this context')]
         else:pytest.fail('Unexpected routine review: '+role)
         return dict(gaps=[],actions=[],ready_reason='Required material is read',result=result)
     monkeypatch.setattr('sourceloom.active_composition.Provider.call',provider)
     monkeypatch.setattr('sourceloom.active_composition.scan',lambda bundle,draft,work:dict(
-        canonical_digest=digest(canonical(draft).encode()),format=dict(findings=[],candidates=[])))
+        canonical_digest=digest(canonical(draft).encode()),format=dict(findings=[],candidates=[dict(
+            id='candidate-1',location='LINE-3',old_text='我们假设 `x` 为正',rule_id='FORMAT_REVIEW',reason='Still undecided')]
+            if residual=='format' else [])))
     for _ in range(8):
         engine=Production(Store(store.root),{})
         assert engine.run_once()
         saved=store.job(job['id'])
-        if saved['status']=='completed':break
+        if saved['status'] in {'completed','needs_attention'}:break
         assert saved['status']=='queued',saved.get('error')
     final=store.get(p['id'])
     assert calls==['active_plan','active_write','active_review']
-    assert final['state']=='completed' and final['production']['manual_edits']==0
+    assert final['state']==('needs_attention' if residual else 'completed') and final['production']['manual_edits']==0
+    if residual:
+        assert saved['quality_issues']
+        assert saved['active_checkpoints'][0]['unresolved_content_findings' if residual=='content' else 'unresolved_format']
+        assert saved['delivery_checks']['unit_review_status']=='needs_attention'
     assert final['production']['semantic_status']=='not_independently_reviewed'
     assert store.read_blob(next(iter(saved['generated_resources'].values()))['blob']).decode()==canonical(final['draft'])
     assert saved['active_checkpoints'][0]['draft_digest']==digest(canonical(final['draft']).encode())

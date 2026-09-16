@@ -191,6 +191,13 @@ class ContentFinding(Strict):
     required_change: str = Field(min_length=1)
 
 
+class FormatDecision(Strict):
+    candidate_id: str
+    decision: Literal['fix','dismiss']
+    reason: str = Field(min_length=1)
+
+
 class ContentReview(Strict):
     findings: list[ContentFinding]
     checked_obligation_ids: list[str]
+    format_decisions: list[FormatDecision] = []

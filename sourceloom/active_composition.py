@@ -82,6 +82,7 @@ def expand_exact_grouped_findings(result,draft):
 
 def initialize(job):
     job['naming_contract_version']=1
+    job['joint_review_contract_version']=1
     role_names=('active_plan','active_write','active_review','active_format','active_revision','active_patch','active_protocol','active_visual','rewrite_scope')
     policy={name:(Path(__file__).parent/'roles'/f'{name}.md').read_text(encoding='utf8') for name in role_names}
     job.update(pipeline=PIPELINE, stage='active_index', teaching_version=0,
@@ -250,6 +251,17 @@ def located_format_issues(report,draft):
     return result
 
 
+def confirmed_format_issues(issues,review,required=False):
+    candidates={c['id']:c for c in issues['candidates']}
+    decisions=review.get('format_decisions',[])
+    ids=[d['candidate_id'] for d in decisions]
+    if len(ids)!=len(set(ids)) or not set(ids)<=candidates.keys():
+        raise ValueError('格式判断引用重复或不存在的候选')
+    if required and set(ids)!=candidates.keys():
+        raise ValueError('首次合并核对必须逐项判断格式候选，不能留到修补次数耗尽之后')
+    return issues['findings']+[candidates[d['candidate_id']] for d in decisions if d['decision']=='fix']
+
+
 def planned_heading_depth(draft,level,inventory):
     from markdown_it import MarkdownIt
     result=copy.deepcopy(draft)
@@ -319,6 +331,18 @@ def validate_names(plan, resources):
                 normalized=' '.join(name.casefold().split())
                 if not normalized:raise ValueError('术语英文名称为空：'+concept['id'])
                 if any(normalized in q for q in evidence):continue
+                # A planner can cite a plural occurrence while the exact named
+                # form is already present in another source it assigned to this
+                # same concept. Reuse that real passage; do not lemmatize a name
+                # into an English form that the saved material never contains.
+                original=next((sid for sid in concept.get('source_ids',[])
+                    if sid in resources.state['entries'] and normalized in
+                    ' '.join(resources.text(sid).casefold().split())),None)
+                if original:
+                    quote=resources.text(original)
+                    concept['name_evidence'].append(dict(resource_id=original,quote=quote))
+                    evidence.append(' '.join(quote.casefold().split()))
+                    continue
                 # Reuse an existing primary-source glossary pairing only when
                 # its exact name and abbreviation agree; never infer a new name.
                 entry=next((e for e in resources.state['entries'].values()
@@ -889,7 +913,7 @@ class ActiveComposition:
                     return f['block_id'] in references
                 result['protected_reference_notes']=[f for f in result['findings'] if reference_only(f)]
                 result['findings']=[f for f in result['findings'] if not reference_only(f)]
-                for issue in format_issues['findings']:
+                for issue in confirmed_format_issues(format_issues,result,bool(job.get('joint_review_contract_version'))):
                     if any(f['block_id']==issue['block_id'] and issue['output_quote'] in f['output_quote'] for f in result['findings']):continue
                     result['findings'].append(dict(block_id=issue['block_id'],output_quote=issue['output_quote'],
                         source_id='',source_quote='',problem=issue['rule_id']+': '+issue.get('message',issue.get('reason','')),
@@ -913,18 +937,26 @@ class ActiveComposition:
                     actual_draft=draft,obligations=obligations,prior_findings=candidate.get('content_findings',[]),
                     concepts=[c for part in job['active_plans'] for c in part['concepts'] if c['id'] in node['establishes_concepts']+node['requires_concepts']],
                     format_preflight=format_issues,
+                    format_decisions_required=bool(job.get('joint_review_contract_version')),
                     visual_cards=visual_cards,
                     review_obligation_ids=sorted(review_ids),
                     exact_revision=candidate.get('last_patch'),
                     protected_originals=protected_objects(job['inventory']),
                     previous_final_tail=[b['markdown'] for b in job['draft']['blocks'][-2:]]),validate_review)
+            dismissed={d['candidate_id'] for d in result.get('format_decisions',[]) if d['decision']=='dismiss'}
+            candidate.setdefault('dismissed_keys',[]).extend(candidate_key(c,draft)
+                for c in preflight['format']['candidates'] if c['id'] in dismissed)
             record=dict(draft_digest=digest(canonical(draft).encode()),**result)
             reviews=candidate.setdefault('content_reviews',[])
             if not reviews or reviews[-1]!=record:reviews.append(record)
             if result['findings']:
                 candidate['content_findings']=result['findings']
-                if round_>=self.config.get('active_revision_limit',4):
-                    raise ValueError('定向修订后仍有具体内容问题：'+json.dumps(result['findings'],ensure_ascii=False))
+                if patch_rounds(candidate)>=2 or round_>=self.config.get('active_revision_limit',4):
+                    candidate['unresolved_content_findings']=result['findings']
+                    job.setdefault('quality_issues',[]).extend(
+                        node['id']+' / '+f['block_id']+'：'+f['problem'] for f in result['findings'])
+                    job['stage']='active_format'
+                    return 'queued'
                 candidate['revision_issues']=result
                 candidate['revision_blocks']=list(dict.fromkeys(f['block_id'] for f in result['findings']))
                 candidate['content_review_round']=round_+1
@@ -953,6 +985,14 @@ class ActiveComposition:
             candidate['original_format_exemptions']=report['original_exemptions']
             findings = report['format']['findings']
             candidates = [c for c in report['format']['candidates'] if candidate_key(c,draft) not in candidate.get('dismissed_keys', [])]
+            if (findings or candidates) and patch_rounds(candidate)>=2:
+                # The skill requires delivery of the preserved draft after two
+                # local transactions. Keep unresolved checks visible, never mark
+                # them passed or spend a third repair under another stage name.
+                candidate['unresolved_format']=dict(findings=findings,candidates=candidates)
+                job.setdefault('quality_issues',[]).append(node['id']+'：两轮局部修补后仍有 '+
+                    str(len(findings))+' 项确定格式问题、'+str(len(candidates))+' 项待判断格式问题，正文与检查记录均已保留')
+                findings=[];candidates=[]
             if findings or candidates:
                 if findings and patch_rounds(candidate) >= 2:
                     raise ValueError('本单元两轮局部格式修复后仍有问题，保留原稿与具体检查记录')
@@ -1033,6 +1073,9 @@ class ActiveComposition:
                 original_format_exemptions=candidate.get('original_format_exemptions',[]),
                 layout_normalizations=candidate.get('layout_normalizations',[]),
                 content_reviews=candidate.get('content_reviews',[]))
+            checkpoint['unresolved_content_findings']=candidate.get('unresolved_content_findings',[])
+            checkpoint['unresolved_format']=candidate.get('unresolved_format',{})
+            checkpoint['unresolved_revision']=candidate.get('unresolved_revision',{})
             job.setdefault('active_checkpoints', []).append(checkpoint)
             job['draft']['blocks'].extend(draft['blocks'])
             text=canonical(draft);resource_id='written-'+node['id'];blob=self.store.blob(text.encode())
@@ -1053,7 +1096,11 @@ class ActiveComposition:
             candidate=job['active_candidate'];node=nodes[job['unit_index']]
             issues=candidate.get('revision_issues',{})
             compiled=compiled_term_format_proposal(candidate['draft'],issues) if issues.get('format_check_version')==2 else None
-            if patch_rounds(candidate)>=2:raise ValueError('两轮局部补丁已用完，保留具体问题与原稿')
+            if patch_rounds(candidate)>=2:
+                candidate['unresolved_revision']=copy.deepcopy(issues)
+                job.setdefault('quality_issues',[]).append(node['id']+'：两轮局部修补已用完，保留未解决意见与当前正文')
+                job['stage']='active_format'
+                return 'queued'
             if compiled:
                 previous=candidate['draft']
                 reserve_patch_attempt(candidate);self.store.put_job(job)
@@ -1170,7 +1217,8 @@ class ActiveComposition:
                 draft_digest=digest(canonical(job['draft']).encode()), source_objects=len(source['objects']),
                 obligation_count=len(job['inventory']['obligations']), unit_count=len(nodes),
                 structural_status='passed', semantic_status='not_independently_reviewed',
-                unit_review_status='model_checked' if all(p.get('content_reviews') for p in job['active_checkpoints']) else 'not_requested',
+                unit_review_status='needs_attention' if job.get('quality_issues') else
+                    'model_checked' if all(p.get('content_reviews') for p in job['active_checkpoints']) else 'not_requested',
                 skill_delivery='unabridged_inline', manual_edits=0)
-            return 'completed'
+            return 'needs_attention' if job.get('quality_issues') else 'completed'
         raise ValueError('未知主动编排阶段：' + stage)

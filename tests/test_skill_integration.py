@@ -85,6 +85,19 @@ def test_abbreviations_must_reach_actual_body():
     concept_presence([concept], draft)
 
 
+def test_name_evidence_reuses_exact_form_from_same_concept_sources(tmp_path):
+    resources=Resources(Store(tmp_path),{'objects':[]})
+    resources.add('plural','Report vulnerabilities in the project.')
+    resources.add('singular','Report a vulnerability even when unsure.')
+    concept=term()|dict(english_name='Vulnerability',source_ids=['plural','singular'],
+                       name_evidence=[dict(resource_id='plural',quote='Report vulnerabilities in the project.')])
+    result=validate_names({'concepts':[concept]},resources)['concepts'][0]
+    assert result['name_evidence'][-1]==dict(resource_id='singular',quote='Report a vulnerability even when unsure.')
+    concept['source_ids']=['plural'];concept['name_evidence']=concept['name_evidence'][:1]
+    with pytest.raises(ValueError,match='对应的原文证据'):
+        validate_names({'concepts':[concept]},resources)
+
+
 def test_numbered_projection_is_reversible_and_keeps_numeric_titles():
     p = {'draft': {'blocks': [dict(id='b', markdown='## 起点\n### 原因\n## 2026 年记录')]}}
     result = presentation(p, 'numbered')
@@ -102,6 +115,19 @@ def test_local_patch_limit_counts_content_and_format_together():
     with pytest.raises(ValueError,match='两轮'):
         reserve_patch_attempt(candidate)
     assert patch_rounds(candidate)==2
+
+
+def test_joint_review_cannot_silently_skip_contextual_format_candidates():
+    from sourceloom.active_composition import confirmed_format_issues
+    issue=dict(id='candidate-1',block_id='b',output_quote='A known nested term')
+    issues=dict(findings=[],candidates=[issue])
+    with pytest.raises(ValueError,match='逐项判断'):
+        confirmed_format_issues(issues,dict(format_decisions=[]),True)
+    decision=dict(candidate_id='candidate-1',decision='fix',reason='Same formal concept lacks its paired name')
+    assert confirmed_format_issues(issues,dict(format_decisions=[decision]),True)==[issue]
+    assert confirmed_format_issues(issues,dict(format_decisions=[decision|dict(decision='dismiss')]),True)==[]
+    with pytest.raises(ValueError,match='重复'):
+        confirmed_format_issues(issues,dict(format_decisions=[decision,decision]),True)
 
 
 def test_content_link_addresses_reach_agents_and_resume_old_catalog(tmp_path):
