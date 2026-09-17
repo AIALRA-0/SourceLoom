@@ -1,0 +1,224 @@
+sourceloom/providers.py
+  s_36a381ab4bccf9::t_ed782a2f37bb1e 18-35,552,605
+  s_36a381ab4bccf9::t_a02bcc97e2844c 303,306-313,325-326,636,639-640
+  s_36a381ab4bccf9::t_a57537a283b9c5 294-295
+  s_36a381ab4bccf9::t_1610f32ff597c7 301-302,304-305,314-324,634-635,637-638,641
+  s_36a381ab4bccf9::t_24f688a5aec132 443-450
+docs/PROJECT_LESSONS.md
+  s_36a381ab4bccf9::t_4d8aa9f374def5 49-56
+sourceloom/roles/active_plan.md
+  s_36a381ab4bccf9::t_4691c35140b927 27
+  s_36a381ab4bccf9::t_5ba2c82612f93a 22
+  s_36a381ab4bccf9::t_14402744dc7772 6-7
+  s_36a381ab4bccf9::t_4e5620bfbbf36e 30
+  s_36a381ab4bccf9::t_426ae7a65f2f7a 21
+  s_f4bc084e1b5e1b::t_b5a710a0ac037d 4,19-20,23-24,29,31-32
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_440c9b606905d3 266,273-280
+  s_36a381ab4bccf9::t_f21f374d8503c0 741-746
+  s_36a381ab4bccf9::t_13a33948f0de04 1918,2132,2394,2417
+  s_36a381ab4bccf9::t_66a28834f2938e 730-732,734-740
+  s_36a381ab4bccf9::t_e03c31c9441b7c 283-298,2112-2113
+  s_36a381ab4bccf9::t_1eed951a246d93 342-343
+  s_36a381ab4bccf9::t_0461d92b8bedd6 450-459,1567-1571
+  s_36a381ab4bccf9::t_d39ca35d48a36b 1315-1316
+  s_36a381ab4bccf9::t_f945110824d513 2172,2454
+  s_36a381ab4bccf9::t_e544d13230847f 338-341,344-351,1385
+  s_36a381ab4bccf9::t_037228120332d3 381-386
+  s_36a381ab4bccf9::t_489165d089383f 1237,1257-1259,1892-1893
+  s_36a381ab4bccf9::t_cca21097b1aa11 1960,2187-2188
+  s_36a381ab4bccf9::t_2fd638d3ee5ab9 66,69-75
+  s_36a381ab4bccf9::t_14402744dc7772 326-337,1555-1559,1851
+  s_36a381ab4bccf9::t_ba75b27c4ff61a 25-45,78-82,100-205,238-265,267-272,281-282,352-380,387-406,428,437-441,460-461,468,550,573-585,601-604,652-655,712,714-721,723-724,726-729,747-756,783-784,811-815,824-828,849-864,873-874,876,883-889,921-999,1002-1031,1037-1058,1060-1066,1072-1085,1087-1090,1114-1163,1186,1206-1207,1256,1302-1308,1393-1396,1415-1428,1495-1513,1516-1550,1575-1600,1610-1687,1696-1701,1705-1731,1752-1757,1759,1762,1767-1769,1784-1786,1826-1828,1835,1837-1844,1859-1864,1867-1868,1870-1873,1887-1891,1898-1912,1919,1936-1938,1942-1944,1980-2003,2005,2007-2008,2010-2029,2031-2032,2035-2045,2059-2068,2075-2093,2136-2138,2173-2175,2193,2196-2199,2344-2346,2348,2350-2351,2353-2391,2397
+  s_36a381ab4bccf9::t_1209ccd0cfb4aa 890-920,1287,1363-1365,1934-1935
+  s_36a381ab4bccf9::t_74cd335d269385 1875-1881
+  s_36a381ab4bccf9::t_f8934e6fb03b31 206-237,1059
+  s_36a381ab4bccf9::t_e5e271ac150cd1 299-310,2263
+  s_36a381ab4bccf9::t_221d86b470d6e5 757-768,1865-1866,2030,2033-2034
+  s_36a381ab4bccf9::t_997a616025551b 769-782,1227-1229
+  s_36a381ab4bccf9::t_2d9be785cea8fa 1070-1071
+  s_36a381ab4bccf9::t_08ee8ad4896682 713,722,725
+  s_36a381ab4bccf9::t_f7d2c1970d7e70 733
+  s_36a381ab4bccf9::t_9fcd1dec4e39b4 797-807
+  s_36a381ab4bccf9::t_fc745233eceabb 808-810
+  s_36a381ab4bccf9::t_d704a0089d5445 1067-1069,1086,1514-1515
+  s_36a381ab4bccf9::t_93b0e391b6b27b 2116-2117,2126-2128,2393
+  s_36a381ab4bccf9::t_2be112c222244c 1831,1836,1845
+  s_36a381ab4bccf9::t_8ba7d4d2876953 1854,1874
+  s_36a381ab4bccf9::t_609ebc9359eead 547,1949-1959,1961
+  s_36a381ab4bccf9::t_fdf3a5ba9a9489 553-556
+  s_36a381ab4bccf9::t_4e08cc60cdfe10 311-325,1737-1751
+  s_36a381ab4bccf9::t_259949de1a3408 442-449,1973,2006,2009,2134
+  s_36a381ab4bccf9::t_bde3b48bc26d3c 605-610
+  s_36a381ab4bccf9::t_bb0ece3a11ddc5 1776-1778,1789-1791,1793-1794,1796-1797,1799-1813,1815-1816,1818-1822
+  s_36a381ab4bccf9::t_1b7ab98eafa066 2314,2352
+  s_36a381ab4bccf9::t_5cd9232a3de623 46-47
+THIRD_PARTY_NOTICES.md
+  s_36a381ab4bccf9::t_8a2d18a61965ed 8,10
+sourceloom/network.py
+  s_36a381ab4bccf9::t_8a2d18a61965ed 127-128
+  s_36a381ab4bccf9::t_7ea4dcaf69c9c2 102-108
+  s_36a381ab4bccf9::t_b5f0dff04a0cda 9,126,132-152
+  s_36a381ab4bccf9::t_a0bb5b469bdc32 153-157
+  s_36a381ab4bccf9::t_ff326be8d34846 12,85,89-92,95-101,109-111,116-117,124-125,129-131
+sourceloom/terminology.py
+  s_36a381ab4bccf9::t_d4e770ed628657 18-20
+  s_36a381ab4bccf9::t_a41a89af496c1d 8-11
+  s_36a381ab4bccf9::t_391e5cd1d4e28c 21-24
+  s_36a381ab4bccf9::t_fa4509a2512447 15-17
+  s_36a381ab4bccf9::t_fc79cccf318ee8 79-81
+  s_36a381ab4bccf9::t_b3fb9d83b08b6c 12-14
+  s_36a381ab4bccf9::t_679e7e4643d8a2 25-27
+  s_36a381ab4bccf9::t_a5c2cd2943dd62 76-78
+  s_36a381ab4bccf9::t_501179a5b6d191 82-84
+  s_36a381ab4bccf9::t_3a31d65b38d6a2 28-33,44-61,73-75,85-96
+sourceloom/source_context.py
+  s_36a381ab4bccf9::t_516744870c9cdd 151-153,167-168,170-179,181-182,189,216,221
+  s_36a381ab4bccf9::t_143af30b5ac5bd 3-4
+  s_36a381ab4bccf9::t_48100e71331a0c 154-166,169,180
+  s_36a381ab4bccf9::t_92c0a37a06a4d1 198
+  s_36a381ab4bccf9::t_d7b115d9f28dee 109-111
+  s_36a381ab4bccf9::t_86d19d593987bf 137-139
+  s_36a381ab4bccf9::t_c412aec96d68ad 116-126
+  s_36a381ab4bccf9::t_a9a8bbfd6a3c10 92,106-108,196-197,199,220
+  s_36a381ab4bccf9::t_a778ce53fc7ff7 93-100,112-115,131-133
+  s_36a381ab4bccf9::t_bb0ece3a11ddc5 127-130
+  s_e8850ef125fb32::t_00c7807f39835e 12-17,21-23,79-91,101-105,134-136,140-150,183-188,190-195,200-215,217-219,222-230
+sourceloom/active_resources.py
+  s_36a381ab4bccf9::t_1e9c43b5895d3b 135-142
+  s_5acd167c2115aa::t_1adbdbd5b0c3c5 115,119-131,133,143-150,154-157,161-162,167-184
+tests/test_transport_rendering.py
+  s_36a381ab4bccf9::t_a57537a283b9c5 8-11
+  s_36a381ab4bccf9::t_ed782a2f37bb1e 14-26
+  s_36a381ab4bccf9::t_fcb50de922c90e 12-13,27-38
+  s_36a381ab4bccf9::t_09b98c7baf2507 39-50
+  s_36a381ab4bccf9::t_a1213c6e6f9381 6-7
+sourceloom/roles/active_write.md
+  s_36a381ab4bccf9::t_913ec4a5a6fea2 12-13
+  s_36a381ab4bccf9::t_4691c35140b927 21
+  s_36a381ab4bccf9::t_2bdd586f9f7b59 28
+  s_36a381ab4bccf9::t_426ae7a65f2f7a 31
+  s_36a381ab4bccf9::t_4e5620bfbbf36e 34-35
+  s_36a381ab4bccf9::t_6b04aad3defbec 18
+  s_36a381ab4bccf9::t_bdacaa67b59252 27
+  s_e8850ef125fb32::t_ff52e5066c5b20 9-11,16-17,24-25,30,33,36-37
+sourceloom/ingest.py
+  s_36a381ab4bccf9::t_bd988ebe079d86 304-308
+  s_36a381ab4bccf9::t_cdc2fd108b8c9e 222,235,238-244
+pyproject.toml
+  s_36a381ab4bccf9::t_8a2d18a61965ed 14
+  s_36a381ab4bccf9::t_73c7b199014ac6 12
+sourceloom/roles/active_review.md
+  s_36a381ab4bccf9::t_1461579293d0c1 3
+  s_36a381ab4bccf9::t_0769b52d0ba36c 31
+  s_36a381ab4bccf9::t_2e84af95a82569 12
+  s_36a381ab4bccf9::t_c3ed44209b79d8 32
+  s_36a381ab4bccf9::t_4e5620bfbbf36e 20
+  s_36a381ab4bccf9::t_75b67b472f8c24 11
+  s_36a381ab4bccf9::t_426ae7a65f2f7a 8
+  s_36a381ab4bccf9::t_d90ea3deb27e4d 30
+  s_36a381ab4bccf9::t_df3f4923506ac8 7,19,21-24,27-29
+tests/test_active_composition.py
+  s_36a381ab4bccf9::t_2d9be785cea8fa 319-329
+  s_36a381ab4bccf9::t_fdf3a5ba9a9489 1604-1608
+  s_36a381ab4bccf9::t_4cb55fb67769d7 1434-1443
+  s_36a381ab4bccf9::t_900196a6afa626 1407-1420
+  s_36a381ab4bccf9::t_79de16c64d87fd 536
+  s_36a381ab4bccf9::t_95efd86f3894a4 1363-1371
+  s_36a381ab4bccf9::t_e4b38a9424d052 687-702
+  s_36a381ab4bccf9::t_5a1371f025812d 483-493
+  s_36a381ab4bccf9::t_81c1ba2b75033f 406-411
+  s_36a381ab4bccf9::t_8f59b93b3830f3 330-340
+  s_36a381ab4bccf9::t_3ac98a7d228c0c 424-438
+  s_36a381ab4bccf9::t_1da6f8c7c72fd4 519-530
+  s_36a381ab4bccf9::t_b0669ced6866c1 412-423
+  s_36a381ab4bccf9::t_92efb9921c0b82 1601-1603
+  s_36a381ab4bccf9::t_21836d80974435 968-978
+  s_36a381ab4bccf9::t_db7e69757fe418 505-518
+  s_36a381ab4bccf9::t_bb13576cc547f1 54-69,149-179,223-241,266-318,341-394,470-478,481-482,531-535,548-686,774-807,847,851-858,861-886,912-914,920-954,1195-1299,1314-1342,1444,1537-1600
+  s_36a381ab4bccf9::t_0cd67d395bae63 439-456
+  s_36a381ab4bccf9::t_99fe617d90af9b 1343-1362
+  s_36a381ab4bccf9::t_603fa8002acbbe 395-405
+  s_36a381ab4bccf9::t_69deeafadb06a9 703-717
+  s_36a381ab4bccf9::t_3c26c3618adf4f 1421-1433
+  s_36a381ab4bccf9::t_10e5e243511ed3 203,208-209
+  s_36a381ab4bccf9::t_ba839ce011f391 494-504
+  s_36a381ab4bccf9::t_eb05b1ee519c19 915-918
+  s_36a381ab4bccf9::t_7e43f3a51efa62 457-469
+  s_36a381ab4bccf9::t_70c8d07813cfa0 735-755
+  s_36a381ab4bccf9::t_e008c09d7b3125 479-480
+  s_36a381ab4bccf9::t_95d1ecdf05d361 955-967
+  s_36a381ab4bccf9::t_ce19db2f41ac95 201-202,204-207
+  s_36a381ab4bccf9::t_489165d089383f 919
+  s_36a381ab4bccf9::t_0cec879f681780 1300-1313
+  s_36a381ab4bccf9::t_f27810dc1cddbb 1372-1393
+  s_36a381ab4bccf9::t_c76700176c8642 756-773
+  s_36a381ab4bccf9::t_4f51d57af3eb07 1394-1406
+  s_36a381ab4bccf9::t_6069bd0cb88d89 718-734
+  s_36a381ab4bccf9::t_2fd638d3ee5ab9 537-545
+  s_36a381ab4bccf9::t_ac02a417e68901 180-181,546-547,1194
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_7080c2751bc37f 426-430
+  s_36a381ab4bccf9::t_a02bcc97e2844c 443-444
+  s_36a381ab4bccf9::t_f5625d922d336e 445-447
+  s_36a381ab4bccf9::t_71faf918bac26f 365-403,448-455,504-518
+tests/test_web_snapshot.py
+  s_36a381ab4bccf9::t_1e6576959d0394 53-56,60-62,66-67,80-93
+  s_36a381ab4bccf9::t_a1a3732717a9e7 50,68-79
+  s_36a381ab4bccf9::t_bd988ebe079d86 25-35
+  s_36a381ab4bccf9::t_c86b3d4cdf4631 44-49,51-52,57-59,63-65
+sourceloom/roles/active_patch.md
+  s_36a381ab4bccf9::t_2e84af95a82569 7
+  s_36a381ab4bccf9::t_38256ab5d1606a 14
+  s_36a381ab4bccf9::t_9371231a6956dc 8-9,13
+sourceloom/visual_sources.py
+  s_36a381ab4bccf9::t_d4ab7362473d78 13
+  s_36a381ab4bccf9::t_516744870c9cdd 14
+  s_5acd167c2115aa::t_ac8f69b4259bbd 16-17
+docs/ITERATION_11_PLAN.md
+  s_36a381ab4bccf9::t_1786d2ba8c11c5 1-68
+sourceloom/active_contracts.py
+  s_36a381ab4bccf9::t_6de87c66e1c576 52,80-90,96,103,107,214-224,229
+sourceloom/media.py
+  s_36a381ab4bccf9::t_c4e5f11638458f 4,50,57-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ac430fb165d043939e1a0c14ea415a977616afc4",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_5acd167c2115aa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03a21-3e91-7be2-8cf4-5616c2bcfc48",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_e8850ef125fb32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0457f-8774-7b32-a516-a974107d6ab1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_f4bc084e1b5e1b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a05e85-d752-7582-abf7-4d4f5901369e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
