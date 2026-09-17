@@ -1,6 +1,7 @@
 """Readable resource projections; original objects and saved drafts remain intact."""
 import copy
 import html
+import re
 
 
 def document_info_label(block):
@@ -46,13 +47,19 @@ def layout_reference(obj):
 
 
 def reading_draft(project):
-    """Change generated image wrappers only, never stored words or source bytes."""
+    """Add reading wrappers without changing stored words or source bytes."""
     result=copy.deepcopy(project['draft'])
     if not result:return result
     objects={o['id']:o for o in (project.get('inventory') or {}).get('objects',[])}
     for block in result['blocks']:
         for sid in block.get('embedded_object_ids',[]):
             obj=objects.get(sid)
+            if obj and obj['kind']=='code' and not obj.get('fence_raw'):
+                raw=obj.get('text','')
+                if raw and raw in block['markdown']:
+                    fence='`'*max(3,1+max((len(m.group()) for m in re.finditer(r'`+',raw)),default=0))
+                    block['markdown']=block['markdown'].replace(raw,
+                        fence+'text\n'+raw+'\n'+fence,1)
             if obj and (layout_reference(obj) or obj.get('kind')=='table' and '<img' in obj.get('raw','').lower()):
                 raw=obj['raw'];replacement='<details><summary>查看原文版式与配图</summary>\n\n'+raw+'\n\n</details>'
                 if replacement not in block['markdown']:block['markdown']=block['markdown'].replace(raw,replacement)

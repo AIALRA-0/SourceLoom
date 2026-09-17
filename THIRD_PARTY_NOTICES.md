@@ -5,8 +5,9 @@
 依赖版本在 `pyproject.toml` 中声明，使用时保留各依赖包自带的许可证和版权声明
 
 - FastAPI、Uvicorn、Pydantic 和 HTTPX 提供服务、数据合同与请求能力
-- Beautiful Soup、markdown-it-py 和 defusedxml 提供文本及结构解析
+- Beautiful Soup、markdown-it-py、docutils 和 defusedxml 提供文本及结构解析
 - pypdf、pypdfium2 和 Pillow 提供 PDF 接入、页面渲染与图像处理
+- CairoSVG 以 LGPL-3.0-or-later 许可提供 SVG 栅格化，源代码和许可证见 [CairoSVG 项目](https://github.com/Kozea/CairoSVG)
 - pytest、Playwright 和 ReportLab 仅用于相应验证与合成材料生成
 
 ## 2 外部系统

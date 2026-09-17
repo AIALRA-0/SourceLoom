@@ -51,6 +51,22 @@ def test_invalid_planning_cannot_become_default_content(mutate):
     with pytest.raises(ValueError):validate_plan(broken,source(),['s1','s2'])
 
 
+def test_prerequisites_can_be_established_in_order_within_one_unit():
+    p=plan()
+    p['concepts']=[dict(id='c1',name='First',definition='First concept',source_ids=['s1'],requires=[]),
+                   dict(id='c2',name='Second',definition='Builds on first',source_ids=['s2'],requires=['c1'])]
+    p['nodes'][0].update(requires_concepts=['c1','c2'],establishes_concepts=[])
+    validated=validate_plan(p,source(),['s1','s2'])
+    assert validated['nodes'][0]['establishes_concepts']==['c1','c2']
+
+
+def test_coordinated_english_name_needs_explicit_shared_modifier():
+    from sourceloom.active_composition import coordinated_name_in_quote
+    assert coordinated_name_in_quote('Template Inclusion','Template inheritance and inclusion')
+    assert not coordinated_name_in_quote('Template Inclusion','Data inheritance and inclusion')
+    assert not coordinated_name_in_quote('Template Inclusion','Template inclusion is absent')
+
+
 def test_identical_resources_deduplicate_content_without_losing_addresses(tmp_path):
     src=source();src['objects'][1]['text']=src['objects'][0]['text']
     resources=Resources(Store(tmp_path),src)
@@ -130,6 +146,39 @@ def test_format_patch_signature_rejects_semantic_word_and_number_changes():
     assert format_signature('5-3')!=format_signature('53')
 
 
+def test_local_repair_keeps_valid_edits_and_filters_inline_code_deletion():
+    from sourceloom.active_composition import normalize_local_proposal
+    draft={'blocks':[dict(id='b1',markdown='Use `<title>` for the name。\n\nOther sentence。')]}
+    proposal=dict(edits=[dict(block_id='b1',old_text='Use `<title>` for the name。',
+                              new_text='Use a title for the name',reason='rewrite'),
+                         dict(block_id='b1',old_text='Other sentence',
+                              new_text='Other sentence',reason='no-op'),
+                         dict(block_id='b1',old_text='Other sentence。',
+                              new_text='Other sentence',reason='punctuation')])
+    result,rejected=normalize_local_proposal(proposal,draft,[])
+    assert len(result['edits'])==1 and result['edits'][0]['new_text']=='Other sentence'
+    assert rejected==[dict(block_id='b1',reason='authored_inline_code_removed'),
+                      dict(block_id='b1',reason='no_change')]
+
+
+def test_confirmed_format_finding_does_not_need_a_second_candidate_decision():
+    from sourceloom.active_composition import confirmed_format_issues
+    issues=dict(findings=[dict(id='findings-1',old_text='x')],
+                candidates=[dict(id='candidates-1',old_text='y')])
+    review=dict(format_decisions=[dict(candidate_id='findings-1',decision='fix',reason='Definite'),
+                                  dict(candidate_id='candidates-1',decision='dismiss',reason='Context')])
+    assert confirmed_format_issues(issues,review,required=True)==issues['findings']
+    assert [d['candidate_id'] for d in review['format_decisions']]==['candidates-1']
+
+
+def test_heading_jump_guard_ignores_code_but_catches_new_skip():
+    from sourceloom.active_composition import heading_level_skips
+    normal={'blocks':[dict(markdown='# Article\n\n## Section\n\n```python\n# code\n```')]}
+    broken={'blocks':[dict(markdown='# Article\n\n#### Section\n\n```python\n# code\n```')]}
+    assert heading_level_skips(normal)==0
+    assert heading_level_skips(broken)==1
+
+
 def test_compiler_binds_actual_body_and_never_trusts_model_self_quotation():
     from sourceloom.active_composition import validate_written
     p=plan();inv,_=legacy_artifacts([p],source());node=p['nodes'][0]
@@ -149,6 +198,15 @@ def test_compiler_binds_actual_body_and_never_trusts_model_self_quotation():
     with pytest.raises(ValueError,match='结构校验'):validate_written(broken,node,inv,None,{'blocks':[]})
 
 
+def test_patch_and_delivery_reject_empty_block_that_still_claims_source_coverage():
+    from sourceloom.active_composition import reject_empty_claimed_blocks
+    with pytest.raises(ValueError,match='段落不能为空'):
+        reject_empty_claimed_blocks({'blocks':[dict(id='n1-empty',markdown='',
+            obligation_ids=['f1','f2'])]})
+    reject_empty_claimed_blocks({'blocks':[dict(id='n1-spacer',markdown='',
+        obligation_ids=[])]})
+
+
 def test_protected_resource_is_inserted_by_identity_with_exact_bytes():
     from sourceloom.active_composition import validate_written
     src=source();src['objects']=src['objects'][:1];src['objects'][0].update(kind='code',text='x = 3',fence_raw='```python\nx = 3\n```')
@@ -160,6 +218,25 @@ def test_protected_resource_is_inserted_by_identity_with_exact_bytes():
     draft,coverage,_=validate_written(value,p['nodes'][0],inv,None,{'blocks':[]})
     assert draft['blocks'][0]['markdown']==src['objects'][0]['fence_raw']
     assert coverage[0]['output_quote']==src['objects'][0]['fence_raw']
+
+
+def test_document_information_discards_plain_text_marker_and_keeps_explanation():
+    from sourceloom.active_composition import validate_written
+    src=source();src['objects']=src['objects'][:1]
+    src['objects'][0]['text']='Created Date: 2002-04-18'
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(quote=src['objects'][0]['text'],meaning='Date created')
+    p['nodes'][0].update(source_ids=['s1'],obligation_ids=['f1'])
+    inv,_=legacy_artifacts([p],src)
+    value=dict(blocks=[dict(id='n1-info',kind='document_info',
+        markdown='## 页面信息\n\n{{source:s1}}\n\n创建日期为 2002 年 4 月 18 日',
+        obligation_ids=['f1'],source_ids=['s1'])],
+        coverage=[dict(obligation_id='f1',block_id='n1-info',output_quote='创建日期为 2002 年 4 月 18 日')],
+        knowledge_delta=dict(established_concepts=[],explained_obligations=['f1'],
+            unresolved_prerequisites=[],next_bridge=''))
+    draft,_,_=validate_written(value,p['nodes'][0],inv,None,{'blocks':[]})
+    assert '{{source:' not in draft['blocks'][0]['markdown']
+    assert '创建日期为 2002 年 4 月 18 日' in draft['blocks'][0]['markdown']
 
 
 def test_source_spans_preserve_every_character_and_reject_an_unassigned_tail():
@@ -184,6 +261,548 @@ def test_resource_search_is_discovery_not_verified_source(tmp_path,monkeypatch):
     assert result['evidence_status'].startswith('discovery_only')
     assert not r.context() and 'https://example.org/reference' not in r.state['entries']
     assert r.store.read_blob(result['snapshot_blob'])==xml
+
+
+def test_content_link_plan_requires_direct_destination_evidence(tmp_path):
+    src=source();src['objects']=[dict(id='link',kind='link',text='Read more',
+        locator='input/a',target='https://example.org/topic')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='Read more')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    resources=Resources(Store(tmp_path),src)
+    resources.add('external-page','This example distinguishes counting from proving difficulty.',
+        kind='external',locator='https://example.org/topic',original_url='https://example.org/topic')
+    p['link_briefs']=[dict(source_id='link',role='content',topic='Route counting',
+        connection='Explains why checking every route is expensive',
+        destination='Counts candidate routes but does not prove hardness',
+        limitation='Counting alone is not a hardness proof',
+        evidence=[dict(resource_id='external-page',quote='distinguishes counting from proving difficulty')])]
+    assert validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)['link_briefs'][0]['role']=='content'
+    p['link_briefs'][0]['evidence'][0]['quote']='Invented destination sentence'
+    with pytest.raises(ValueError,match='目标证据'):
+        validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    p['link_briefs']=[]
+    with pytest.raises(ValueError,match='每个原文链接'):
+        validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+
+
+def test_site_chrome_and_author_links_get_structural_roles_without_model_research():
+    import copy
+    src=source();src['objects']=[
+        dict(id='nav',kind='link',text='Home',locator='input/nav/a',
+             target='https://example.org/',source_scope='site_chrome'),
+        dict(id='author',kind='link',text='Contributed by A',locator='input/address/a',
+             target='https://example.org/author',source_scope='source_metadata'),
+    ]
+    p=plan();first=p['obligations'][0];first.update(source_id='nav',quote='Home')
+    second=copy.deepcopy(first);second.update(id='f2',source_id='author',quote='Contributed by A')
+    p['obligations']=[first,second]
+    p['nodes'][0].update(source_ids=['nav','author'],obligation_ids=['f1','f2'])
+    p['link_briefs']=[]
+    result=validate_plan(p,src,['nav','author'],require_link_briefs=True)
+    assert {(b['source_id'],b['role']) for b in result['link_briefs']}=={
+        ('nav','navigation'),('author','administrative')}
+
+
+def test_article_reference_cannot_be_declared_navigation_to_skip_research():
+    src=source();src['source_url']='https://example.org/article'
+    src['objects']=[dict(id='link',kind='link',text='Research background',
+        locator='input/p/a',target='https://example.org/background')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='Research background')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    p['link_briefs']=[dict(source_id='link',role='navigation')]
+    with pytest.raises(ValueError,match='正文知识链接不能仅按导航'):
+        validate_plan(p,src,['link'],require_link_briefs=True)
+
+
+def test_same_page_back_to_top_is_navigation_even_inside_article():
+    src=source();src['source_url']='https://example.org/article/'
+    src['objects']=[dict(id='link',kind='link',text=' Back to Top',
+        locator='input/p/a',target='https://example.org/article/#top')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote=' Back to Top')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    p['link_briefs']=[dict(source_id='link',role='navigation')]
+    assert validate_plan(p,src,['link'],require_link_briefs=True)['link_briefs'][0]['role']=='navigation'
+
+
+def test_same_page_topic_anchor_is_navigation_even_inside_article():
+    src=source();src['source_url']='https://example.org/article/'
+    src['objects']=[dict(id='link',kind='link',text='Languages',
+        locator='input/p/a',target='https://example.org/article/#translations')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='Languages')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    p['link_briefs']=[dict(source_id='link',role='navigation')]
+    assert validate_plan(p,src,['link'],require_link_briefs=True)['link_briefs'][0]['role']=='navigation'
+
+
+def test_first_use_moves_a_planned_concept_before_its_later_introduction():
+    from sourceloom.active_composition import align_unplaced_concepts
+    p={'concepts':[dict(id='base',requires=[]),dict(id='term',requires=['base'])],
+       'nodes':[dict(id='n1',source_ids=['s1'],requires_concepts=[],
+                     establishes_concepts=['base']),
+                dict(id='n2',source_ids=['s2'],requires_concepts=['term'],
+                     establishes_concepts=[]),
+                dict(id='n3',source_ids=['s3'],requires_concepts=[],
+                     establishes_concepts=['term'])]}
+    repairs=align_unplaced_concepts(p)
+    assert p['nodes'][1]['establishes_concepts']==['term']
+    assert p['nodes'][1]['requires_concepts']==[]
+    assert p['nodes'][2]['establishes_concepts']==[]
+    assert p['nodes'][2]['requires_concepts']==['term']
+    assert repairs[0]['reason']=='first_use_precedes_planned_introduction'
+
+
+def test_prerequisite_is_hoisted_before_first_dependent_explanation():
+    from sourceloom.active_composition import align_unplaced_concepts
+    p={'concepts':[dict(id='css',source_ids=['s2'],requires=[]),
+                   dict(id='semantics',source_ids=['s1'],requires=['css'])],
+       'nodes':[dict(id='n1',source_ids=['s1'],requires_concepts=[],
+                     establishes_concepts=['semantics']),
+                dict(id='n2',source_ids=['s2'],requires_concepts=['css'],
+                     establishes_concepts=['css'])]}
+    repairs=align_unplaced_concepts(p)
+    assert p['nodes'][0]['establishes_concepts']==['css','semantics']
+    assert p['nodes'][1]['establishes_concepts']==[]
+    assert repairs==[dict(concept_id='css',node_id='n1',previous_node_id='n2',
+                          reason='prerequisite_before_dependent_concept')]
+
+
+def test_json_syntax_repair_inserts_only_missing_node_closer():
+    import json
+    from sourceloom.active_composition import repair_one_missing_json_object_closer
+    broken='{"nodes":[{"explanation":{"boundary":"原文有 ] 和 } 字符"}],"links":[]}'
+    repaired=repair_one_missing_json_object_closer(broken)
+    assert json.loads(repaired)=={'nodes':[{'explanation':{'boundary':'原文有 ] 和 } 字符'}}],
+                                  'links':[]}
+    assert repair_one_missing_json_object_closer('{"nodes":[{"value":1}]') is None
+
+
+def test_formal_acronym_requires_a_cited_original_mention():
+    from sourceloom.active_composition import retire_unanchored_abbreviations
+    source={'objects':[dict(id='s1',text='A document type declaration starts the page.'),
+                       dict(id='s2',text='The W3C reference is provided later.') ]}
+    parts=[dict(concepts=[dict(id='w3c',source_ids=['s1'],abbreviations=[dict(short='W3C')]),
+                          dict(id='html',source_ids=['s2'],abbreviations=[dict(short='W3C')])],
+                nodes=[dict(establishes_concepts=['w3c','html'],requires_concepts=['w3c'])])]
+    assert retire_unanchored_abbreviations(parts,source)==['w3c']
+    assert [c['id'] for c in parts[0]['concepts']]==['html']
+    assert parts[0]['nodes'][0]['establishes_concepts']==['html']
+
+
+def test_lowercase_import_path_does_not_certify_an_added_formal_acronym():
+    from sourceloom.active_composition import retire_unanchored_abbreviations
+    source={'objects':[dict(id='readme',text='from sqlalchemy.orm import DeclarativeBase')]}
+    parts=[dict(concepts=[dict(id='orm',source_ids=['readme'],
+                               abbreviations=[dict(short='ORM')])],
+                nodes=[dict(establishes_concepts=['orm'],requires_concepts=['orm'])])]
+    assert retire_unanchored_abbreviations(parts,source)==['orm']
+    assert parts[0]['concepts']==[]
+    assert parts[0]['nodes']==[dict(establishes_concepts=[],requires_concepts=[])]
+
+
+def test_whitespace_only_source_text_is_preserved_without_an_explanation_obligation():
+    from sourceloom.visual_sources import decorative_resource
+    assert decorative_resource(dict(kind='text',text=' \n\t'))
+    assert not decorative_resource(dict(kind='text',text='A real sentence'))
+
+
+def test_writer_concept_labels_can_be_aligned_only_from_exact_cited_ids():
+    from sourceloom.active_composition import align_reported_concept_ids
+    delta=dict(established_concepts=['the mission and its launch date'],
+               concept_evidence=[dict(concept_id='p1-con-1')])
+    assert align_reported_concept_ids(delta,['p1-con-1'])
+    assert delta['established_concepts']==['p1-con-1']
+    assert delta['reported_concept_labels']==['the mission and its launch date']
+    wrong=dict(established_concepts=['the mission'],concept_evidence=[dict(concept_id='p1-con-2')])
+    assert not align_reported_concept_ids(wrong,['p1-con-1'])
+    assert wrong['established_concepts']==['the mission']
+
+
+def test_client_challenge_is_recorded_as_unavailable_page_not_project_evidence(tmp_path,monkeypatch):
+    from sourceloom.active_resources import Resources
+    from sourceloom.store import Store
+    from sourceloom import network
+    raw=(b'<html><title>Client Challenge</title><body>'
+         b'A required part of this site could not load. Please enable JavaScript.'
+         b'</body></html>')
+    monkeypatch.setattr(network,'fetch',lambda *args,**kwargs:(raw,'text/html',args[0]))
+    resource=Resources(Store(tmp_path),{'objects':[]})
+    result=resource.execute(dict(kind='page',url='https://example.invalid/project',resource_id=''))
+    assert result['status']=='unavailable'
+    assert result['snapshot_blob']
+    assert not any(entry.get('kind')=='external' for entry in resource.state['entries'].values())
+
+
+def test_standalone_heading_merges_into_its_following_code_unit():
+    from sourceloom.active_composition import merge_adjacent_heading_only_nodes
+    heading=dict(id='h',title='简单示例',source_ids=['s1'],obligation_ids=['f1'],
+                 requires_concepts=[],establishes_concepts=[],depends_on=['before'],
+                 transition_from='承接前文')
+    code=dict(id='code',title='示例代码',source_ids=['s2'],obligation_ids=['f2'],
+              requires_concepts=[],establishes_concepts=['c1'],depends_on=['h'],
+              transition_from='解释示例')
+    later=dict(id='later',depends_on=['h','code'])
+    plan={'nodes':[heading,code,later]}
+    repairs=merge_adjacent_heading_only_nodes(plan,{'s1':{'kind':'heading'},'s2':{'kind':'code'}})
+    assert repairs==[dict(heading_id='h',content_id='code')]
+    assert plan['nodes'][0]['source_ids']==['s1','s2']
+    assert plan['nodes'][0]['depends_on']==['before']
+    assert plan['nodes'][0]['title']=='简单示例'
+    assert later['depends_on']==['code']
+
+
+def test_verified_name_can_be_inserted_at_unique_authored_first_use():
+    from sourceloom.active_composition import insert_verified_name_at_unique_first_use
+    draft={'blocks':[dict(id='b1',kind='prose',markdown='Pallets 社区生态包含相关项目',
+                           embedded_object_ids=[])]}
+    delta={'concept_evidence':[dict(block_id='b1',concept_id='c1',
+                                    output_quote='Pallets 社区生态包含相关项目')]}
+    concepts=[dict(id='c1',chinese_name='Pallets 社区生态',
+                   english_name='Pallets Community Ecosystem',naming_status='verified')]
+    assert insert_verified_name_at_unique_first_use(draft,delta,concepts)
+    assert 'Pallets 社区生态（Pallets Community Ecosystem）' in draft['blocks'][0]['markdown']
+    assert delta['concept_evidence'][0]['output_quote'] in draft['blocks'][0]['markdown']
+
+
+def test_short_plain_rewrite_rejects_glossary_detour_without_counting_source_code():
+    from sourceloom.active_composition import overgrown_short_rewrite_glossary
+    objects=[dict(kind='heading',text='Care With Font Size'),
+             dict(kind='text',text='Small type may look sleek, but it can impair reading.'),
+             dict(kind='text',text='People use screens of different sizes.')]
+    definitions='\n'.join('- '+name+'（English Name）：'+'说明'*80
+                          for name in ['网页','平台','字号'])
+    draft={'blocks':[dict(markdown=definitions)]}
+    assert overgrown_short_rewrite_glossary(draft,objects)
+    assert overgrown_short_rewrite_glossary(draft,objects+[dict(kind='code',text='x=1')])
+    assert not overgrown_short_rewrite_glossary(draft,objects+[dict(kind='code',text='x=1\n'*100)])
+
+
+def test_screened_patch_cannot_clear_an_unchanged_source_fidelity_finding():
+    from sourceloom.active_composition import carry_unchanged_findings
+    previous=[dict(block_id='note',output_quote='原来的提示仍在',problem='原文事实丢失')]
+    draft={'blocks':[dict(id='intro',markdown='已修订的开头'),
+                     dict(id='note',markdown='原来的提示仍在')]}
+    patch={'edits':[dict(block_id='intro',old_text='旧开头',new_text='已修订的开头')]}
+    assert carry_unchanged_findings([],previous,patch,draft)==previous
+    assert carry_unchanged_findings([],previous,
+        {'edits':[dict(block_id='note',old_text='旧提示',new_text='新提示')]},draft)==[]
+
+
+def test_passed_format_replay_retires_only_the_previous_same_unit_failure():
+    from sourceloom.active_composition import clear_resolved_format_issue
+    candidate={'unresolved_format':{'findings':[{'rule_id':'FORMAT_EXCESSIVE_BLANK_LINES'}]}}
+    job={'quality_issues':['unit-1：两轮局部修补后仍有 1 项确定格式问题，正文与检查记录均已保留',
+                           'unit-2：仍有来源事实问题']}
+    clear_resolved_format_issue(job,candidate,'unit-1')
+    assert 'unresolved_format' not in candidate
+    assert job['quality_issues']==['unit-2：仍有来源事实问题']
+    assert len(job['resolved_quality_issues'])==1
+
+
+def test_checkpoint_format_replay_needs_same_bytes_and_all_candidates_adjudicated():
+    from sourceloom.active_composition import checkpoint_format_clearable
+    from sourceloom.writing import canonical,digest
+    unit={'blocks':[dict(id='b1',kind='explanation',markdown='正文')]}
+    identity=digest(canonical(unit).encode())
+    point=dict(draft_digest=identity,format_digest=identity,
+               unresolved_format={'findings':[{'rule_id':'FORMAT_EXCESSIVE_BLANK_LINES'}]},
+               format_records=[dict(digest=identity,dismissed=['c1'])])
+    report={'canonical_digest':identity,'format':{'findings':[],'candidates':[{'id':'c1'}]}}
+    assert checkpoint_format_clearable(point,unit,report)
+    assert not checkpoint_format_clearable(point,unit,report|{'format':{'findings':[],'candidates':[{'id':'c2'}]}})
+    assert not checkpoint_format_clearable(point,unit,report|{'canonical_digest':'old'})
+
+
+def test_plan_preview_shows_future_heading_without_its_source_id():
+    from sourceloom.active_composition import plan_document_preview
+    import json
+    src={'objects':[dict(id='first-id',kind='text',text='Opening'),
+                    dict(id='future-secret-id',kind='heading',text='Later section')],
+         'originals':[dict(name='snapshot.html'),dict(name='web-assets/image.png')]}
+    preview=plan_document_preview(src,['first-id'],[])
+    assert preview['future_headings']==['Later section']
+    assert preview['whole_document_files']==['snapshot.html']
+    assert 'future-secret-id' not in json.dumps(preview)
+
+
+def test_html_inline_wrap_quote_rebinds_exact_saved_punctuation():
+    from sourceloom.active_composition import exact_source_quote
+    source_text='Cascading Style Sheets is used on the open web platform\n, and adds style.'
+    quote='Cascading Style Sheets is used on the open web platform, and adds style.'
+    assert exact_source_quote(quote,source_text)==source_text
+    assert exact_source_quote('CSS is used on the open web platform, and adds style.',source_text) is None
+
+
+def test_unique_ellipsis_source_quote_expands_to_actual_contiguous_bytes():
+    from sourceloom.active_composition import exact_source_quote
+    source=('Human activities, primarily from burning fossil fuels that release carbon dioxide, '
+            'have disrupted Earth\'s energy balance.')
+    quote="Human activities, primarily from burning fossil fuels…have disrupted Earth's energy balance."
+    assert exact_source_quote(quote,source)==source
+    assert exact_source_quote('Human activities…balance.',source) is None
+
+
+def test_historical_http_link_is_fetched_at_same_https_address(tmp_path,monkeypatch):
+    import sourceloom.network
+    seen=[]
+    def fetch(url,*args,**kwargs):
+        seen.append(url)
+        return b'<html><body>Archived technical discussion</body></html>','text/html',url
+    monkeypatch.setattr(sourceloom.network,'fetch',fetch)
+    r=Resources(Store(tmp_path),source())
+    item=r.execute(dict(kind='page',url='http://example.org/archive#thread'))
+    assert seen==['https://example.org/archive#thread']
+    assert item['kind']=='read' and item['complete']
+    assert r.state['entries']['external-'+digest('http://example.org/archive#thread'.encode())[:20]]['original_url']=='http://example.org/archive#thread'
+
+
+def test_direct_link_failure_is_recorded_and_cannot_be_invented(tmp_path,monkeypatch):
+    src=source();src['objects']=[dict(id='link',kind='link',text='Related research',
+        locator='input/a',target='https://example.org/research')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='Related research')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    resources=Resources(Store(tmp_path),src)
+    def rejected(*args,**kwargs):raise ValueError('网页返回 429，未取得完整材料')
+    monkeypatch.setattr('sourceloom.network.fetch',rejected)
+    receipt=resources.execute(dict(kind='page',url='https://example.org/research'))
+    assert receipt['status']=='unavailable'
+    p['link_briefs']=[dict(source_id='link',role='content',topic='Related research',
+        connection='Background for this paragraph',destination='',evidence=[],
+        unavailable_reason=receipt['reason'])]
+    assert validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)['link_briefs'][0]['unavailable_reason']==receipt['reason']
+    p['link_briefs'][0]['unavailable_reason']='The source says something else'
+    with pytest.raises(ValueError,match='访问失败记录'):
+        validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+
+
+def test_image_led_link_requires_actual_visual_evidence(tmp_path):
+    src=source();src['objects']=[dict(id='link',kind='link',text='Illustrated article',
+        locator='input/a',target='https://example.org/article')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='Illustrated article')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    resources=Resources(Store(tmp_path),src)
+    resources.add('page','Title and publication date',kind='external',
+        locator='https://example.org/article',original_url='https://example.org/article',
+        image_refs=[dict(url='https://example.org/article.png',alt='Scanned article')])
+    p['link_briefs']=[dict(source_id='link',role='content',topic='Illustrated account',
+        connection='Explains the article mentioned here',destination='An illustrated account',
+        evidence=[dict(resource_id='page',quote='Title and publication date')])]
+    with pytest.raises(ValueError,match='须读取图片'):
+        validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    resources.add('image','The illustration shows two labeled routes',kind='external',
+        scope='linked_image',locator='https://example.org/article.png',
+        original_url='https://example.org/article.png',parent_page_url='https://example.org/article')
+    p['link_briefs'][0]['evidence'].append(dict(resource_id='image',quote='two labeled routes'))
+    assert validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)['link_briefs'][0]['evidence'][1]['resource_id']=='image'
+
+
+def test_administrative_donation_link_does_not_trigger_article_research(tmp_path):
+    src=source();src['objects']=[dict(id='link',kind='link',text='Please donate today',
+        locator='input/a',target='https://example.org/donate')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='Please donate today')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    p['link_briefs']=[dict(source_id='link',role='content',topic='Support',
+        connection='Donation',destination='Donation form',evidence=[])]
+    validated=validate_plan(p,src,['link'],resources=Resources(Store(tmp_path),src),require_link_briefs=True)
+    assert validated['link_briefs'][0]['role']=='administrative'
+
+
+def test_linked_page_image_is_read_once_and_reused_in_planning(tmp_path,monkeypatch):
+    from pydantic import BaseModel
+    from sourceloom.store import digest
+    import sourceloom.network
+    from io import BytesIO
+    from PIL import Image
+    class Answer(BaseModel):
+        value:int
+    picture=BytesIO();Image.new('RGB',(20,20),'white').save(picture,'PNG')
+    fetched=[]
+    def fetch(url,*args,**kwargs):
+        fetched.append(url)
+        if url.endswith('topic'):
+            return b'<main><h1>Topic</h1><img src="/article.png" alt="Scanned article"></main>','text/html',url
+        return picture.getvalue(),'image/png',url
+    monkeypatch.setattr(sourceloom.network,'fetch',fetch)
+    store=Store(tmp_path);engine=ActiveComposition(Production(store,{}))
+    src=source();src['objects']=[dict(id='link',kind='link',text='Topic',locator='input/a',
+        target='https://example.org/topic')]
+    job=dict(id='linked-image-test',project='project',role='active_plan',status='running',created=1,
+             results={},calls=[],active_sessions={},external_resources={},
+             generated_resources={},verified_terminology=[])
+    requests=[]
+    page_id='external-'+digest('https://example.org/topic'.encode())[:20]
+    def fake_call(job,key,role,payload,schema):
+        requests.append((role,payload))
+        if role=='active_visual':
+            return dict(cards=[dict(source_id=payload['pages'][0]['id'],
+                visible_content='Article says the route count is not a proof',
+                source_text='Article says the route count is not a proof',role='text',
+                relationships=[],uncertainty=[],limitations=[],blocking_uncertainty=[])])
+        if len([r for r,_ in requests if r=='active_plan'])==1:
+            return dict(gaps=['Need direct page'],ready_reason='',result=None,
+                actions=[dict(kind='page',url='https://example.org/topic')])
+        if len([r for r,_ in requests if r=='active_plan'])==2:
+            assert payload['previous_action_results'][0]['image_refs'][0]['url']=='https://example.org/article.png'
+            return dict(gaps=['Need scanned article'],ready_reason='',result=None,
+                actions=[dict(kind='image',resource_id=page_id,url='https://example.org/article.png')])
+        assert any('route count is not a proof' in entry['text'] for entry in payload['opened_resources'])
+        return dict(gaps=[],actions=[],ready_reason='Image read',result={'value':1})
+    monkeypatch.setattr(engine,'call',fake_call)
+    assert engine.turn(job,'linked','active_plan',Answer,src,['link'],{},lambda value,_:value)=={'value':1}
+    assert fetched==['https://example.org/topic','https://example.org/article.png']
+    assert len([r for r,_ in requests if r=='active_visual'])==1
+    assert len(job['external_resources'])==2
+
+
+def test_missing_header_brand_asset_does_not_block_article_image(tmp_path):
+    from sourceloom.source_context import classify_web_chrome
+    from sourceloom.visual_sources import decorative_resource
+    store=Store(tmp_path)
+    html=b'<h1><a href="https://example.org/"><img src="/logo.svg" alt="Site"/></a> Article</h1><nav><a href="/other">Other</a></nav><main><img src="/diagram.png" alt="Diagram"/></main>'
+    original=store.blob(html)
+    src=dict(source_url='https://example.org/article',
+        originals=[dict(name='snapshot.html',sha256=original,size=len(html))],
+        objects=[dict(id='logo',kind='image',text='Site',target='https://example.org/logo.svg',
+                      locator='snapshot.html/h1/img',raw='<img src="/logo.svg" alt="Site"/>',resource_id=None),
+                 dict(id='diagram',kind='image',text='Diagram',target='https://example.org/diagram.png',
+                      locator='snapshot.html/main/img',raw='<img src="/diagram.png" alt="Diagram"/>',resource_id=None),
+                 dict(id='menu-link',kind='link',text='Other',target='https://example.org/other',
+                      locator='snapshot.html/node[2]/a[1]')],
+        unknown=[dict(id='gap-1',object_id='logo',reason='unavailable'),
+                 dict(id='gap-2',object_id='diagram',reason='unavailable')])
+    classified=classify_web_chrome(store,src)
+    assert [gap['object_id'] for gap in classified['unknown']]==['diagram']
+    assert decorative_resource(classified['objects'][0])
+    assert not decorative_resource(classified['objects'][1])
+    assert decorative_resource(classified['objects'][2])
+    assert classified['objects'][0]['raw']==src['objects'][0]['raw']
+
+
+def test_html_main_region_excludes_navigation_from_rewrite_but_keeps_original(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+    raw=(b'<html><body><div><nav><a href="/all">All pages</a></nav></div>'
+         b'<div><main><article><h1>Water</h1><p>Water moves.</p></article></main></div>'
+         b'<footer><p>Site footer</p></footer></body></html>')
+    store=Store(tmp_path)
+    src=intake(store,[('snapshot.html',raw)],source_url='https://example.org/water')
+    classified=classify_web_chrome(store,src)
+    assert store.read_blob(src['originals'][0]['sha256'])==raw
+    assert {o['text'] for o in classified['objects'] if o.get('source_scope')!='site_chrome'}=={
+        'Water','Water moves.'}
+    assert all(o.get('source_scope')=='site_chrome' for o in classified['objects']
+               if o['text'] in {'All pages','Site footer'})
+
+
+def test_explicit_site_navigation_banner_excluded_without_main_region(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+    raw=(b'<html><body><div><h1>CSS and XSL</h1><p>Article body.</p></div>'
+         b'<div id="banner"><h2>Site navigation</h2><form><ul><li>'
+         b'<a href="/"></a><a href="/Style/CSS/">CSS home</a></li></ul></form>'
+         b'</div></body></html>')
+    store=Store(tmp_path)
+    src=intake(store,[('snapshot.html',raw)],source_url='https://example.org/article')
+    classified=classify_web_chrome(store,src)
+    assert {o['text'] for o in classified['objects'] if o.get('source_scope')!='site_chrome'}=={
+        'CSS and XSL','Article body.'}
+    assert store.read_blob(src['originals'][0]['sha256'])==raw
+
+
+def test_article_breadcrumb_excludes_only_parent_link_not_body_reference(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+
+    raw=(b'<html><body><main><header class="in-resource"><h1>Decision Tree</h1>'
+         b'<p>in <a href="/guides/">Guides</a></p></header>'
+         b'<p>Read the <a href="/guides/">Guides</a> for details.</p></main></body></html>')
+    store=Store(tmp_path)
+    src=intake(store,[('snapshot.html',raw)],source_url='https://example.org/guides/decision-tree/')
+    classified=classify_web_chrome(store,src)
+    links=[o for o in classified['objects'] if o['kind']=='link' and o['text']=='Guides']
+    assert len(links)==2
+    assert [o.get('source_scope') for o in links]==['site_chrome',None]
+    assert next(o for o in classified['objects'] if o['text']=='Decision Tree').get('source_scope') is None
+    assert store.read_blob(src['originals'][0]['sha256'])==raw
+
+
+def test_heading_status_badges_remain_archived_metadata_not_article_images(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+    from sourceloom.visual_sources import decorative_resource
+
+    raw=(b'# Flask Babel ![Tests](https://github.com/org/repo/workflows/Test/badge.svg) '
+         b'[![PyPI](https://img.shields.io/pypi/v/project.svg)](https://pypi.org/project/project/)\n\n'
+         b'Implements translation support.\n')
+    store=Store(tmp_path)
+    src=intake(store,[('snapshot.md',raw)],source_url='https://example.org/readme.md')
+    classified=classify_web_chrome(store,src)
+    badges=[o for o in classified['objects'] if o['kind']=='image']
+    assert len(badges)==2 and all(o.get('source_scope')=='source_metadata' for o in badges)
+    assert all(decorative_resource(o) for o in badges)
+    assert all(o.get('source_scope')=='source_metadata' for o in classified['objects']
+               if o['kind']=='link' and not o.get('text','').strip())
+    assert any(o['text']=='Implements translation support.' and not decorative_resource(o)
+               for o in classified['objects'])
+    assert store.read_blob(src['originals'][0]['sha256'])==raw
+
+
+def test_separate_badge_paragraph_after_heading_is_source_metadata(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+
+    raw=(b'# Package\n\n![Tests](https://github.com/org/repo/workflows/Test/badge.svg)\n'
+         b'[![PyPI](https://img.shields.io/pypi/v/project.svg)](https://pypi.org/project/project/)\n\n'
+         b'Article starts here.\n')
+    store=Store(tmp_path)
+    src=intake(store,[('snapshot.md',raw)],source_url='https://example.org/readme.md')
+    classified=classify_web_chrome(store,src)
+    assert all(o.get('source_scope')=='source_metadata' for o in classified['objects']
+               if o['kind']=='image')
+    assert all(o.get('source_scope')=='source_metadata' for o in classified['objects']
+               if o['kind']=='link' and not o.get('text','').strip())
+    assert any(o['text']=='Article starts here.' and not o.get('source_scope')
+               for o in classified['objects'])
+
+
+def test_centered_empty_alt_markdown_brand_stays_in_original(tmp_path):
+    from sourceloom.source_context import classify_web_chrome
+    from sourceloom.visual_sources import decorative_resource
+    store=Store(tmp_path)
+    markdown=b'<div align="center"><img src="https://example.org/logo.svg" alt=""></div>\n\n# Article\n\nUseful text'
+    original=store.blob(markdown)
+    src=dict(source_url='https://example.org/README.md',
+        originals=[dict(name='snapshot.md',sha256=original,size=len(markdown))],
+        objects=[dict(id='logo',kind='image',text='',target='https://example.org/logo.svg',
+                      locator='snapshot.md/node[1]/img[1]',resource_id=None,raw='<img src="https://example.org/logo.svg" alt=""/>'),
+                 dict(id='body',kind='text',text='Useful text',locator='snapshot.md/node[3]')],
+        unknown=[dict(id='gap-1',object_id='logo',reason='unavailable')])
+    classified=classify_web_chrome(store,src)
+    assert not classified['unknown'] and decorative_resource(classified['objects'][0])
+    assert not decorative_resource(classified['objects'][1])
+    assert store.read_blob(original)==markdown
+
+
+def test_exhausted_go_subscription_is_skipped_for_later_task_calls(tmp_path,monkeypatch):
+    from sourceloom.providers import Provider
+    class PreflightReached(Exception):pass
+    seen=[]
+    def check(_store,configuration):
+        seen.append(configuration['base_url'])
+        raise PreflightReached
+    monkeypatch.setattr('sourceloom.trials.check',check)
+    config=dict(base_url='https://opencode.ai/zen/go/v1',provider='openai-compatible',
+        quota_fallback=dict(base_url='https://api.deepseek.com/v1',provider='openai-compatible'))
+    job=dict(calls=[dict(status='rejected',error_code='subscription_limit_exceeded',
+        upstream_base='https://opencode.ai/zen/go/v1')])
+    with pytest.raises(PreflightReached):Provider(Store(tmp_path),config).call('project','active_plan',{}, {},job)
+    assert seen==['https://api.deepseek.com/v1']
 
 
 @pytest.mark.parametrize('residual',['','content','format'])
@@ -225,18 +844,46 @@ def test_background_restart_completes_planning_writing_review_without_repeating_
         engine=Production(Store(store.root),{})
         assert engine.run_once()
         saved=store.job(job['id'])
-        if saved['status'] in {'completed','needs_attention'}:break
+        if saved['status'] in {'completed','failed'}:break
         assert saved['status']=='queued',saved.get('error')
     final=store.get(p['id'])
     assert calls==['active_plan','active_write','active_review']
-    assert final['state']==('needs_attention' if residual else 'completed') and final['production']['manual_edits']==0
+    assert saved['status']==('failed' if residual else 'completed')
+    if residual:
+        # A checkpoint with unresolved meaning or confirmed format errors
+        # cannot become a user-facing article merely because it is the last unit.
+        assert final['state']!='completed'
+        assert final.get('draft') is None
+    else:
+        assert final['state']=='completed' and final['production']['manual_edits']==0
     if residual:
         assert saved['quality_issues']
-        assert saved['active_checkpoints'][0]['unresolved_content_findings' if residual=='content' else 'unresolved_format']
-        assert saved['delivery_checks']['unit_review_status']=='needs_attention'
-    assert final['production']['semantic_status']=='not_independently_reviewed'
-    assert store.read_blob(next(iter(saved['generated_resources'].values()))['blob']).decode()==canonical(final['draft'])
-    assert saved['active_checkpoints'][0]['draft_digest']==digest(canonical(final['draft']).encode())
+        if residual=='content':
+            assert saved['active_candidate']['unresolved_content_findings']
+    else:
+        assert final['production']['semantic_status']=='not_independently_reviewed'
+        assert store.read_blob(next(iter(saved['generated_resources'].values()))['blob']).decode()==canonical(final['draft'])
+        assert saved['active_checkpoints'][0]['draft_digest']==digest(canonical(final['draft']).encode())
+
+
+def test_missing_asset_can_resume_same_zero_call_job_after_inventory_is_completed(tmp_path,skill):
+    store,_,project,bundle=prepared(tmp_path,skill)
+    complete=copy.deepcopy(store.get(project['id'])['inventory'])
+    incomplete=copy.deepcopy(complete)
+    incomplete['unknown']=[dict(id='gap-1',object_id='s1',reason='image unavailable')]
+    incomplete['digest']='before-asset-recovery'
+    store.change(project['id'],lambda p:p.update(inventory=incomplete))
+    queue=Queue(store,pipeline='active_composition_v1')
+    job=queue.enqueue(project['id'],bundle)
+    claimed=queue.claim('test-worker')
+    claimed.update(stage='active_visual',error='original image unavailable')
+    queue.finish(claimed,'test-worker','failed')
+    store.change(project['id'],lambda p:p.update(inventory=complete))
+    resumed=queue.continue_preprocessing(job['id'])
+    assert resumed['id']==job['id'] and resumed['stage']=='active_index'
+    assert resumed['status']=='queued' and resumed['calls']==[]
+    assert not resumed['inventory']['unknown']
+    assert store.get(project['id'])['active_job']==job['id']
 
 
 def test_layout_unwrap_preserves_raw_and_real_data_tables():
@@ -262,6 +909,73 @@ def test_writing_batches_keep_outline_and_every_fact_within_size_limit():
     assert batches[0]['obligation_ids']==['f1','f2']
     assert [n['id'] for n in batches[0]['section_outline']]==['n1','n2']
     assert len(writing_batches([p],source(),1))==2
+    first['establishes_concepts']=['c1']
+    second['establishes_concepts']=['c2']
+    assert len(writing_batches([p],source(),10000,concept_limit=1))==2
+    first['establishes_concepts']=['c'+str(n) for n in range(1,5)]
+    second['establishes_concepts']=['c'+str(n) for n in range(5,9)]
+    assert len(writing_batches([p],source(),10000))==1
+    assert len(writing_batches([p],source(),10000,concept_limit=7))==2
+    assert len(writing_batches([p],source(),10000,object_limit=1))==2
+
+
+def test_local_patch_keeps_valid_edits_without_changing_protected_code():
+    from sourceloom.active_composition import normalize_local_proposal
+    draft={'blocks':[dict(id='b',markdown='A\nB\n```code```')]}
+    proposal=dict(edits=[dict(block_id='b',old_text='A\nB',new_text='AB',reason='join'),
+                         dict(block_id='b',old_text='```code```',new_text='```edited```',reason='bad')])
+    normalized,rejected=normalize_local_proposal(proposal,draft,['```code```'])
+    assert [(e['old_text'],e['new_text']) for e in normalized['edits']]==[('A','AB'),('B','')]
+    assert rejected==[dict(block_id='b',reason='protected_original_changed')]
+    paragraph,_=normalize_local_proposal(dict(edits=[dict(block_id='b',
+        old_text='A\n\nB',new_text='New paragraph',reason='merge')]),
+        {'blocks':[dict(id='b',markdown='A\n\nB')]},[])
+    assert len(paragraph['edits'])==2
+
+
+def test_english_source_heading_uses_the_approved_chinese_section_title():
+    from sourceloom.active_composition import bind_planned_headings
+    result={'blocks':[dict(id='n1-a',markdown='## Examples\n\nA paragraph'),
+                      dict(id='n2-a',markdown='## 已经是中文标题\n') ]}
+    node=dict(section_outline=[dict(id='n1',title='示例'),dict(id='n2',title='下一节')])
+    changed=bind_planned_headings(result,node)
+    assert result['blocks'][0]['markdown']=='## 示例\n\nA paragraph'
+    assert result['blocks'][1]['markdown']=='## 已经是中文标题\n'
+    assert changed[0]['planned_section_id']=='n1'
+
+
+def test_single_source_span_can_align_a_wrong_model_end_offset():
+    from sourceloom.active_composition import rebind_single_source_spans
+    source_document={'objects':[dict(id='s1',kind='text',text='A short heading')]}
+    value={'obligations':[dict(id='f1',source_id='s1',source_span_ids=['s1:0:20'])]}
+    aligned,repairs=rebind_single_source_spans(value,source_document,['s1'])
+    assert aligned['obligations'][0]['source_span_ids']==['s1:0:15']
+    assert repairs[0]['submitted_span_id']=='s1:0:20'
+    assert value['obligations'][0]['source_span_ids']==['s1:0:20']
+
+
+def test_single_source_span_can_bind_omitted_id_without_guessing_multi_span():
+    from sourceloom.active_composition import rebind_single_source_spans
+    src={'objects':[dict(id='h',kind='heading',text='A short heading'),
+                    dict(id='long',kind='text',text='A'*1200)]}
+    value={'obligations':[dict(id='f1',source_id='h'),dict(id='f2',source_id='long')]}
+    aligned,repairs=rebind_single_source_spans(value,src,['h','long'])
+    assert aligned['obligations'][0]['source_span_ids']==['h:0:15']
+    assert 'source_span_ids' not in aligned['obligations'][1]
+    assert repairs[0]['submitted_span_id'] is None
+
+
+def test_merged_writer_scope_overrides_first_planning_part_scope():
+    from sourceloom.active_composition import writing_batch_contract
+    planned={'purpose':'First group only','scope_boundary':'only src-001 through src-010',
+             'voice':'first person'}
+    node={'source_ids':['src-001','src-011']}
+    actual=writing_batch_contract(planned,node,'Full source rewrite')
+    assert actual['purpose']=='Full source rewrite'
+    assert 'node.source_ids' in actual['scope_boundary']
+    assert 'src-010' not in actual['scope_boundary']
+    assert actual['voice']=='first person'
+    assert planned['purpose']=='First group only'
 
 
 def test_resource_find_uses_original_unicode_offsets_and_bounded_results(tmp_path):
@@ -477,6 +1191,257 @@ def test_quota_rejection_can_resume_after_fallback_budget_preflight(tmp_path,ski
     with pytest.raises(Conflict,match='只允许'):
         queue.retry_validation(job['id'])
 
+
+def test_billed_active_plan_truncation_can_resume_once_on_different_model(tmp_path,skill):
+    import json
+    from sourceloom.store import Conflict
+
+    store,queue,p,bundle=prepared(tmp_path,skill)
+    job=queue.enqueue(p['id'],bundle)
+    blob=store.blob(b'{"partial":true}')
+    call=dict(id='plan-cut',role='active_plan',status='truncated',
+        finish_reason='length',response_blob=blob,step_key='active-plan-p1-turn-0')
+    job.update(status='failed',pending=call['step_key'],calls=[call])
+    store.put_job(job);store.change(p['id'],lambda p:p.update(active_job=None))
+    with store.connect() as cx:
+        cx.execute("UPDATE production_control SET status='failed' WHERE id=?",(job['id'],))
+        cx.execute('INSERT INTO spending(id,project,reserved,actual,created,body) VALUES(?,?,?,?,?,?)',
+            (call['id'],p['id'],0,.15,1,json.dumps({'model':'deepseek-flash'})))
+    config={'role_providers':{'active_plan':{'model':'deepseek-v4-pro'}}}
+    resumed=queue.retry_validation(job['id'],config)
+    assert resumed['status']=='queued' and not resumed.get('pending')
+    assert resumed['known_plan_truncation_retries'][call['step_key']]['original_call']==call['id']
+    resumed.update(status='failed',pending=call['step_key']);store.put_job(resumed)
+    store.change(p['id'],lambda p:p.update(active_job=None))
+    with pytest.raises(Conflict,match='不能重新发送'):
+        queue.retry_validation(job['id'],config)
+
+
+def test_active_plan_partitions_many_small_source_objects_before_output_overflow():
+    from sourceloom.source_context import inventory_groups
+
+    objects=[{'id':f'src-{n:03d}','text':'one short source object'} for n in range(53)]
+    groups=inventory_groups(objects,limit=12000,max_objects=18)
+    assert [len(group) for group in groups]==[18,18,17]
+    assert [item['id'] for group in groups for item in group]==[
+        item['id'] for item in objects]
+
+
+def test_active_plan_keeps_list_item_text_and_its_link_in_one_partition():
+    from sourceloom.source_context import inventory_groups
+
+    objects=[{'id':f'src-{n}','text':'short','locator':f'page/node[1]/p[{n}]'}
+             for n in range(17)]
+    objects += [
+        {'id':'item-text','text':'A linked reading','locator':'page/node[1]/ul[1]/li[1]'},
+        {'id':'item-link','text':'A linked reading','locator':'page/node[1]/ul[1]/li[1]/a[1]'},
+        {'id':'next-item','text':'Next','locator':'page/node[1]/ul[1]/li[2]'},
+    ]
+    groups=inventory_groups(objects,limit=12000,max_objects=18)
+    assert [len(group) for group in groups]==[19,1]
+    assert [item['id'] for item in groups[0][-2:]]==['item-text','item-link']
+
+
+def test_future_partition_links_are_deferred_without_hiding_missing_current_links():
+    from sourceloom.active_composition import filter_future_partition_link_briefs
+
+    candidate={'link_briefs':[{'source_id':'src-1','role':'content'},
+                              {'source_id':'src-2','role':'navigation'}]}
+    scoped,deferred=filter_future_partition_link_briefs(candidate,['src-1'])
+    assert [item['source_id'] for item in scoped['link_briefs']]==['src-1']
+    assert deferred==['src-2']
+    assert len(candidate['link_briefs'])==2
+    empty,_=filter_future_partition_link_briefs({'link_briefs':[candidate['link_briefs'][1]]},['src-1'])
+    assert empty['link_briefs']==[]
+
+
+def test_html_element_name_evidence_keeps_literal_tag_boundary():
+    from sourceloom.active_composition import markup_element_name_in_quote
+
+    assert markup_element_name_in_quote('font element','the <font> element in HTML')
+    assert not markup_element_name_in_quote('font element','the font system')
+    assert not markup_element_name_in_quote('color property','the <color> element')
+
+
+def test_coordinated_color_evidence_requires_each_component_in_one_sentence():
+    from sourceloom.active_composition import coordinated_color_components_in_quote
+
+    assert coordinated_color_components_in_quote(
+        'foreground and background colors',
+        'The background, foreground and link colors are all specified.')
+    assert not coordinated_color_components_in_quote(
+        'foreground and background colors','The foreground is dark. The background is light.')
+
+
+def test_markup_property_pair_evidence_keeps_each_identifier_literal():
+    from sourceloom.active_composition import markup_property_pair_in_quote
+
+    assert markup_property_pair_in_quote('color and background-color properties',
+        'Use the CSS properties <color> and <background-color> or its shorthand <background>.')
+    assert not markup_property_pair_in_quote('color and background-color properties',
+        'Use the CSS properties <color> and <border-color>.')
+
+
+def test_css_inline_comments_are_not_reported_as_missing_by_python_only_scanner():
+    from sourceloom.active_composition import respect_original_format
+
+    def report():
+        return {'format':{'findings':[dict(rule_id='FORMAT_CODE_COMMENT_COVERAGE',
+            location='LINE-0002',old_text='a:link { /* link state */')],
+            'candidates':[]}}
+    good={'blocks':[dict(id='b',kind='explanation',markdown=(
+        '```css\na:link { /* link state */\n color: red; /* red text */\n}\n```'))]}
+    bad={'blocks':[dict(id='b',kind='explanation',markdown=(
+        '```css\na:link { /* link state */\n color: red;\n}\n```'))]}
+    assert not respect_original_format(report(),good,{'objects':[]})['format']['findings']
+    assert respect_original_format(report(),bad,{'objects':[]})['format']['findings']
+
+
+def test_inline_code_img_tag_is_not_a_rendered_uncentered_image():
+    from sourceloom.active_composition import respect_original_format
+    line='页面说明了 `<img>` 标签的用途'
+    report={'format':{'findings':[dict(rule_id='FORMAT_IMAGE_NOT_CENTERED',
+        location='LINE-0001',old_text=line)],'candidates':[]}}
+    draft={'blocks':[dict(id='b',kind='explanation',markdown=line)]}
+    result=respect_original_format(report,draft,{'objects':[]})
+    assert not result['format']['findings']
+    actual='页面显示 <img src="diagram.png">'
+    report['format']['findings'][0]['old_text']=actual
+    assert respect_original_format(report,{'blocks':[dict(id='b',kind='explanation',markdown=actual)]},
+                                   {'objects':[]})['format']['findings']
+
+
+def test_reading_projection_fences_unfenced_html_code_without_changing_saved_draft():
+    from sourceloom.media import reading_draft
+
+    raw='a:link {\n color: red;\n}'
+    project={'inventory':{'objects':[{'id':'code','kind':'code','text':raw}]},
+             'draft':{'blocks':[{'id':'b','kind':'explanation','markdown':'Example\n\n'+raw,
+                                  'embedded_object_ids':['code']}]}}
+    shown=reading_draft(project)['blocks'][0]['markdown']
+    assert '```text\n'+raw+'\n```' in shown
+    assert project['draft']['blocks'][0]['markdown']=='Example\n\n'+raw
+
+
+def test_missing_official_name_can_use_saved_primary_page_evidence(tmp_path,monkeypatch):
+    from sourceloom.active_composition import validate_names
+
+    resources=Resources(Store(tmp_path),source())
+    resources.add('code-example','a:link { color: red }',kind='code',locator='original')
+    official_url='https://www.w3.org/TR/CSS22/selector.html'
+    def saved_official(action):
+        assert action['url']==official_url
+        resources.add('official-css','The link pseudo-classes: :link and :visited',
+                      kind='external',locator=official_url,original_url=official_url)
+        return {'kind':'read','id':'official-css'}
+    monkeypatch.setattr(resources,'execute',saved_official)
+    concept=dict(id='link-class',chinese_name='链接伪类',english_name='Link Pseudo-Classes',
+                 naming_status='verified',name_evidence=[dict(resource_id='code-example',quote='a:link')],
+                 abbreviations=[],source_ids=['code-example'])
+    checked=validate_names({'concepts':[concept]},resources)
+    assert checked['concepts'][0]['name_evidence'][-1]['resource_id']=='official-css'
+
+
+def test_plural_source_name_uses_verified_singular_w3c_name(tmp_path,monkeypatch):
+    from sourceloom.active_composition import validate_names
+
+    resources=Resources(Store(tmp_path),source())
+    resources.add('cited','Some images are ignored by assistive technologies.',
+                  kind='external',locator='original')
+    official_url='https://www.w3.org/WAI/WCAG22/Understanding/page-titled.html'
+    def saved_official(action):
+        assert action['url']==official_url
+        resources.add('official-assistive','Key Terms: assistive technology is hardware and/or software.',
+                      kind='external',locator=official_url,original_url=official_url)
+        return {'kind':'read','id':'official-assistive'}
+    monkeypatch.setattr(resources,'execute',saved_official)
+    concept=dict(id='assistive-tech',chinese_name='辅助技术',english_name='assistive technology',
+                 naming_status='verified',name_evidence=[dict(resource_id='cited',
+                 quote='assistive technologies')],abbreviations=[],source_ids=[])
+    checked=validate_names({'concepts':[concept]},resources)
+    assert checked['concepts'][0]['name_evidence'][-1]['resource_id']=='official-assistive'
+
+
+def test_grouped_html_element_names_support_each_member():
+    from sourceloom.active_composition import markup_element_name_in_quote
+
+    quote='The HTML5 <figure> and <figcaption> elements provide captions.'
+    assert markup_element_name_in_quote('figure element',quote)
+    assert markup_element_name_in_quote('figcaption element',quote)
+    assert not markup_element_name_in_quote('table element',quote)
+
+
+def test_name_quote_rebinds_only_to_unique_exact_original(tmp_path):
+    from sourceloom.active_composition import validate_names
+
+    resources=Resources(Store(tmp_path),source())
+    resources.add('original-line','Use the alt attribute to describe the action.',
+                  kind='text',locator='original')
+    resources.add('related-page','A related page discusses image links.',
+                  kind='external',locator='related')
+    concept=dict(id='alt',chinese_name='替代文本属性',english_name='alt attribute',
+                 naming_status='verified',name_evidence=[dict(resource_id='related-page',
+                 quote='Use the alt attribute to describe the action.')],
+                 abbreviations=[],source_ids=['original-line'])
+    checked=validate_names({'concepts':[concept]},resources)
+    assert checked['concepts'][0]['name_evidence'][0]['resource_id']=='original-line'
+    resources.add('second-original','Use the alt attribute to describe the action.',
+                  kind='text',locator='other')
+    concept['source_ids']=['original-line','second-original']
+    concept['name_evidence'][0]['resource_id']='related-page'
+    with pytest.raises(ValueError,match='术语名称证据不在已保存来源中'):
+        validate_names({'concepts':[concept]},resources)
+
+
+def test_post_patch_link_review_only_rechecks_touched_obligations():
+    from sourceloom.active_composition import reviewed_link_guides
+
+    job={'active_plans':[{'link_briefs':[
+        {'source_id':'link-a','role':'content'},
+        {'source_id':'link-b','role':'content'}]}]}
+    obligations=[{'id':'a','source_id':'link-a'},{'id':'b','source_id':'link-b'}]
+    assert [g['source_id'] for g in reviewed_link_guides(
+        job,['link-a','link-b'],obligations,{'a','b'})]==['link-a','link-b']
+    assert [g['source_id'] for g in reviewed_link_guides(
+        job,['link-a','link-b'],obligations,{'b'})]==['link-b']
+
+
+def test_ready_result_drops_only_already_opened_read_actions(tmp_path):
+    from sourceloom.active_composition import discard_redundant_reads_with_result
+
+    resources=Resources(Store(tmp_path),source())
+    resources.add('original','Complete original paragraph.',kind='text',locator='original')
+    resources.read('original')
+    ready=dict(result={'edits':[]},gaps=[],actions=[dict(kind='read',resource_id='original')])
+    fixed,reused=discard_redundant_reads_with_result(ready,resources)
+    assert fixed['actions']==[] and reused==['original']
+    assert ready['actions']
+    needed=dict(result={'edits':[]},gaps=[],actions=[dict(kind='page',url='https://example.org/')])
+    assert discard_redundant_reads_with_result(needed,resources)==(needed,[])
+
+
+def test_editorial_link_scope_is_not_mistaken_for_evidence_limit():
+    from sourceloom.active_composition import strip_editorial_link_limits
+
+    plan={'link_briefs':[
+        {'source_id':'a','limitation':'当前节点只需说明该目标页主题，不搬入全部示例'},
+        {'source_id':'b','limitation':'该图只给出估计用时，不能证明路线最优'}]}
+    checked,removed=strip_editorial_link_limits(plan)
+    assert checked['link_briefs'][0]['limitation']==''
+    assert checked['link_briefs'][1]['limitation']==plan['link_briefs'][1]['limitation']
+    assert [r['source_id'] for r in removed]==['a']
+    assert plan['link_briefs'][0]['limitation']
+
+
+def test_catalogued_numeronyms_need_name_plan_before_writer():
+    from sourceloom.active_composition import missing_catalogued_numeronyms
+
+    src={'objects':[{'id':'text','kind':'text','text':'Supports i18n and l10n.'},
+                    {'id':'code','kind':'code','text':'a1b = 3'}]}
+    assert missing_catalogued_numeronyms(src,['text','code'],[])==['i18n','l10n']
+    declared=[{'abbreviations':[{'short':'I18N'},{'short':'L10N'}]}]
+    assert missing_catalogued_numeronyms(src,['text','code'],declared)==[]
+
 def test_confirmed_existing_term_pair_is_a_bounded_format_patch():
     from sourceloom.active_composition import compiled_term_format_proposal
     from sourceloom.writing import canonical
@@ -569,3 +1534,75 @@ def test_grouped_review_findings_expand_only_exact_individual_quotes():
     assert result['grouped_finding_expansions'][0]['submitted']==issue
     for bad in [issue|{'block_id':'a, missing'},issue|{'output_quote':'## Second\n## First'},issue|{'output_quote':'## First'},issue|{'block_id':'a, a'}]:
         assert expand_exact_grouped_findings({'findings':[bad]},draft)['findings']==[bad]
+
+
+def test_prefetched_link_repair_binds_actual_target_and_keeps_destination_for_review(tmp_path):
+    from sourceloom.active_composition import bind_prefetched_link_evidence
+    src={'objects':[dict(id='link',kind='link',text='Details',locator='input/a',
+                         target='https://example.org/details')]}
+    resources=Resources(Store(tmp_path),src)
+    resources.add('target','Details about date formats and locale ambiguity.',kind='external',
+                  locator='https://example.org/details',original_url='https://example.org/details')
+    p={'link_briefs':[dict(source_id='link',role='content',destination='Claim still needs review',
+                            evidence=[dict(resource_id='link',quote='Details')],unavailable_reason='')]}
+    repairs=bind_prefetched_link_evidence(p,src,resources,[{'source_id':'link'}])
+    assert repairs[0]['resource_id']=='target'
+    assert p['link_briefs'][0]['evidence']==[dict(resource_id='target',
+        quote='Details about date formats and locale ambiguity.')]
+    assert p['link_briefs'][0]['destination']=='Claim still needs review'
+
+
+def test_unplaced_concepts_follow_source_unit_and_prerequisite_order():
+    from sourceloom.active_composition import align_unplaced_concepts
+    p={'concepts':[dict(id='base',source_ids=['s1'],requires=[]),
+                   dict(id='advanced',source_ids=['s1'],requires=['base'])],
+       'nodes':[dict(id='n1',source_ids=['s1'],establishes_concepts=['advanced'])]}
+    assert align_unplaced_concepts(p)==[dict(concept_id='base',node_id='n1',
+                                           reason='planned_concept_unplaced')]
+    assert p['nodes'][0]['establishes_concepts']==['base','advanced']
+
+
+def test_reviewed_false_name_pair_can_retire_exactly_deleted_definition():
+    from sourceloom.active_composition import retire_refuted_formal_concepts
+    concept=dict(id='web',chinese_name='网页',english_name='Web',requires=[])
+    later=dict(id='later',chinese_name='后续',english_name='Later',requires=['web'])
+    node=dict(requires_concepts=[],establishes_concepts=['web','later'])
+    job=dict(active_plans=[dict(concepts=[concept,later],nodes=[node])],
+             writing_batches=[dict(requires_concepts=['web'],establishes_concepts=['web','later'])])
+    candidate=dict(unresolved_content_findings=[dict(problem='已查证术语在实际正文中缺少名称：Web')],
+        delta=dict(established_concepts=['web','later'],
+                              concept_evidence=[dict(concept_id='web'),dict(concept_id='later')]),
+        content_reviews=[dict(findings=[dict(block_id='b1',problem='网页与 Web 名称范围不对应',
+                                              required_change='删除错误的正式定义')])],
+        patch_history=[dict(edits=[dict(block_id='b1',old_text='- 网页（Web）：错误定义',new_text='')])])
+    assert retire_refuted_formal_concepts(job,candidate)[0]['concept_id']=='web'
+    assert [c['id'] for c in job['active_plans'][0]['concepts']]==['later']
+    assert later['requires']==[]
+    assert candidate['delta']['established_concepts']==['later']
+    assert candidate['unresolved_content_findings']==[]
+
+
+def test_unresolved_checkpoint_stops_later_paid_units(tmp_path):
+    engine=ActiveComposition(Production(Store(tmp_path),{}))
+    job=dict(stage='active_write',active_checkpoints=[dict(
+        unresolved_content_findings=[],unresolved_revision={},
+        unresolved_format=dict(findings=[dict(rule_id='FMT-001')],candidates=[]))])
+    with pytest.raises(ValueError,match='停止后续付费生成'):
+        engine.step(job)
+
+
+def test_authored_spacing_removes_deletion_gap_without_touching_original():
+    from sourceloom.active_composition import normalize_authored_spacing
+    draft=dict(blocks=[dict(id='authored',kind='explanation',markdown='## 日期\n\n\n\n正文'),
+                       dict(id='original',kind='object',markdown='A\n\n\nB')])
+    result=normalize_authored_spacing(draft,dict(objects=[]))
+    assert result['blocks'][0]['markdown']=='## 日期\n\n正文'
+    assert result['blocks'][1]['markdown']=='A\n\n\nB'
+    code=dict(blocks=[dict(id='authored-code',kind='explanation',
+                           markdown='```python\na = 1\n\n\nb = 2\n```')])
+    assert normalize_authored_spacing(code,dict(objects=[]))==code
+    empty=dict(blocks=[dict(id='empty',kind='explanation',markdown='',
+                            obligation_ids=[],object_ids=[],embedded_object_ids=[]),
+                       dict(id='still-bound',kind='explanation',markdown='',
+                            obligation_ids=['f1'],object_ids=[],embedded_object_ids=[])])
+    assert [block['id'] for block in normalize_authored_spacing(empty,dict(objects=[]))['blocks']]==['still-bound']

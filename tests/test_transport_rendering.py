@@ -3,6 +3,51 @@ import copy
 import pytest
 
 from sourceloom.providers import strict_schema, deepseek_schema, transport_schema, impossible_closed_schema
+
+
+def test_codex_schema_closes_empty_object_items():
+    result=strict_schema({'type':'array','items':{'type':'object','additionalProperties':True}})
+    assert result['items']=={'type':'object','properties':{},'required':[],
+                             'additionalProperties':False}
+
+
+def test_codex_image_attachment_stages_exact_archived_bytes(tmp_path):
+    from io import BytesIO
+    from PIL import Image
+    from sourceloom.store import Store
+    from sourceloom.providers import stage_codex_images
+    picture=BytesIO();Image.new('RGB',(3,2),'white').save(picture,'PNG')
+    store=Store(tmp_path/'store');key=store.blob(picture.getvalue())
+    work=tmp_path/'call';work.mkdir()
+    args=stage_codex_images(store,work,[{'sha256':key,'source_id':'image-1'}])
+    assert args[:1]==['--image']
+    assert (work/'source-image-1.png').read_bytes()==picture.getvalue()
+
+
+def test_codex_invalid_schema_event_is_a_definite_pre_generation_rejection(tmp_path):
+    import json
+    from sourceloom.providers import codex_rejected_schema_before_generation
+    events=tmp_path/'events.jsonl'
+    error=json.dumps({'error':{'code':'invalid_json_schema'},'status':400})
+    events.write_text(json.dumps({'type':'turn.started'})+'\n'+
+                      json.dumps({'type':'turn.failed','error':{'message':error}})+'\n',
+                      encoding='utf-8')
+    assert codex_rejected_schema_before_generation(events)
+    events.write_text(events.read_text(encoding='utf-8')+'{"type":"turn.completed"}\n',
+                      encoding='utf-8')
+    assert not codex_rejected_schema_before_generation(events)
+
+
+def test_codex_unsupported_version_event_is_a_definite_pre_generation_rejection(tmp_path):
+    import json
+    from sourceloom.providers import codex_pre_generation_rejection
+    events=tmp_path/'events.jsonl'
+    error=json.dumps({'type':'error','status':400,'error':{
+        'type':'invalid_request_error',
+        'message':"The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade."}})
+    events.write_text(json.dumps({'type':'turn.started'})+'\n'+
+                      json.dumps({'type':'turn.failed','error':{'message':error}})+'\n',encoding='utf-8')
+    assert codex_pre_generation_rejection(events)=='unsupported_codex_version'
 from sourceloom.writing import expand_response
 from sourceloom.math_render import markdown_renderer
 from sourceloom.export import safe_html

@@ -219,7 +219,7 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
     ordered_files=sorted(files.items(),key=lambda pair:mimetypes.guess_type(pair[0])[0] in SAFE_IMAGE)
     for name, raw in ordered_files:
         ext = name.lower().rsplit(".", 1)[-1]
-        if ext in {"txt", "md", "markdown", "html", "htm"}:
+        if ext in {"txt", "md", "markdown", "rst", "rest", "html", "htm"}:
             text = decode(raw)
             document_base=source_url
             if ext in {'md','markdown'}:
@@ -232,10 +232,16 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                     slug=re.search(r'(?m)^slug:\s*["\']?([^\r\n"\']+)',front[1])
                     if slug and source_url and source_url.startswith('https://raw.githubusercontent.com/mdn/content/'):
                         document_base='https://developer.mozilla.org/en-US/docs/'+slug[1].strip()
-            if ext in {"html", "htm", "md", "markdown"}:
+            if ext in {"html", "htm", "md", "markdown", "rst", "rest"}:
                 markdown = MarkdownIt("commonmark", {"html":True}).enable("table") if ext in {"md", "markdown"} else None
                 tokens=markdown.parse(text) if markdown else []
-                html = markdown.render(text) if markdown else text
+                if ext in {'rst','rest'}:
+                    from docutils.core import publish_parts
+                    html=publish_parts(text,writer_name='html5',settings_overrides={
+                        'doctitle_xform':False,'file_insertion_enabled':False,'raw_enabled':False,
+                        'report_level':5,'halt_level':6})['body']
+                else:
+                    html = markdown.render(text) if markdown else text
                 first_object=len(objects)
                 html_objects(html, name)
                 if markdown:
@@ -295,6 +301,11 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
             parts = unpack(raw)
             read_word(parts,name,store,resources,add,gap,SAFE_IMAGE)
         elif mimetypes.guess_type(name)[0] in SAFE_IMAGE:
+            if name.startswith('web-assets/'):
+                # A fetched page asset belongs to its HTML/Markdown occurrence.
+                # Keep its bytes in originals/resources without making a second
+                # detached article image when the source uses srcset or a proxy.
+                continue
             if not any(o.get('resource_id')==resource_index[name] for o in objects):
                 add("image", name, name, resource_id=resource_index[name])
         else:

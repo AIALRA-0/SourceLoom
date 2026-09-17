@@ -112,23 +112,76 @@ class Resources:
             if not allow_external:
                 raise ValueError('当前任务禁止外部查证')
             from .network import fetch
+            from urllib.parse import urlsplit,urlunsplit
             url = action['url']
             key = 'external-' + digest(url.encode())[:20]
             if key not in self.state['entries']:
-                raw, mime, final = fetch(url, {'text/html', 'text/plain', 'text/markdown'}, timeout=15)
+                try:
+                    parsed=urlsplit(url)
+                    # Historical source pages often link to their own HTTP
+                    # archive. Fetch the same host/path through HTTPS while
+                    # keeping the literal original link and recording the
+                    # actual fetched address separately.
+                    request_url=urlunsplit(parsed._replace(scheme='https')) if parsed.scheme=='http' else url
+                    raw, mime, final = fetch(request_url, {'text/html', 'text/plain', 'text/markdown'}, timeout=15)
+                except (ValueError,OSError,TimeoutError) as error:
+                    result=dict(kind='page',url=url,status='unavailable',
+                                reason=str(error)[:240],fetched_at=time.time())
+                    self.state['reads'].append(result)
+                    return result
                 if mime == 'text/html':
+                    from urllib.parse import urljoin
                     doc = BeautifulSoup(raw, 'html.parser')
+                    page_title=doc.title.get_text(' ',strip=True) if doc.title else ''
+                    if (page_title=='Client Challenge' and
+                            'A required part of this site' in doc.get_text(' ',strip=True)):
+                        result=dict(kind='page',url=url,status='unavailable',
+                            reason='目标站返回 Client Challenge 客户端校验页，未返回项目正文',
+                            snapshot_blob=self.store.blob(raw),fetched_at=time.time())
+                        self.state['reads'].append(result)
+                        return result
+                    image_refs=[]
+                    for image in doc.find_all('img'):
+                        address=image.get('src') or image.get('data-src') or ''
+                        if not address or address.startswith('data:'):continue
+                        target=urljoin(final,address)
+                        if target not in {item['url'] for item in image_refs}:
+                            image_refs.append(dict(url=target,alt=image.get('alt',''),
+                                nearby_text=image.parent.get_text(' ',strip=True)[:160] if image.parent else ''))
                     for node in doc.select('script,style,nav,header,footer,noscript'):
                         node.decompose()
                     text = doc.get_text('\n', strip=True)
+                    if image_refs:
+                        text += '\n\nLinked page image references (images require a separate image action):\n'
+                        text += '\n'.join(f"{item['url']} | alt={item['alt']} | nearby={item['nearby_text']}"
+                                          for item in image_refs[:12])
                 else:
                     text = raw.decode('utf-8', errors='replace')
                 self.add(key, text, kind='external', locator=final,
-                         original_url=url, snapshot_blob=self.store.blob(raw), fetched_at=time.time())
+                         original_url=url, snapshot_blob=self.store.blob(raw), fetched_at=time.time(),
+                         image_refs=image_refs[:12] if mime=='text/html' else [])
             # Long references are catalogued, never silently truncated as full pages
             length = self.state['entries'][key]['chars']
             result = self.read(key, 0, min(length, 6000))
             result['complete'] = length <= 6000
+            result['image_refs']=self.state['entries'][key].get('image_refs',[])
+        elif kind=='image':
+            if not allow_external:raise ValueError('当前任务禁止外部查证')
+            from .network import fetch
+            url=action['url']
+            parent=self.state['entries'].get(key)
+            if parent and url not in {item['url'] for item in parent.get('image_refs',[])}:
+                raise ValueError('图片地址不属于已经读取的目标页')
+            parent_page=parent.get('original_url',parent.get('locator','')) if parent else ''
+            key='external-image-'+digest(url.encode())[:20]
+            if key in self.state['entries']:
+                result=self.read(key)
+                result['reused_visual_evidence']=True
+            else:
+                raw,mime,final=fetch(url,{'image/png','image/jpeg','image/webp','image/gif'},timeout=15)
+                result=dict(kind='image',id=key,sha256=self.store.blob(raw),mime=mime,
+                            url=final,original_url=url,parent_page_url=parent_page,
+                            visual_evidence_required=True)
         else:
             raise ValueError('未知资源动作')
         self.state['reads'].append(result)

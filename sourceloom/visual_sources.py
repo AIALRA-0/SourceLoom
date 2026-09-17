@@ -10,7 +10,11 @@ from .store import digest
 
 
 def decorative_resource(obj):
+    if obj.get('kind')=='text' and not obj.get('text','').strip():return True
+    if obj.get('source_scope') in {'site_chrome','source_metadata'}:return True
     evidence=obj.get('visual_classification') or {}
+    if evidence.get('method')=='source_dom_heading_home_link' and evidence.get('source_role')=='site_branding':
+        return True
     return (evidence.get('method')=='all_pixels_alpha_zero'
             and evidence.get('source_role')=='explicit_empty_alt'
             and not obj.get('original_extracted_text',obj.get('text','')).strip())

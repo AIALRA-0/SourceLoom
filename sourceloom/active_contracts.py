@@ -49,6 +49,7 @@ class Concept(Strict):
     name_evidence: list[NameEvidence] = []
     abbreviations: list[Abbreviation] = []
     naming_note: str = ''
+    naming_status_reason: str = ''
 
 
 class ExplanationPlan(Strict):
@@ -76,21 +77,34 @@ class CompositionNode(Strict):
     section_outline: list[dict] = []
 
 
+class LinkBrief(Strict):
+    source_id: str
+    role: Literal['content', 'navigation', 'administrative']
+    topic: str = ''
+    connection: str = ''
+    destination: str = ''
+    limitation: str = ''
+    evidence: list[NameEvidence] = []
+    unavailable_reason: str = ''
+
+
 class CompositionPlan(Strict):
     contract: RewriteContract
     obligations: list[SourceObligation] = Field(min_length=1)
     concepts: list[Concept]
     nodes: list[CompositionNode] = Field(min_length=1)
+    link_briefs: list[LinkBrief] = []
 
 
 class CompositionPart(Strict):
     obligations: list[SourceObligation] = Field(min_length=1)
     concepts: list[Concept]
     nodes: list[CompositionNode] = Field(min_length=1)
+    link_briefs: list[LinkBrief] = []
 
 
 class Action(Strict):
-    kind: Literal['read', 'find', 'neighbors', 'search', 'page', 'release']
+    kind: Literal['read', 'find', 'neighbors', 'search', 'page', 'image', 'release']
     resource_id: str = ''
     query: str = ''
     start: int = Field(default=0, ge=0)
@@ -197,7 +211,19 @@ class FormatDecision(Strict):
     reason: str = Field(min_length=1)
 
 
+class LinkAssessment(Strict):
+    source_id: str
+    block_id: str
+    output_quote: str = Field(min_length=1)
+    topic_explained: bool
+    connection_explained: bool
+    destination_explained: bool
+    limitation_explained: bool
+    image_explained: bool = True
+
+
 class ContentReview(Strict):
     findings: list[ContentFinding]
     checked_obligation_ids: list[str]
     format_decisions: list[FormatDecision] = []
+    link_assessments: list[LinkAssessment] = []

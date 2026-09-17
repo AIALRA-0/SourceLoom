@@ -362,6 +362,45 @@ class Queue:
                 raise KeyError(jid)
         return {'cancel_requested':True}
 
+    def continue_preprocessing(self, jid):
+        """Resume a failed zero-call intake after missing assets were supplied.
+
+        The original document bytes and job identity stay fixed; this cannot
+        replay a generation or reset a paid call budget.
+        """
+        from .active_composition import initialize
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0])
+            project_row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            project=json.loads(project_row[0])
+            old=job.get('inventory') or job.get('source',{})
+            new=project.get('inventory',{})
+            old_originals={(item['name'],item['sha256']) for item in old.get('originals',[])}
+            new_originals={(item['name'],item['sha256']) for item in new.get('originals',[])}
+            if (job.get('pipeline')!='active_composition_v1' or job['status']!='failed'
+                    or job.get('calls') or job.get('pending') or job.get('draft',{}).get('blocks')
+                    or job.get('stage') not in {'active_index','active_visual'}
+                    or project.get('active_job') or project.get('draft')
+                    or not old.get('originals') or not new.get('originals')
+                    or not old_originals.issubset(new_originals)
+                    or len(new.get('unknown',[]))>=len(old.get('unknown',[]))):
+                raise Conflict('只允许同一原件补齐资源后续接尚未发出模型请求的接入任务')
+            job.update(inventory=new,source=new,source_digest=new['digest'],
+                       source_snapshot_digest=digest(new),status='queued',error=None)
+            job.pop('error_type',None);job.pop('finished',None)
+            initialize(job)
+            project.update(active_job=jid,state='queued')
+            cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                       ('queued',json.dumps(job,ensure_ascii=False),jid))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',
+                       (json.dumps(project,ensure_ascii=False),project['id']))
+            cx.execute('UPDATE production_control SET status=?,owner=NULL,lease_until=0,cancel_requested=0 WHERE id=?',
+                       ('queued',jid))
+        return job
+
     def retry_validation(self, jid, config=None):
         """Continue a known returned artifact after a code fix, retaining all limits."""
         snapshot=self.store.job(jid)
@@ -384,8 +423,11 @@ class Queue:
             call_role=str(call.get('role') or '').removesuffix('__fallback')
             # Migrate the known old checkpoint bug: the trial circuit rejected
             # the request before Provider created any call or dispatched bytes.
-            no_call_preflight=(not job['calls'] and
-                job.get('error')=='本批同类失败已连续发生两次，先修正原因，未发送新请求')
+            no_call_preflight=(not job['calls'] and (
+                job.get('error')=='本批同类失败已连续发生两次，先修正原因，未发送新请求' or
+                (job.get('stage')=='active_visual' and
+                 job.get('error')=='当前角色通道不能读取原始图片，未降级为仅文字审核' and
+                 (config or {}).get('role_providers',{}).get('active_visual',{}).get('provider')=='openai-compatible')))
             if (job.get('pending') and call.get('step_key')!=job['pending'] and
                     job.get('error')=='本批同类失败已连续发生两次，先修正原因，未发送新请求'):
                 job.setdefault('preflight_stops',[]).append(dict(key=job['pending'],dispatched=False,
@@ -398,9 +440,19 @@ class Queue:
                 call.get('status')=='rejected' and call.get('error_code')=='subscription_limit_exceeded'))
             if rejected:
                 key=job.get('pending')
-                local_preflight=json.loads(billing['body']).get('reason')=='local_preflight_before_dispatch'
-                if not key or (key in job.get('rejected_resubmissions',{}) and not local_preflight):
-                    raise Conflict('已明确拒绝的该阶段只允许修正配置后继续一次')
+                local_preflight=json.loads(billing['body']).get('reason') in {
+                    'local_preflight_before_dispatch','schema_rejected_before_generation'}
+                if not key:
+                    raise Conflict('已明确拒绝的该阶段缺少原阶段身份，不能继续')
+                if key in job.get('rejected_resubmissions',{}) and not local_preflight:
+                    prior=[row for row in job.get('calls',[]) if row.get('step_key')==key
+                           and row.get('status')=='rejected']
+                    candidate=(config or {}).get('role_providers',{}).get(call_role,{})
+                    last_bill=json.loads(billing['body']) if billing else {}
+                    if (len(prior)>=4 or not candidate
+                        or (candidate.get('provider')==call.get('channel')
+                            and candidate.get('model')==last_bill.get('model'))):
+                        raise Conflict('只允许在改用新的已授权通道后继续；该阶段已有多次明确拒单，或新配置仍是相同通道')
                 if not local_preflight:
                     job.setdefault('rejected_resubmissions',{})[key]=call['id']
                 elif job.get('quality_fallback_of') and call_role in {
@@ -449,6 +501,21 @@ class Queue:
                     'reason':'complete adjudication exceeded output capacity; continue as disjoint claim groups'})
                 job.pop('pending',None)
                 returned_invalid=True
+            if (call_role=='active_plan' and call.get('status')=='truncated'
+                    and call.get('finish_reason')=='length' and call.get('response_blob')
+                    and billing and billing['actual'] is not None):
+                key=job.get('pending')
+                previous_bill=json.loads(billing['body'])
+                replacement=(config or {}).get('role_providers',{}).get('active_plan',{})
+                retries=job.setdefault('known_plan_truncation_retries',{})
+                if (key and key not in retries and replacement.get('model')
+                        and replacement['model']!=previous_bill.get('model')):
+                    retries[key]=dict(original_call=call['id'],
+                        original_model=previous_bill.get('model'),
+                        replacement_model=replacement['model'],
+                        reason='received and billed plan exceeded output capacity')
+                    job.pop('pending',None)
+                    returned_invalid=True
             if (call.get('status') in {'truncated','reasoning_exhausted'} and billing and
                     billing['actual'] is not None and call.get('response_blob')):
                 from .providers import reasoning_exhausted

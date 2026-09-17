@@ -6,8 +6,10 @@ import socket
 import ssl
 import time
 import hashlib
+import re
 from pathlib import PurePosixPath
 from bs4 import BeautifulSoup
+from markdown_it import MarkdownIt
 from urllib.parse import urljoin, urlsplit
 
 from .ingest import MAX_FILE
@@ -80,30 +82,79 @@ def fetch(url,allowed_types=None,timeout=12):
 
 
 def fetch_bundle(url):
-    """Snapshot original HTML and bounded raster assets without rewriting it."""
+    """Snapshot original HTML/Markdown and bounded referenced images."""
     deadline=time.monotonic()+60
     raw,mime,final=fetch(url)
     suffix=DOCUMENT_TYPES[mime]
-    if mime=='text/plain' and PurePosixPath(urlsplit(final).path).suffix.lower() in {'.md','.markdown'}:suffix='md'
+    if mime=='text/plain':
+        source_suffix=PurePosixPath(urlsplit(final).path).suffix.lower()
+        if source_suffix in {'.md','.markdown'}:suffix='md'
+        elif source_suffix in {'.rst','.rest'}:suffix='rst'
     uploads=[('snapshot.'+suffix,raw)];aliases={};failures=[]
-    if mime!='text/html':return uploads,final,aliases,failures
-    soup=BeautifulSoup(raw,'html.parser')
-    base=final
-    if soup.find('base',href=True):base=urljoin(final,soup.find('base',href=True)['href'])
     targets=[]
-    for image in soup.find_all('img'):
-        ref=image.get('src') or image.get('data-src') or ''
+    if mime=='text/html':
+        soup=BeautifulSoup(raw,'html.parser')
+        base=final
+        if soup.find('base',href=True):base=urljoin(final,soup.find('base',href=True)['href'])
+        references=(image.get('src') or image.get('data-src') or '' for image in soup.find_all('img'))
+    elif suffix=='md':
+        tokens=MarkdownIt('commonmark').parse(raw.decode('utf-8',errors='replace'))
+        markdown_refs=[child.attrGet('src') or '' for token in tokens for child in token.children or []
+                       if child.type=='image']
+        # CommonMark leaves literal <img> elements as HTML tokens. The intake
+        # parser still records them as images, so fetch their bytes here too.
+        html_refs=[image.get('src') or image.get('data-src') or ''
+                   for image in BeautifulSoup(raw,'html.parser').find_all('img')]
+        references=markdown_refs+html_refs
+        base=final
+    else:return uploads,final,aliases,failures
+    for ref in references:
         if ref and not ref.startswith('data:'):
             target=urljoin(base,ref)
             if target not in targets:targets.append(target)
     total=len(raw)
-    types={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp'}
+    types={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp',
+           'image/svg+xml':'png'}
     for index,target in enumerate(targets):
         if index>=24 or time.monotonic()>=deadline:
             failures.append(dict(target=target,reason='网页图片数量或 60 秒获取时限已达到，原地址保留'))
             continue
         try:
             image,kind,resolved=fetch(target,set(types),min(12,deadline-time.monotonic()))
+            if kind=='image/svg+xml':
+                from defusedxml import ElementTree
+                import cairosvg
+                if len(image)>2_000_000:
+                    raise ValueError('SVG 源文件超过安全处理上限')
+                root=ElementTree.fromstring(image)
+                if root.tag.rsplit('}',1)[-1].lower()!='svg' or any(
+                    element.tag.rsplit('}',1)[-1].lower() in {'script','foreignobject','use'} or
+                    (element.tag.rsplit('}',1)[-1].lower()=='style' and
+                     re.search(r'url\s*\(|@import\b',element.text or '',re.I)) or
+                    any((key.rsplit('}',1)[-1].lower()=='href' and value and
+                         not (element.tag.rsplit('}',1)[-1].lower()=='image' and
+                              value.startswith(('data:image/png;base64,','data:image/jpeg;base64,')))) or
+                        (key.rsplit('}',1)[-1].lower()=='style' and 'url(' in value.lower())
+                        for key,value in element.attrib.items())
+                    for element in root.iter()):
+                    raise ValueError('SVG 包含不可安全栅格化的外部或脚本内容')
+                def length(value):
+                    match=re.fullmatch(r'\s*(\d+(?:\.\d+)?)(?:px)?\s*',value or '')
+                    return float(match[1]) if match else None
+                width=length(root.get('width'));height=length(root.get('height'))
+                viewbox=[float(part) for part in re.split(r'[\s,]+',root.get('viewBox','').strip())
+                         if part] if root.get('viewBox') else []
+                if len(viewbox)==4 and viewbox[2]>0 and viewbox[3]>0:
+                    width=width or viewbox[2];height=height or viewbox[3]
+                width=width or 512;height=height or 512
+                if width<=0 or height<=0 or width/height>32 or height/width>32:
+                    raise ValueError('SVG 页面比例超出安全范围')
+                scale=min(1600/max(width,height),max(1,512/max(width,height)))
+                try:
+                    image=cairosvg.svg2png(bytestring=image,
+                        output_width=max(1,round(width*scale)),output_height=max(1,round(height*scale)))
+                except Exception as exc:
+                    raise ValueError('SVG 无法安全栅格化') from exc
             if total+len(image)>MAX_FILE*4:raise ValueError('网页与资源超过 100 MB 总量')
             name='web-assets/'+hashlib.sha256(target.encode()).hexdigest()+'.'+types[kind]
             uploads.append((name,image));aliases[target]=name;total+=len(image)
