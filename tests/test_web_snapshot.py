@@ -5,6 +5,45 @@ from sourceloom.ingest import intake
 from sourceloom.store import Store
 
 
+class ApiResponse:
+    def __init__(self,status=200,body=b'{}',mime='application/json'):
+        self.status=status;self.body=body;self.mime=mime
+    def getheader(self,name,default=''):
+        return self.mime if name.lower()=='content-type' else default
+    def read(self,limit):
+        return self.body[:limit]
+
+
+def test_api_request_pins_address_and_sends_bounded_json(monkeypatch):
+    observed={}
+    class Connection:
+        def __init__(self,host,address,timeout):observed.update(host=host,address=address,timeout=timeout)
+        def request(self,method,path,body=None,headers=None):observed.update(method=method,path=path,body=body,headers=headers)
+        def getresponse(self):return ApiResponse(body=b'{"ok":true}')
+        def close(self):pass
+    monkeypatch.setattr(network,'public_addresses',lambda host:['203.0.113.9'])
+    monkeypatch.setattr(network,'PinnedHTTPS',Connection)
+    raw,mime,url=network.api_request('https://api.example.test/search',method='POST',
+        headers={'x-api-key':'server-secret'},json_body={'query':'name'})
+    assert (raw,mime,url)==(b'{"ok":true}','application/json','https://api.example.test/search')
+    assert observed['address']=='203.0.113.9' and observed['path']=='/search'
+    assert observed['headers']['x-api-key']=='server-secret'
+    assert observed['body']==b'{"query":"name"}'
+
+
+def test_api_request_rejects_redirect_without_following_it(monkeypatch):
+    class Connection:
+        def __init__(self,*args):pass
+        def request(self,*args,**kwargs):pass
+        def getresponse(self):return ApiResponse(status=302)
+        def close(self):pass
+    monkeypatch.setattr(network,'public_addresses',lambda host:['203.0.113.9'])
+    monkeypatch.setattr(network,'PinnedHTTPS',Connection)
+    import pytest
+    with pytest.raises(ValueError,match='重定向'):
+        network.api_request('https://api.example.test/search',headers={'x-api-key':'server-secret'})
+
+
 def test_web_snapshot_keeps_original_bytes_and_resolves_duplicate_image_positions(tmp_path,monkeypatch):
     raw=b'<base href="https://assets.example.invalid/book/"><p>We retain both pictures.</p><img src="plot.png"><img src="plot.png">'
     image=BytesIO();Image.new('RGB',(2,2),'white').save(image,'PNG')

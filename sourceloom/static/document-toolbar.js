@@ -10,7 +10,8 @@ export function documentToolbar(project, run, hasOutput, active, status) {
   else if (!hasOutput && project.inventory && run?.status === 'failed' && (['planner','plan_review','writer'].includes(run?.stage) || run?.pipeline === 'active_composition_v1')) actions.push(button('rewrite', '重新改写', true));
   if (hasOutput) {
     actions.push(button('edit', '编辑正文', true));
-    if (project.draft) actions.push(button('readweave', '导入阅读器'));
+    if (project.delivery_state === 'ready_for_review' && project.accepted_revision !== project.revision) actions.push(button('accept', '接受当前版本'));
+    if (project.draft && project.accepted_revision === project.revision) actions.push(button('readweave', '导入阅读器'));
     actions.push(menu('下载', `<a href="/api/projects/${id}/output?format=markdown">下载正文</a>${project.draft ? `<a href="/api/projects/${id}/export">下载阅读包</a>` : ''}${button('download-original', '下载当前原件')}`));
   }
   if (status === 'uncertain') {

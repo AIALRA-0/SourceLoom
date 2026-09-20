@@ -10,7 +10,7 @@ import time
 import unicodedata
 from pathlib import Path
 from . import active_contracts as A
-from .active_resources import Resources
+from .active_resources import Resources, canonical_url
 from .checks import freeze, inspect_draft
 from .contracts import Plan
 from .providers import Provider, Uncertain
@@ -20,6 +20,68 @@ from .store import Conflict, digest
 from .writing import canonical, compose, protected_objects, repair, scan, trim_block_edges, tighten_list_spacing
 
 PIPELINE = 'active_composition_v1'
+PIPELINE_V2 = 'active_composition_v2'
+
+
+def is_v2(job):
+    return job.get('pipeline') == PIPELINE_V2
+
+
+def bounded_prior_context(blocks, limit=8000):
+    """Keep a small continuity window only when the plan identifies a risk."""
+    selected=[];used=0
+    for block in reversed(blocks):
+        value=block.get('markdown','')
+        if selected and used+len(value)>limit:break
+        text=value[-limit:] if not selected and len(value)>limit else value
+        selected.append(text);used+=len(text)
+    return list(reversed(selected))
+
+
+def validate_evidence_plan(plan, obligations, objects, assigned, resources=None):
+    """Validate only obligation-bound evidence, never free-form research."""
+    gaps = {gap['id']: gap for gap in plan.get('evidence_gaps', [])}
+    if len(gaps) != len(plan.get('evidence_gaps', [])):
+        raise ValueError('证据缺口身份重复')
+    obligation_ids=set(obligations)
+    for gap in gaps.values():
+        if gap['obligation_id'] not in obligation_ids:
+            raise ValueError('证据缺口必须绑定当前原文义务：'+gap['id'])
+        if gap['source_id'] != obligations[gap['obligation_id']]['source_id']:
+            raise ValueError('证据缺口来源与原文义务不一致：'+gap['id'])
+        if gap['source_id'] not in assigned or gap['source_id'] not in objects:
+            raise ValueError('证据缺口引用了未分配原对象：'+gap['id'])
+    binding_ids=[]
+    binding_keys=set()
+    for binding in plan.get('evidence_bindings', []):
+        if not binding.get('id'):
+            raise ValueError('证据绑定缺少稳定身份')
+        if binding['gap_id'] not in gaps:
+            raise ValueError('证据绑定引用了不存在的缺口：'+binding['gap_id'])
+        gap=gaps[binding['gap_id']]
+        if binding['obligation_id'] != gap['obligation_id']:
+            raise ValueError('证据绑定没有回到同一原文义务：'+binding['gap_id'])
+        binding_key=binding['id']
+        if binding_key in binding_keys:
+            raise ValueError('证据绑定身份重复：'+binding['id'])
+        binding_keys.add(binding_key)
+        binding_ids.append(binding['id'])
+        if resources is None:continue
+        entry=resources.state['entries'].get(binding['resource_id'])
+        if not entry or entry.get('kind')!='external':
+            raise ValueError('证据绑定必须来自已读取的外部资源：'+binding['resource_id'])
+        if not exact_source_quote(binding['quote'],resources.text(binding['resource_id'])):
+            raise ValueError('证据绑定不是已读取资源中的原文片段：'+binding['resource_id'])
+    resolutions={row['gap_id']: row for row in plan.get('evidence_resolutions', [])}
+    if len(resolutions) != len(plan.get('evidence_resolutions', [])):
+        raise ValueError('证据结论身份重复')
+    for gap_id, resolution in resolutions.items():
+        if gap_id not in gaps:raise ValueError('证据结论引用了不存在的缺口：'+gap_id)
+        if resolution['status']=='resolved' and not resolution['binding_ids']:
+            raise ValueError('已解决缺口必须保留精确证据绑定：'+gap_id)
+        if any(binding_id not in binding_ids for binding_id in resolution['binding_ids']):
+            raise ValueError('证据结论包含未保存的绑定：'+gap_id)
+    return plan
 
 
 def repair_one_missing_json_object_closer(raw):
@@ -423,14 +485,21 @@ def expand_exact_grouped_findings(result,draft):
 
 
 def initialize(job):
+    pipeline=job.get('pipeline',PIPELINE)
+    if pipeline not in {PIPELINE, PIPELINE_V2}:
+        pipeline=PIPELINE
     job['naming_contract_version']=1
     job['joint_review_contract_version']=1
     job['link_contract_version']=1
     role_names=('active_plan','active_write','active_review','active_format','active_revision','active_patch','active_protocol','active_visual','rewrite_scope')
     policy={name:(Path(__file__).parent/'roles'/f'{name}.md').read_text(encoding='utf8') for name in role_names}
-    job.update(pipeline=PIPELINE, stage='active_index', teaching_version=0,
+    job.update(pipeline=pipeline, stage='active_index', teaching_version=0,
                active_plans=[], active_partition_index=0, unit_index=0,
-               knowledge_memory=[], visual_cards=[], quality_issues=[],role_policy=policy,role_policy_digest=digest(policy))
+               knowledge_memory=[], visual_cards=[], quality_issues=[],
+               delivery_state='draft', cross_batch_review_required=False,
+               content_patch_default=1, content_patch_hard_limit=2,
+               format_patch_hard_limit=2,
+               role_policy=policy,role_policy_digest=digest(policy))
     return job
 
 
@@ -474,7 +543,7 @@ def patch_rounds(candidate):
 
 def reserve_patch_attempt(candidate):
     used=patch_rounds(candidate)
-    if used>=2:raise ValueError('两轮局部补丁已用完，保留具体问题与原稿')
+    if used>=candidate.get('patch_limit',2):raise ValueError('局部补丁已达到当前设置上限（最多两轮），保留具体问题与原稿')
     candidate['local_patch_attempts']=used+1
 
 
@@ -1089,6 +1158,7 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
                 any(word in label for word in ('home','index','tips','目录','主页')))):
             raise ValueError('正文知识链接不能仅按导航链接跳过目标内容：'+brief['source_id'])
     obligations = {o['id']: o for o in plan['obligations']}
+    validate_evidence_plan(plan, obligations, objects, assigned, resources)
     spans={s['id']:s for s in source_spans(source,assigned)}
     used_spans=set()
     unique([o['id'] for o in plan['obligations']], '义务')
@@ -1483,7 +1553,18 @@ class ActiveComposition:
     def turn(self, job, key, role, schema, source, ids, payload, validate):
         sessions = job.setdefault('active_sessions', {})
         session = sessions.setdefault(key, {'round': 0, 'corrections': 0})
-        resources = Resources(self.store, source, session.get('resources'))
+        session.setdefault('declared_gap_ids', [])
+        configured_search_routes=(self.config.get('search_routes') or
+                                  self.config.get('search_providers') or
+                                  self.config.get('retrieval_providers') or [])
+        if isinstance(configured_search_routes,dict):
+            private_credentials=self.config.get('provider_credentials') or {}
+            configured_search_routes={
+                route_id:(dict(route,provider_id=route_id,
+                    api_key=private_credentials.get(route_id,'')) if isinstance(route,dict) else route)
+                for route_id,route in configured_search_routes.items()}
+        resources = Resources(self.store, source, session.get('resources'), configured_search_routes,
+                              self.config.get('search_order'))
         if 'resources' not in session:
             for sid in ids:
                 resources.read(sid)
@@ -1502,7 +1583,8 @@ class ActiveComposition:
                           snapshot_blob=term['snapshot_blob'],scope='name_evidence_excerpt',
                           abbreviation=term.get('abbr'),english_name=term['en'],note=term['note'])
             resources.read(rid)
-        if role=='active_plan' and job.get('link_contract_version') and not session.get('direct_link_prefetch_complete'):
+        if (role=='active_plan' and job.get('pipeline') != PIPELINE_V2 and
+                job.get('link_contract_version') and not session.get('direct_link_prefetch_complete')):
             from urllib.parse import urlsplit
             current=urlsplit(source.get('source_url',''))
             seen=set()
@@ -1532,7 +1614,7 @@ class ActiveComposition:
             session['action_results']=[x['result'] for x in session.get('direct_link_prefetch',[])]
             session['resources']=resources.state
             self.store.put_job(job)
-        if role=='active_plan' and session.get('direct_link_prefetch_complete'):
+        if role=='active_plan' and job.get('pipeline') != PIPELINE_V2 and session.get('direct_link_prefetch_complete'):
             # Existing checkpoints may have recorded an HTTP-only rejection
             # before same-address HTTPS retrieval was supported. Recheck once
             # without revisiting any already fetched target or model output.
@@ -1574,6 +1656,30 @@ class ActiveComposition:
                         raise ValueError('读取动作必须说明缺口，不能同时提交结果')
                     session['action_results'] = []
                     for action in response['actions']:
+                        if is_v2(job) and action['kind'] in {'search','page','image'}:
+                            gap_id=action.get('gap_id','')
+                            if role!='active_plan' or not gap_id or gap_id not in response['gaps']:
+                                raise ValueError('v2 外部检索必须绑定当前 Turn 明确声明的 EvidenceGap')
+                            source_id=action.get('source_id','')
+                            source_objects={obj['id']:obj for obj in source['objects']}
+                            source_obj=source_objects.get(source_id)
+                            if not source_obj or source_id not in ids:
+                                raise ValueError('v2 外部检索必须绑定当前分组的原文义务来源')
+                            if action['kind']=='search' and source_obj.get('kind')=='link' and source_obj.get('target'):
+                                raise ValueError('已有直接 URL 时必须优先读取目标页，不能先搜索')
+                            if action['kind']=='page' and source_obj.get('target'):
+                                if canonical_url(action.get('url','')) != canonical_url(source_obj['target']):
+                                    raise ValueError('直接 URL 证据必须先读取该原文链接目标')
+                            if gap_id not in session['declared_gap_ids']:
+                                session['declared_gap_ids'].append(gap_id)
+                        if is_v2(job) and action['kind'] in {'search','page','image'}:
+                            counts=session.setdefault('external_action_counts',{'search':0,'open':0})
+                            counter='search' if action['kind']=='search' else 'open'
+                            limit=int(self.config.get('evidence_query_limit',2) if counter=='search'
+                                      else self.config.get('evidence_open_limit',4))
+                            if counts[counter]>=max(0,limit):
+                                raise ValueError('v2 证据动作达到当前设置上限：'+counter)
+                            counts[counter]+=1
                         item=resources.execute(action)
                         if item.get('visual_evidence_required'):
                             visual_id=item['id']
@@ -1605,6 +1711,11 @@ class ActiveComposition:
                     continue
                 if response['result'] is None or response['gaps'] or not response['ready_reason'].strip():
                     raise ValueError('资料未齐全，不能提交结果')
+                if is_v2(job) and role=='active_plan':
+                    returned_gap_ids={gap['id'] for gap in response['result'].get('evidence_gaps',[])}
+                    declared_gap_ids=set(session.get('declared_gap_ids',[]))
+                    if not declared_gap_ids <= returned_gap_ids:
+                        raise ValueError('规划没有保存本轮声明的 EvidenceGap')
                 if not all(resources.fully_read(sid) for sid in ids):
                     raise ValueError('当前来源仍有未读取部分')
                 if role=='active_write' and job.get('archived_layout_source_ids'):
@@ -1790,7 +1901,8 @@ class ActiveComposition:
                        and o.get('source_scope') not in {'site_chrome','source_metadata'}
                        and o['id'] not in done]
             if pending:
-                batch=pending[:3]
+                visual_batch_size=(self.config.get('active_v2_visual_batch_size',6) if is_v2(job) else 3)
+                batch=pending[:max(1,min(8,int(visual_batch_size)))]
                 key = 'active-visual-' + '-'.join(page['id'] for page in batch)
                 result = A.VisualCards.model_validate(self.call(job, key, 'active_visual',
                     dict(pages=batch, _image_resources=image_resources(self.store, batch, source)), A.VisualCards)).model_dump()
@@ -1822,10 +1934,13 @@ class ActiveComposition:
                 raise ValueError('原件正文仍有无法读取的对象，尚未开始改写：' + json.dumps(unresolved, ensure_ascii=False))
             from .visual_sources import decorative_resource
             job['archived_layout_source_ids']=[o['id'] for o in source['objects'] if decorative_resource(o)]
+            plan_chars=(self.config.get('active_v2_plan_source_chars',30000) if is_v2(job)
+                        else self.config.get('active_plan_source_chars',12000))
+            plan_objects=(self.config.get('active_v2_plan_source_objects',24) if is_v2(job)
+                          else self.config.get('active_plan_source_objects',10))
             job['active_groups'] = [[o['id'] for o in group] for group in inventory_groups(
                 [o for o in source['objects'] if not decorative_resource(o)],
-                self.config.get('active_plan_source_chars', 12000),
-                self.config.get('active_plan_source_objects', 10))]
+                plan_chars,plan_objects)]
             if not job['active_groups']:raise ValueError('原件仅含已存档的排版资源，没有可改写正文')
             job['active_partition_count']=len(job['active_groups'])
             job['web_chrome_scope_version']=2
@@ -1833,6 +1948,10 @@ class ActiveComposition:
             return 'queued'
         if stage == 'active_plan':
             from .visual_sources import decorative_resource
+            node_chars=(self.config.get('active_v2_node_source_chars',12000) if is_v2(job)
+                        else self.config.get('active_node_source_chars',6500))
+            node_objects=(self.config.get('active_v2_node_source_objects',24) if is_v2(job)
+                          else self.config.get('active_node_source_objects',20))
             if job.get('web_chrome_scope_version',0)<2 and not job['active_plans']:
                 from .source_context import classify_web_chrome
                 source=classify_web_chrome(self.store,source)
@@ -1850,11 +1969,14 @@ class ActiveComposition:
             payload = dict(goal=job['goal'], task_mode=job['transformation_mode'], assigned_source_ids=ids,
                 **plan_document_preview(source,ids,job['active_groups'][:index]),
                 source_spans=source_spans(source,ids),
-                partition_prefix=prefix, node_source_char_limit=self.config.get('active_node_source_chars',6500),
+                partition_prefix=prefix, node_source_char_limit=node_chars,
                 node_concept_limit=self.config.get('active_node_concept_limit',10),
                 immutable_contract=prior[0]['contract'] if prior else None,
                 preceding_plans=[dict(contract=p['contract'], concepts=p['concepts'], nodes=p['nodes']) for p in prior],
-                visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in ids])
+                visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in ids],
+                **({'evidence_gap_policy':
+                    'Only declare an EvidenceGap when one named source obligation cannot be safely rewritten without a specific external fact. Direct URLs use page first; search snippets are discovery only. Stop when one opened primary source binds an exact quote. Every external action must carry gap_id.'}
+                   if is_v2(job) else {}))
             def validate_planning(value,resources):
                 links={obj['id'] for obj in source['objects']
                        if obj['id'] in ids and obj['kind']=='link'}
@@ -1867,7 +1989,7 @@ class ActiveComposition:
                 value,repairs=rebind_single_source_spans(value,source,ids)
                 if repairs:job.setdefault('source_span_alignments',[]).extend(repairs)
                 plan=validate_plan(value|({'contract':prior[0]['contract']} if prior else {}),source,ids,prior,
-                    job['transformation_mode'],self.config.get('active_node_source_chars',6500),
+                    job['transformation_mode'],node_chars,
                     require_spans=True,resources=resources,
                     require_link_briefs=bool(job.get('link_contract_version')),
                     archived_ids=job.get('archived_layout_source_ids',[]),
@@ -1888,9 +2010,13 @@ class ActiveComposition:
                 if retired:job.setdefault('unanchored_formal_concepts',[]).extend(retired)
                 job['unanchored_abbreviations_checked']=True
                 job['writing_batches']=writing_batches(job['active_plans'],source,
-                    self.config.get('active_node_source_chars',6500),
+                    node_chars,
                     self.config.get('active_node_concept_limit',10),
-                    self.config.get('active_node_source_objects',20))
+                    node_objects)
+                if is_v2(job):
+                    job['cross_batch_review_required']=any(
+                        bool(node.get('cross_batch_risks'))
+                        for part in job['active_plans'] for node in part.get('nodes',[]))
                 job['inventory'], job['plan'] = legacy_artifacts(job['active_plans'], source,job['writing_batches'])
                 job['draft'] = {'blocks': []}
                 job['stage'] = 'active_write'
@@ -1915,6 +2041,8 @@ class ActiveComposition:
             node = nodes[job['unit_index']]
             job['current_unit_id'] = node['id']
             obligations = [o for p in job['active_plans'] for o in p['obligations'] if o['id'] in node['obligation_ids']]
+            risk_context=(bounded_prior_context(job['draft']['blocks'])
+                          if is_v2(job) and node.get('cross_batch_risks') else [])
             payload = dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')), node=node, obligations=obligations,
                 link_guides=link_guides(job,node['source_ids']),
                 protected_object_catalog=[dict(source_id=sid,kind=next(o['kind'] for o in source['objects'] if o['id']==sid),
@@ -1927,6 +2055,7 @@ class ActiveComposition:
                     established=[c for c in m['established'] if c['id'] in node['requires_concepts']])
                     for m in job['knowledge_memory'] if any(c['id'] in node['requires_concepts'] for c in m['established'])],
                 previous_final_tail=[b['markdown'] for b in job['draft']['blocks'][-2:]],
+                risk_review_context=risk_context,
                 already_placed_source_ids=list({sid for b in job['draft']['blocks'] for sid in b.get('embedded_object_ids',[])}),
                 next_node=nodes[job['unit_index']+1] if job['unit_index']+1<len(nodes) else None,
                 visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in node['source_ids']])
@@ -1939,7 +2068,10 @@ class ActiveComposition:
                 return result
             draft, coverage, delta = self.turn(job, 'active-write-'+node['id'], 'active_write', A.WrittenUnit,
                 source, node['source_ids'], payload, validate)
+            patch_limit=max(1,min(2,int(self.config.get('active_content_patch_limit',2)),
+                                  int(self.config.get('active_format_patch_limit',2))))
             job['active_candidate'] = dict(draft=draft, coverage=coverage, delta=delta, rounds=0,
+                patch_limit=patch_limit,
                 missing_concept_names=missing_concept_names(
                     [c for c in payload['concepts'] if c['id'] in node['establishes_concepts']],draft))
             job['stage'] = 'active_review'
@@ -2128,6 +2260,8 @@ class ActiveComposition:
                         same=same and archived.get('actual_draft')==draft and archived.get('contract')==effective_contract
                     except (ValueError,KeyError,IndexError,TypeError):same=False
                 if same:review_key=base
+            risk_context=(bounded_prior_context(job['draft']['blocks'])
+                          if is_v2(job) and node.get('cross_batch_risks') else [])
             result=self.turn(job,review_key,'active_review',A.ContentReview,
                 source,node['source_ids'],dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')),node=node,
                     actual_draft=draft,obligations=obligations,prior_findings=candidate.get('content_findings',[]),
@@ -2142,7 +2276,8 @@ class ActiveComposition:
                     review_obligation_ids=sorted(review_ids),
                     exact_revision=candidate.get('last_patch'),
                     protected_originals=protected_objects(job['inventory']),
-                    previous_final_tail=[b['markdown'] for b in job['draft']['blocks'][-2:]]),validate_review)
+                    previous_final_tail=[b['markdown'] for b in job['draft']['blocks'][-2:]],
+                    risk_review_context=risk_context),validate_review)
             dismissed={d['candidate_id'] for d in result.get('format_decisions',[]) if d['decision']=='dismiss'}
             candidate.setdefault('dismissed_keys',[]).extend(candidate_key(c,draft)
                 for c in preflight['format']['candidates'] if c['id'] in dismissed)
@@ -2151,7 +2286,7 @@ class ActiveComposition:
             if not reviews or reviews[-1]!=record:reviews.append(record)
             if result['findings']:
                 candidate['content_findings']=result['findings']
-                if patch_rounds(candidate)>=2 or round_>=self.config.get('active_revision_limit',4):
+                if patch_rounds(candidate)>=candidate.get('patch_limit',2) or round_>=self.config.get('active_revision_limit',2):
                     candidate['unresolved_content_findings']=result['findings']
                     job.setdefault('quality_issues',[]).extend(
                         node['id']+' / '+f['block_id']+'：'+f['problem'] for f in result['findings'])
@@ -2190,7 +2325,7 @@ class ActiveComposition:
             candidate['original_format_exemptions']=report['original_exemptions']
             findings = report['format']['findings']
             candidates = [c for c in report['format']['candidates'] if candidate_key(c,draft) not in candidate.get('dismissed_keys', [])]
-            if findings and patch_rounds(candidate)>=2:
+            if findings and patch_rounds(candidate)>=candidate.get('patch_limit',2):
                 candidate['unresolved_format']=dict(findings=findings,candidates=candidates)
                 job.setdefault('quality_issues',[]).append(node['id']+'：两轮局部修补后仍有 '+
                     str(len(findings))+' 项确定格式问题，正文与检查记录均已保留')
@@ -2198,7 +2333,7 @@ class ActiveComposition:
             # Candidate flags still need semantic adjudication even when no
             # editing budget remains; dismissing them costs no third patch.
             if findings or candidates:
-                if findings and patch_rounds(candidate) >= 2:
+                if findings and patch_rounds(candidate) >= candidate.get('patch_limit',2):
                     raise ValueError('本单元两轮局部格式修复后仍有问题，保留原稿与具体检查记录')
                 result = A.FormatResolution.model_validate(self.call(job,
                     'active-format-'+node['id']+'-'+str(candidate['format_rounds'])+'-'+report['canonical_digest'][:16], 'active_format',
@@ -2232,7 +2367,7 @@ class ActiveComposition:
                     job['stage']='active_revision'
                     return 'queued'
                 if result['edits']:
-                    if patch_rounds(candidate)>=2:raise ValueError('两轮局部补丁已用完，保留具体问题与原稿')
+                    if patch_rounds(candidate)>=candidate.get('patch_limit',2):raise ValueError('局部补丁已达到当前设置上限，保留具体问题与原稿')
                     proposal = dict(document_digest=result['document_digest'], edits=[dict(
                         block_id=e['block_id'], old_text=e['old_text'], new_text=e['new_text'], reason=e['rule']) for e in result['edits']])
                     reserve_patch_attempt(candidate);self.store.put_job(job)
@@ -2301,7 +2436,7 @@ class ActiveComposition:
             candidate=job['active_candidate'];node=nodes[job['unit_index']]
             issues=candidate.get('revision_issues',{})
             compiled=compiled_term_format_proposal(candidate['draft'],issues) if issues.get('format_check_version')==2 else None
-            if patch_rounds(candidate)>=2:
+            if patch_rounds(candidate)>=candidate.get('patch_limit',2):
                 candidate['unresolved_revision']=copy.deepcopy(issues)
                 job.setdefault('quality_issues',[]).append(node['id']+'：两轮局部修补已用完，保留未解决意见与当前正文')
                 job['stage']='active_format'
@@ -2461,13 +2596,29 @@ class ActiveComposition:
                 actual = {'blocks': [b for b in job['draft']['blocks'] if b['unit_id']==point['node_id']]}
                 if digest(canonical(actual).encode()) != point['draft_digest']:
                     raise ValueError('交付正文与已检查单元版本不同')
+            partition_reviews_passed=(not job.get('quality_issues') and all(
+                point.get('content_reviews') and not point['content_reviews'][-1].get('findings')
+                for point in job['active_checkpoints']))
             job['delivery_checks'] = dict(source_digest=job['source_snapshot_digest'],
                 source_digest_kind='initial_inventory_snapshot',compiled_inventory_digest=job['inventory']['digest'],
                 draft_digest=digest(canonical(job['draft']).encode()), source_objects=len(source['objects']),
                 obligation_count=len(job['inventory']['obligations']), unit_count=len(nodes),
-                structural_status='passed', semantic_status='not_independently_reviewed',
+                structural_status='passed',
+                semantic_status='passed' if is_v2(job) and partition_reviews_passed else 'not_independently_reviewed',
                 unit_review_status='needs_attention' if job.get('quality_issues') else
                     'model_checked' if all(p.get('content_reviews') for p in job['active_checkpoints']) else 'not_requested',
                 skill_delivery='unabridged_inline', manual_edits=0)
+            if is_v2(job):
+                if not partition_reviews_passed:
+                    raise ValueError('v2 候选仍有未通过的分区语义核对，不能进入用户审阅')
+                job['delivery_state']='ready_for_review'
+                job['independent_review']=dict(status='passed',revision=job['base_revision']+1,
+                    canonical_digest=job['delivery_checks']['draft_digest'],
+                    method='partitioned_source_bound_review',manual_edits=0,
+                    reviewed_units=len(job['active_checkpoints']))
+                job['delivery_checks']['publication_status']='ready_for_review'
+                job['delivery_checks']['cross_batch_review_required']=bool(job.get('cross_batch_review_required'))
+                self.store.put_job(job)
+                return 'ready_for_review'
             return 'needs_attention' if job.get('quality_issues') else 'completed'
         raise ValueError('未知主动编排阶段：' + stage)

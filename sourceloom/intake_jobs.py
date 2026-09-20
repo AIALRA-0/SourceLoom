@@ -1,5 +1,6 @@
 """Durable file intake; accepted uploads outlive their browser request."""
 import json
+import sqlite3
 import threading
 import time
 
@@ -139,4 +140,10 @@ class IntakeQueue:
 def intake_worker(store,config,stop):
     queue=IntakeQueue(store,config)
     while not stop.is_set():
-        if not queue.run_once():stop.wait(1)
+        try:
+            if not queue.run_once():stop.wait(1)
+        except sqlite3.OperationalError:
+            # A release switch or backup can briefly replace the directory
+            # mounted into the hardened service. Keep the intake loop alive;
+            # the durable queue will reclaim the unchanged job afterwards.
+            stop.wait(2)

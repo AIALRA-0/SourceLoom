@@ -31,7 +31,11 @@ def compare_html(expected,actual):
 def import_candidate(store,config,pid):
     if not all(config.get(k) for k in ['readweave_url','readweave_token','readweave_parent']):
         raise Conflict('先配置 ReadWeave 的地址、接口凭据与专用候选父笔记')
-    p=store.get(pid);raw=export_zip(store,p)
+    p=store.get(pid)
+    from .checks import can_publish
+    if (p.get('production') or {}).get('pipeline')=='active_composition_v2' and not can_publish(p):
+        raise Conflict('只有已完成语义核对并由用户接受的当前版本才能导入 ReadWeave')
+    raw=export_zip(store,p)
     parent=config['readweave_parent']
     with zipfile.ZipFile(BytesIO(raw)) as z:
         expected=z.read('material.html').decode()
@@ -90,9 +94,15 @@ def import_candidate(store,config,pid):
         second=c.get(config['readweave_url'].rstrip('/')+'/etapi/notes/'+nid+'/content',headers={'Authorization':config['readweave_token']})
         second.raise_for_status()
         checks['new_connection_readback']=second.content==content.content
-    result={'status':'readback_passed' if all(checks.values()) else 'readback_gaps','candidate':key,'note_id':nid,
-            'checks':checks,'editor_save_reopen':'not_verified','user_accepted':False,'created':time.time()}
+    passed=all(checks.values())
+    result={'status':'readback_passed' if passed else 'readback_gaps','candidate':key,'note_id':nid,
+            'checks':checks,'editor_save_reopen':'not_verified','user_accepted':True,'created':time.time()}
     record.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     store.event(pid,'readweave_readback',result)
-    store.change(pid,lambda p:p.update(readweave=result))
+    def save(project):
+        project['readweave']=result
+        if passed and (project.get('production') or {}).get('pipeline')=='active_composition_v2':
+            from .checks import transition_delivery
+            transition_delivery(project,'publish')
+    store.change(pid,save)
     return result

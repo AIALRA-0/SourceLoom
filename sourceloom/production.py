@@ -3,6 +3,7 @@
 import copy
 import json
 import re
+import sqlite3
 from pathlib import Path
 import threading
 import time
@@ -563,7 +564,7 @@ class Production:
         return 'queued'
 
     def step(self, job):
-        if job.get('pipeline') == 'active_composition_v1':
+        if job.get('pipeline') in {'active_composition_v1','active_composition_v2'}:
             from .active_composition import ActiveComposition
             return ActiveComposition(self).step(job)
         bundle=load_bundle(job['writing_skill']['root'],job['writing_skill']['package_digest'])
@@ -1564,16 +1565,21 @@ class Production:
             else:
                 status=self.step(job)
             publish=None
-            if status in {'completed','needs_attention'}:
+            if status in {'completed','needs_attention','ready_for_review'}:
                 receipt=dict(job=job['id'],status=status,canonical_digest=digest(canonical(job['draft']).encode()),
                     skill_digest=job['writing_skill']['instruction_digest'],issues=job.get('quality_issues',[]),
                     automatic=True,manual_edits=0,revision=job['base_revision']+1,
                     teaching_version=job.get('teaching_version',0))
-                if job.get('pipeline') == 'active_composition_v1':
+                if job.get('pipeline') in {'active_composition_v1','active_composition_v2'}:
                     receipt.update(pipeline=job['pipeline'], delivery_checks=job.get('delivery_checks'),
-                                   semantic_status='not_independently_reviewed')
+                                   semantic_status=(job.get('delivery_checks') or {}).get(
+                                       'semantic_status','not_independently_reviewed'),
+                                   delivery_state=job.get('delivery_state','draft'))
                 publish=dict(inventory=job['inventory'],plan=job['plan'],draft=job['draft'],production=receipt,
                              review=None,accepted_revision=None,repair_rounds=job['repair_rounds'])
+                if job.get('pipeline') == 'active_composition_v2' and status == 'ready_for_review':
+                    publish['delivery_state']='ready_for_review'
+                    publish['independent_review']=job.get('independent_review')
             self.queue.finish(job,self.owner,status,publish)
         except Exception as exc:
             # Validation libraries often use their own exception hierarchy.
@@ -1590,7 +1596,7 @@ class Production:
             from .trials import outcome
             outcome(self.store,self.config,job,job['status'])
         last_call=(job.get('calls') or [{}])[-1]
-        if job.get('pipeline') == 'active_composition_v1':
+        if job.get('pipeline') in {'active_composition_v1','active_composition_v2'}:
             return True
         continuation_role=last_call.get('role')
         if (job['status']=='needs_attention' and job.get('stage')=='teaching_replan_review'
@@ -1672,7 +1678,13 @@ def worker(store, config, once=False):
         threading.Thread(target=intake_worker,args=(store,config,intake_stop),daemon=True).start()
     engine=Production(store,config)
     while True:
-        worked=engine.run_once()
+        try:
+            worked=engine.run_once()
+        except sqlite3.OperationalError:
+            if once:
+                raise
+            time.sleep(2)
+            continue
         if once:
             return
         if not worked:

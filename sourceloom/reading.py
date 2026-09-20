@@ -49,7 +49,8 @@ def presentation(project, numbering=None):
 
 def reader_summary(project,costs):
     p={k:project.get(k) for k in ('id','title','mode','state','revision','active_job','goal','folder',
-        'library_revision','trashed','budget_usd','max_calls','heading_numbering')}
+        'library_revision','trashed','budget_usd','max_calls','heading_numbering','media_collapsed','accepted_revision')}
+    p['delivery_state']=(project.get('production') or {}).get('delivery_state')
     inv=project.get('inventory')
     p['inventory']=None if not inv else {'originals':inv.get('originals',[]),
         'source_chars':sum(len(o.get('text','')) for o in inv['objects']),

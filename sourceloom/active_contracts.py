@@ -75,6 +75,7 @@ class CompositionNode(Strict):
     expansion: Literal['source_only', 'verified_clarification', 'authorized_example']
     explanation: ExplanationPlan
     section_outline: list[dict] = []
+    cross_batch_risks: list[str] = Field(default_factory=list)
 
 
 class LinkBrief(Strict):
@@ -88,12 +89,48 @@ class LinkBrief(Strict):
     unavailable_reason: str = ''
 
 
+class EvidenceGap(Strict):
+    """A bounded external lookup tied to one frozen source obligation."""
+    id: str
+    obligation_id: str
+    source_id: str
+    missing: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    allowed_sources: list[str] = Field(default_factory=list)
+    stop_condition: str = Field(min_length=1)
+    status: Literal['required', 'direct_read', 'query', 'candidate_selected',
+                    'page_opened', 'evidence_bound', 'resolved', 'unresolved'] = 'required'
+
+
+class EvidenceBinding(Strict):
+    """Exact evidence bound to an EvidenceGap, never a search snippet."""
+    id: str = ''
+    gap_id: str
+    obligation_id: str
+    resource_id: str
+    quote: str = Field(min_length=1)
+    source_url: str = ''
+
+
+class EvidenceResolution(Strict):
+    """Auditable terminal or resumable state for one EvidenceGap."""
+    gap_id: str
+    status: Literal['resolved', 'unresolved', 'inaccessible']
+    binding_ids: list[str] = Field(default_factory=list)
+    attempts: int = Field(default=0, ge=0)
+    stop_reason: str = Field(min_length=1)
+    error: str = ''
+
+
 class CompositionPlan(Strict):
     contract: RewriteContract
     obligations: list[SourceObligation] = Field(min_length=1)
     concepts: list[Concept]
     nodes: list[CompositionNode] = Field(min_length=1)
     link_briefs: list[LinkBrief] = []
+    evidence_gaps: list[EvidenceGap] = []
+    evidence_bindings: list[EvidenceBinding] = []
+    evidence_resolutions: list[EvidenceResolution] = []
 
 
 class CompositionPart(Strict):
@@ -101,11 +138,17 @@ class CompositionPart(Strict):
     concepts: list[Concept]
     nodes: list[CompositionNode] = Field(min_length=1)
     link_briefs: list[LinkBrief] = []
+    evidence_gaps: list[EvidenceGap] = []
+    evidence_bindings: list[EvidenceBinding] = []
+    evidence_resolutions: list[EvidenceResolution] = []
 
 
 class Action(Strict):
     kind: Literal['read', 'find', 'neighbors', 'search', 'page', 'image', 'release']
     resource_id: str = ''
+    gap_id: str = ''
+    source_id: str = ''
+    search_profile: Literal['general', 'academic'] = 'general'
     query: str = ''
     start: int = Field(default=0, ge=0)
     end: int | None = Field(default=None, ge=0)

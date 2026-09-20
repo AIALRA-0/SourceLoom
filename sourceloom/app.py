@@ -21,6 +21,17 @@ from .ingest import intake, MAX_FILE, SAFE_IMAGE
 from .network import fetch, fetch_bundle
 from .pipeline import Pipeline, SCHEMAS
 from .parse_worker import isolated_intake
+from .provider_settings import (
+    activate_staged_route,
+    apply_private_settings,
+    import_readweave_registry,
+    load_private_settings,
+    probe_staged_route,
+    public_provider_metadata,
+    save_private_settings,
+    stage_imported_routes,
+    stage_route,
+)
 from .store import Store, Conflict, digest
 from .versions import append_intake, append_obligations, pending_obligations
 
@@ -36,6 +47,8 @@ class Create(BaseModel):
 
 def create_app(config=None):
     config=config or load_config()
+    restored=apply_private_settings(config,load_private_settings(config["data_dir"]))
+    config.clear();config.update(restored)
     store=Store(config["data_dir"])
     pipeline=Pipeline(store,config)
     @asynccontextmanager
@@ -99,10 +112,152 @@ def create_app(config=None):
     @app.get("/api/config")
     def public_config():
         return {"provider":config["provider"],"model":config["model"],"effort":config["effort"],
+                "provider_metadata":public_provider_metadata(config),
                 "generation_pause_reason":config.get('generation_pause_reason',''),
                 "writing_policy_ready":bool(config["writing_skill_dir"]),"fetch_enabled":config["fetch_enabled"],
                 "daily_budget_usd":config['daily_budget_usd'],"daily_call_limit":config['daily_call_limit'],
                 "readweave_configured":bool(config["readweave_url"] and config["readweave_token"] and config["readweave_parent"])}
+
+    def save_provider_config(next_config):
+        config.clear();config.update(next_config)
+        save_private_settings(config["data_dir"],config)
+        return settings_view()
+
+    def settings_view():
+        metadata=public_provider_metadata(config)
+        staged=metadata.get("staged",{})
+        providers=[dict(value,id=provider_id,name=provider_id)
+                   for provider_id,value in staged.items()
+                   if value.get("route_kind","model")!="search" and value.get("protocol")!="rest_search"]
+        active=metadata.get("active") or {}
+        if active.get("provider_id") and not any(row["id"]==active["provider_id"] for row in providers):
+            providers.insert(0,dict(active,id=active["provider_id"],name=active["provider_id"]))
+        pricing=active.get("pricing") or {}
+        return {"available":True,"state":config.get("provider_settings_state","active"),
+                "revision":config.get("provider_settings_revision",""),
+                "probe":config.get("provider_settings_probe",{}),
+                "provider_metadata":metadata,
+                "settings":{
+                    "interface":{"providers":providers,"primary_provider":config.get(
+                        "staged_primary_provider") or config.get("active_route_id") or config.get("provider_id","")},
+                    "retrieval":{"search_order":config.get("search_order",["tinyfish","octen","parallel"]),
+                        "query_limit":config.get("evidence_query_limit",2),
+                        "open_limit":config.get("evidence_open_limit",4)},
+                    "generation":{"content_patch_limit":config.get("active_content_patch_limit",2),
+                        "format_patch_limit":config.get("active_format_patch_limit",2),
+                        "heading_numbering":config.get("default_heading_numbering","preserve"),
+                        "media_collapsed":config.get("media_collapsed_default",True)},
+                    "cost":{"cache_hit_input":pricing.get("cache_hit_input_per_million",.054),
+                        "cache_miss_input":pricing.get("cache_miss_input_per_million",1.62),
+                        "output":pricing.get("output_per_million",4.86),
+                        "display_multiplier":pricing.get("display_multiplier",.15),
+                        "fx_rate":config.get("fx_rate",7.2),"currency":"CNY / 百万 Token"},
+                    "readweave":{"profile_id":config.get("readweave_profile_id",""),
+                        "profile_digest":config.get("readweave_profile_digest",""),
+                        "status":"已导入" if config.get("search_routes") else "未同步"}}}
+
+    @app.get("/api/admin/settings")
+    def provider_settings():
+        return settings_view()
+
+    @app.put("/api/admin/settings")
+    def stage_provider_settings(body:dict):
+        if isinstance(body.get("interface"),dict):
+            next_config=copy.deepcopy(config)
+            interface=body["interface"]
+            for item in interface.get("providers",[]):
+                if not isinstance(item,dict) or not item.get("id"):continue
+                provider_id=str(item["id"])
+                existing=(next_config.get("provider_routes") or {}).get(provider_id,{})
+                if not existing and provider_id in {next_config.get("provider_id"),next_config.get("active_route_id")}:
+                    existing={key:copy.deepcopy(next_config.get(key)) for key in
+                        ("provider","provider_id","model","protocol","base_url","endpoint","pricing_currency",
+                         "pricing_cny","pricing_source","pricing_version","pricing_effective_at","display_multiplier",
+                         "enabled","route_kind")
+                        if next_config.get(key) is not None}
+                route=dict(existing)|{"provider_id":provider_id,"protocol":item.get("protocol",existing.get("protocol","responses")),
+                    "model":item.get("model",existing.get("model","")),"priority":item.get("priority",existing.get("priority",10))}
+                next_config=stage_route(next_config,route,item.get("api_key"))
+            primary=str(interface.get("primary_provider") or next_config.get("active_route_id") or next_config.get("provider_id") or "")
+            if primary:next_config["staged_primary_provider"]=primary
+            retrieval=body.get("retrieval") if isinstance(body.get("retrieval"),dict) else {}
+            order=[str(value).casefold() for value in retrieval.get("search_order",[]) if str(value).strip()]
+            if order:next_config["search_order"]=order
+            next_config["evidence_query_limit"]=max(0,min(8,int(retrieval.get("query_limit",next_config.get("evidence_query_limit",2)))))
+            next_config["evidence_open_limit"]=max(0,min(12,int(retrieval.get("open_limit",next_config.get("evidence_open_limit",4)))))
+            generation=body.get("generation") if isinstance(body.get("generation"),dict) else {}
+            next_config["active_content_patch_limit"]=max(1,min(2,int(generation.get("content_patch_limit",2))))
+            next_config["active_format_patch_limit"]=max(1,min(2,int(generation.get("format_patch_limit",2))))
+            numbering=str(generation.get("heading_numbering","preserve"))
+            if numbering not in {"preserve","numbered","none"}:raise ValueError("标题编号选项无效")
+            next_config["default_heading_numbering"]=numbering
+            next_config["media_collapsed_default"]=bool(generation.get("media_collapsed",True))
+            cost=body.get("cost") if isinstance(body.get("cost"),dict) else {}
+            next_config["fx_rate"]=max(0,float(cost.get("fx_rate",next_config.get("fx_rate",7.2))))
+            if primary and primary in (next_config.get("provider_routes") or {}):
+                route=next_config["provider_routes"][primary]
+                route["pricing_cny"]={"cached_input":max(0,float(cost.get("cache_hit_input",0))),
+                    "input":max(0,float(cost.get("cache_miss_input",0))),"output":max(0,float(cost.get("output",0)))}
+                route["display_multiplier"]=max(0,float(cost.get("display_multiplier",.15)))
+            sync=body.get("readweave") if isinstance(body.get("readweave"),dict) else {}
+            next_config["readweave_profile_id"]=str(sync.get("profile_id") or next_config.get("readweave_profile_id","") or "")
+            next_config["readweave_profile_digest"]=str(sync.get("profile_digest") or next_config.get("readweave_profile_digest","") or "")
+            next_config["provider_settings_state"]="draft"
+            return save_provider_config(next_config)|{"state":"draft"}
+        route=body.get("route",body)
+        if not isinstance(route,dict):
+            raise ValueError("route 必须是对象")
+        if "pricing" in route and "pricing_cny" not in route and isinstance(route["pricing"],dict):
+            pricing=route["pricing"]
+            route=route|{"pricing_cny":{
+                "cached_input":pricing.get("cacheHitInputPerMillion",0),
+                "input":pricing.get("cacheMissInputPerMillion",0),
+                "output":pricing.get("outputPerMillion",0)}}
+        next_config=stage_route(config,route,body.get("api_key"))
+        return save_provider_config(next_config)|{"state":"draft"}
+
+    @app.post("/api/admin/settings/probe")
+    def probe_provider_settings(body:dict):
+        interface=body.get("interface") if isinstance(body.get("interface"),dict) else {}
+        provider_id=str(body.get("provider_id") or interface.get("primary_provider") or
+                        config.get("staged_primary_provider") or config.get("active_route_id") or "")
+        if not provider_id:
+            raise ValueError("provider_id 是必填设置")
+        next_config=probe_staged_route(config,provider_id)
+        return save_provider_config(next_config)|{"state":"probed","provider_id":provider_id}
+
+    @app.post("/api/admin/settings/import-readweave")
+    def import_readweave_settings(body:dict):
+        registry=body.get("registry")
+        if registry is None and any(key in body for key in ("providers","definitions","routes")):registry=body
+        if registry is None:
+            path=Path(str(config.get("readweave_registry_path") or ""))
+            if not path.is_file():raise ValueError("服务器尚未配置 ReadWeave registry 导出文件")
+            registry=json.loads(path.read_text(encoding="utf-8"))
+        routes=import_readweave_registry(registry)
+        if not routes:
+            raise ValueError("ReadWeave 导出中没有可导入的 provider route")
+        credentials=body.get("credentials") if isinstance(body.get("credentials"),dict) else None
+        if credentials is None and isinstance(registry,dict) and isinstance(registry.get("credentials"),dict):
+            credentials=registry["credentials"]
+        next_config=stage_imported_routes(config,routes,credentials)
+        preferred=next((route.provider_id for route in sorted(routes.values(),key=lambda row:row.priority)
+                        if route.route_kind=="model" and route.enabled),None)
+        if preferred:next_config["staged_primary_provider"]=preferred
+        return save_provider_config(next_config)|{"state":"draft","imported":sorted(routes)}
+
+    @app.post("/api/admin/settings/activate")
+    def activate_provider_settings(body:dict):
+        interface=body.get("interface") if isinstance(body.get("interface"),dict) else {}
+        provider_id=str(body.get("provider_id") or interface.get("primary_provider") or
+                        config.get("staged_primary_provider") or "")
+        if not provider_id:
+            raise ValueError("provider_id 是必填设置")
+        if config.get("provider_settings_state")!="probed":
+            raise Conflict("设置必须先通过 probe，再激活")
+        next_config=activate_staged_route(config,provider_id)
+        next_config.pop("staged_primary_provider",None)
+        return save_provider_config(next_config)|{"state":"active","provider_id":provider_id}
 
     @app.get("/api/projects")
     def projects():
@@ -113,7 +268,9 @@ def create_app(config=None):
         if body.mode not in {"rewrite","research"}:
             raise ValueError("选择保真改写或调查成教材")
         p=store.create(body.title,body.mode,20 if body.budget_cny is not None else body.budget_usd)
-        return store.change(p["id"],lambda p:p.update(goal=body.goal,budget_cny=body.budget_cny))
+        return store.change(p["id"],lambda p:p.update(goal=body.goal,budget_cny=body.budget_cny,
+            heading_numbering=config.get("default_heading_numbering","preserve"),
+            media_collapsed=config.get("media_collapsed_default",True)))
 
     @app.post("/api/demo")
     def demo():
@@ -277,7 +434,8 @@ def create_app(config=None):
         def update(p):
             if p["active_job"] or inspect_draft(p["inventory"],p["draft"],p["plan"]) or not review_complete(p):
                 raise Conflict("当前版本尚未完成结构与独立语义审核，不能登记交付接受")
-            p["accepted_revision"]=p["revision"]
+            from .checks import transition_delivery
+            transition_delivery(p,'accept')
         p=store.change(pid,update,body["revision"])
         store.event(pid,"user_acceptance",dict(revision=p["revision"],feedback=body.get("feedback", "")))
         return p

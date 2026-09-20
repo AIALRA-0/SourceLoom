@@ -6,6 +6,7 @@ import socket
 import ssl
 import time
 import hashlib
+import json
 import re
 from pathlib import PurePosixPath
 from bs4 import BeautifulSoup
@@ -79,6 +80,53 @@ def fetch(url,allowed_types=None,timeout=12):
             finally:
                 cx.close()
     raise ValueError("网页重定向超过三次，已停止")
+
+
+def api_request(url, method="GET", headers=None, json_body=None, timeout=15, max_bytes=2_000_000):
+    """Call one configured HTTPS API while pinning the validated public address.
+
+    API redirects are rejected so authorization headers can never cross hosts.
+    Response bodies and upstream error details are bounded and are not echoed.
+    """
+    parsed=urlsplit(url)
+    if (parsed.scheme!="https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.port not in (None,443)):
+        raise ValueError("API 地址必须是不含凭据、使用标准端口的 HTTPS 地址")
+    method=str(method).upper()
+    if method not in {"GET","POST"}:
+        raise ValueError("当前 API 调用只允许 GET 或 POST")
+    raw_body=(json.dumps(json_body,ensure_ascii=False,separators=(",", ":")).encode("utf-8")
+              if json_body is not None else None)
+    safe_headers={"User-Agent":"SourceLoom/0.1 (+bounded configured API)",
+                  "Accept":"application/json","Accept-Encoding":"identity"}
+    safe_headers.update({str(key):str(value) for key,value in (headers or {}).items() if value is not None})
+    if raw_body is not None:safe_headers["Content-Type"]="application/json"
+    deadline=time.monotonic()+timeout
+    addresses=public_addresses(parsed.hostname)
+    for index,address in enumerate(addresses[:2]):
+        remaining=deadline-time.monotonic()
+        if remaining<=0:raise ValueError("API 调用已达到等待上限")
+        cx=PinnedHTTPS(parsed.hostname,address,min(5,remaining) if index+1<len(addresses[:2]) else remaining)
+        try:
+            cx.request(method,(parsed.path or "/")+("?"+parsed.query if parsed.query else ""),
+                       body=raw_body,headers=safe_headers)
+            response=cx.getresponse()
+            if response.status in (301,302,303,307,308):
+                raise ValueError("API 返回重定向，已拒绝携带凭据继续请求")
+            if not 200<=response.status<300:
+                raise ValueError(f"API 返回 {response.status}")
+            mime=response.getheader("Content-Type","").split(";",1)[0].casefold()
+            if mime not in {"application/json","text/json","text/plain"}:
+                raise ValueError("API 没有返回 JSON")
+            raw=response.read(max_bytes+1)
+            if len(raw)>max_bytes:raise ValueError("API 响应超过大小上限")
+            return raw,mime,url
+        except (OSError,http.client.HTTPException) as exc:
+            if index+1==len(addresses[:2]):
+                raise ValueError("API 连接暂时失败") from exc
+        finally:
+            cx.close()
+    raise ValueError("API 没有可用地址")
 
 
 def fetch_bundle(url):

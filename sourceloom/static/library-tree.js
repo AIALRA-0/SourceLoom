@@ -3,7 +3,7 @@ const saved=(key,fallback)=>{try{return JSON.parse(localStorage.getItem(key))??f
 const icon=folder=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">${folder?'<path d="M3 6h7l2 2h9v12H3z"/>':'<path d="M5 3h9l5 5v13H5zM14 3v6h5M8 13h8M8 17h6"/>'}</svg>`;
 export function libraryTree(host, hooks){
  let data={folders:[],documents:[]},trash=false,current=null,focus=null,selected=new Set(),expanded=new Set(saved('loom-expanded',[])),anchor=null,menuTarget=null,search='',dragged=null,renameInput=null;
- const states={queued:'等待处理',running:'后台处理中',completed:'已核对',needs_attention:'需要修复',failed:'处理停止',uncertain:'等待原请求',edited:'修改待核对'};
+ const states={queued:'等待处理',running:'后台处理中',completed:'已核对',ready_for_review:'等待审阅',needs_attention:'需要修复',failed:'处理停止',uncertain:'等待原请求',edited:'修改待核对'};
  const byKey=key=>key?.startsWith('f:')?data.folders.find(f=>f.id===key.slice(2)):data.documents.find(d=>d.id===key?.slice(2));
  const isFolder=key=>key?.startsWith('f:');
  const keyOf=(x,folder)=>`${folder?'f':'d'}:${x.id}`;

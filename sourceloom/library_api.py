@@ -171,9 +171,10 @@ def register(app, store, config):
             'candidate_url':candidate_url,
             'candidate_markdown_url':candidate_url+'?format=markdown' if candidate_url else None,
             'progress':summary(j),
-            'formal':(p.get('production') or {}).get('status')=='completed' and
+            'formal':(p.get('production') or {}).get('status') in {'completed','ready_for_review'} and
                 (p.get('production') or {}).get('pipeline')!='active_composition_v1',
-            'delivery_complete':(p.get('production') or {}).get('status')=='completed',
+            'delivery_complete':(p.get('production') or {}).get('status') in {'completed','ready_for_review'},
+            'delivery_state':(p.get('production') or {}).get('delivery_state'),
             'semantic_status':(p.get('production') or {}).get('semantic_status')}
 
     @app.get('/api/projects/{pid}/intakes/{jid}/original/{key}')

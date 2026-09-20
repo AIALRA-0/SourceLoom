@@ -1,15 +1,120 @@
 """Addressable, immutable resources with explicit reads and recoverable releases."""
 import copy
+import json
 import re
 import time
 from bs4 import BeautifulSoup
 from .store import digest
 
 
+SEARCH_ROUTE_ORDER = {
+    'general': ('tinyfish', 'octen', 'parallel'),
+    'academic': ('openalex', 'tinyfish', 'octen', 'parallel'),
+}
+
+
+def _route_value(route, key, default=None):
+    if isinstance(route, dict):
+        return route.get(key, default)
+    return getattr(route, key, default)
+
+
+def _route_name(route):
+    return str(_route_value(route, 'provider_id',
+               _route_value(route, 'id', _route_value(route, 'provider', '')))).casefold()
+
+
+def _route_url(route):
+    from urllib.parse import urljoin
+    explicit=_route_value(route, 'search_url') or _route_value(route, 'search_endpoint')
+    if explicit:return str(explicit)
+    base=str(_route_value(route, 'base_url', '') or '').rstrip('/')
+    endpoint=str(_route_value(route, 'endpoint', '') or '')
+    if not base or endpoint in {'/responses','/chat/completions'}:
+        return ''
+    return urljoin(base+'/',endpoint.lstrip('/'))
+
+
+def _search_matches(raw, mime):
+    """Normalize common JSON/RSS result shapes without treating snippets as evidence."""
+    text=raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw)
+    parsed=None
+    if 'json' in (mime or '').casefold() or text.lstrip().startswith(('{','[')):
+        try:parsed=json.loads(text)
+        except (TypeError,ValueError):parsed=None
+    if parsed is not None:
+        rows=parsed if isinstance(parsed,list) else None
+        if rows is None and isinstance(parsed,dict):
+            for key in ('results','items','matches','data','works'):
+                value=parsed.get(key)
+                if isinstance(value,list):rows=value;break
+                if isinstance(value,dict) and isinstance(value.get('results'),list):rows=value['results'];break
+        rows=rows or []
+        result=[]
+        for row in rows:
+            if not isinstance(row,dict):continue
+            location=row.get('primary_location') if isinstance(row.get('primary_location'),dict) else {}
+            source=location.get('source') if isinstance(location.get('source'),dict) else {}
+            url=(row.get('url') or row.get('link') or row.get('href') or
+                 location.get('landing_page_url') or source.get('homepage_url') or
+                 row.get('id') or '')
+            if not str(url).startswith(('http://','https://')):continue
+            title=row.get('title') or row.get('display_name') or row.get('name') or ''
+            excerpts=row.get('excerpts')
+            if isinstance(excerpts,list):excerpts=' '.join(str(item) for item in excerpts)
+            snippet=row.get('snippet') or row.get('description') or row.get('highlight') or excerpts or ''
+            result.append(dict(title=str(title),url=str(url),snippet=str(snippet)))
+        return result
+    try:
+        from defusedxml import ElementTree
+        root=ElementTree.fromstring(raw)
+    except Exception:
+        return []
+    result=[]
+    for item in root.findall('.//item'):
+        target=item.findtext('link','')
+        if target.startswith(('http://','https://')):
+            result.append(dict(title=item.findtext('title',''),url=target,
+                               snippet=item.findtext('description','')))
+    return result
+
+
+def canonical_url(value):
+    """Return a stable URL identity without changing the fetched URL."""
+    from urllib.parse import urlsplit, urlunsplit
+    parsed = urlsplit((value or '').strip())
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+        return value.strip()
+    host = parsed.hostname.casefold()
+    port = parsed.port
+    if port and not ((parsed.scheme == 'http' and port == 80) or
+                     (parsed.scheme == 'https' and port == 443)):
+        host += ':' + str(port)
+    path = parsed.path.rstrip('/') or '/'
+    return urlunsplit((parsed.scheme.casefold(), host, path, parsed.query, ''))
+
+
 class Resources:
-    def __init__(self, store, source, state=None):
+    def __init__(self, store, source, state=None, search_routes=None, search_order=None):
         self.store = store
-        self.state = copy.deepcopy(state or {'entries': {}, 'opened': {}, 'reads': [], 'spans': {}})
+        if isinstance(search_routes, dict):
+            self.search_routes=[dict(value, provider_id=key) if isinstance(value,dict)
+                                else value for key,value in search_routes.items()]
+        else:
+            self.search_routes = list(search_routes or [])
+        requested=tuple(str(name).casefold() for name in (search_order or SEARCH_ROUTE_ORDER['general'])
+                        if str(name).casefold() in {'tinyfish','octen','parallel','openalex'})
+        general=tuple(name for name in requested if name!='openalex') or SEARCH_ROUTE_ORDER['general']
+        self.search_route_order={'general':general,'academic':('openalex',)+general}
+        self.state = copy.deepcopy(state or {'entries': {}, 'opened': {}, 'reads': [], 'spans': {},
+                                             'url_index': {}, 'search_index': {}})
+        self.state.setdefault('url_index', {})
+        self.state.setdefault('search_index', {})
+        for key, entry in self.state['entries'].items():
+            if entry.get('kind') == 'external':
+                address = entry.get('original_url') or entry.get('locator')
+                if address:
+                    self.state['url_index'].setdefault(canonical_url(address), key)
         self.order = [o['id'] for o in source['objects']]
         for obj in source['objects']:
             targets={k:obj[k] for k in ('target','original_target') if k in obj}
@@ -28,6 +133,10 @@ class Resources:
         if old and old != entry:
             raise ValueError('资源版本发生变化，不能复用旧读取记录：' + key)
         self.state['entries'][key] = entry
+        if metadata.get('kind') == 'external':
+            address = metadata.get('original_url') or metadata.get('locator')
+            if address:
+                self.state['url_index'][canonical_url(address)] = key
         return key
 
     def text(self, key):
@@ -92,22 +201,67 @@ class Resources:
             result = dict(kind=kind, query=needle, matches=matches,has_more=more)
         elif kind=='search':
             if not allow_external:raise ValueError('当前任务禁止外部查证')
-            from urllib.parse import urlencode,urlsplit
-            from defusedxml import ElementTree
-            from .network import fetch
+            from urllib.parse import urlencode
+            from .network import api_request, fetch
             query=action.get('query','').strip()
             if not query:raise ValueError('搜索词不能为空')
-            url='https://www.bing.com/search?'+urlencode({'format':'rss','q':query})
-            raw,_,_=fetch(url,{'text/xml','application/xml','application/rss+xml'},timeout=15)
-            root=ElementTree.fromstring(raw)
-            matches=[]
-            for item in root.findall('./channel/item'):
-                target=item.findtext('link','')
-                if urlsplit(target).scheme!='https':continue
-                matches.append(dict(title=item.findtext('title',''),url=target,
-                                    snippet=item.findtext('description','')))
-            result=dict(kind=kind,query=query,matches=matches,snapshot_blob=self.store.blob(raw),
+            profile=action.get('search_profile','general')
+            query_key=profile+':'+ ' '.join(query.casefold().split())
+            prior=self.state['search_index'].get(query_key)
+            if prior:
+                result=copy.deepcopy(prior)
+                result['reused_search']=True
+                self.state['reads'].append(result)
+                return result
+            configured={_route_name(route):route for route in self.search_routes if _route_name(route)}
+            attempts=[];matches=[];provider='';route_url='';raw=b'';mime=''
+            for route_name in self.search_route_order.get(profile, self.search_route_order['general']):
+                route=configured.get(route_name)
+                if not route or not bool(_route_value(route,'enabled',True)):continue
+                endpoint=_route_url(route)
+                if not endpoint:continue
+                api_key=str(_route_value(route,'api_key','') or '')
+                if route_name in {'tinyfish','octen','parallel'} and not api_key:
+                    attempts.append(dict(provider=route_name,status='unavailable',reason='missing server-side credential'))
+                    continue
+                try:
+                    parameters=_route_value(route,'model_parameters',{}) or {}
+                    if route_name=='tinyfish':
+                        url=endpoint+('?' if '?' not in endpoint else '&')+urlencode({'query':query})
+                        raw,mime,_=api_request(url,headers={'X-API-Key':api_key},timeout=15)
+                    elif route_name=='openalex':
+                        values={'search':query,'per-page':int(parameters.get('perPage',3) or 3)}
+                        if api_key:values['api_key']=api_key
+                        url=endpoint+('?' if '?' not in endpoint else '&')+urlencode(values)
+                        raw,mime,_=api_request(url,timeout=15)
+                    elif route_name=='octen':
+                        raw,mime,_=api_request(endpoint,method='POST',headers={'x-api-key':api_key},
+                            json_body={'query':query,'count':int(parameters.get('count',8) or 8)},timeout=15)
+                    else:
+                        raw,mime,_=api_request(endpoint,method='POST',headers={'x-api-key':api_key},
+                            json_body={'objective':query,'search_queries':[query],
+                                'mode':str(parameters.get('mode','turbo')),
+                                'advanced_settings':{'max_results':int(parameters.get('maxResults',8) or 8),
+                                    'excerpt_settings':{'max_chars_per_result':2000}}},timeout=15)
+                    matches=_search_matches(raw,mime)
+                    attempts.append(dict(provider=route_name,status='matched' if matches else 'empty'))
+                    if matches:
+                        provider=route_name;route_url=endpoint;break
+                except (ValueError,OSError,TimeoutError) as error:
+                    attempts.append(dict(provider=route_name,status='unavailable',reason=str(error)[:240]))
+            if not matches:
+                # Compatibility fallback for deployments that have not yet
+                # supplied the ReadWeave search registry.
+                url='https://www.bing.com/search?'+urlencode({'format':'rss','q':query})
+                raw,_,_=fetch(url,{'text/xml','application/xml','application/rss+xml'},timeout=15)
+                matches=_search_matches(raw,'application/rss+xml')
+                provider='bing_rss';route_url='https://www.bing.com/search'
+                attempts.append(dict(provider=provider,status='matched' if matches else 'empty'))
+            result=dict(kind=kind,query=query,search_profile=profile,matches=matches,
+                search_provider=provider,search_route=route_url,attempts=attempts,
+                snapshot_blob=self.store.blob(raw),
                 evidence_status='discovery_only; open the primary page before citing its claims')
+            self.state['search_index'][query_key]=copy.deepcopy(result)
         elif kind == 'page':
             if not allow_external:
                 raise ValueError('当前任务禁止外部查证')
@@ -115,6 +269,16 @@ class Resources:
             from urllib.parse import urlsplit,urlunsplit
             url = action['url']
             key = 'external-' + digest(url.encode())[:20]
+            canonical=canonical_url(url)
+            indexed=self.state['url_index'].get(canonical)
+            if indexed and indexed in self.state['entries']:
+                entry=self.state['entries'][indexed]
+                length=entry['chars']
+                result=self.read(indexed, 0, min(length, 6000))
+                result['complete']=length <= 6000
+                result['image_refs']=entry.get('image_refs',[])
+                result['reused_external']=True
+                return result
             if key not in self.state['entries']:
                 try:
                     parsed=urlsplit(url)

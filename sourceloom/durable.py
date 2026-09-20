@@ -41,9 +41,10 @@ class Queue:
         visual_batches=math.ceil(pages/3)
         minimum_calls=8+visual_batches*2
         source_chars=sum(len(o.get('text','')) for o in inventory['objects'])
-        if pipeline=='active_composition_v1':
+        if pipeline in {'active_composition_v1','active_composition_v2'}:
+            visual_calls=math.ceil(pages/(6 if pipeline=='active_composition_v2' else 3))
             return dict(source_chars=source_chars,source_objects=len(inventory['objects']),
-                visual_batches=pages,minimum_calls=3+pages,max_calls=None,feasible=True,
+                visual_batches=visual_calls,minimum_calls=3+visual_calls,max_calls=None,feasible=True,
                 estimate_kind='baseline_only',note='实际调用取决于材料分组、必要查证与局部修复，不承诺固定次数')
         return dict(source_chars=source_chars,source_objects=len(inventory['objects']),
                     visual_batches=visual_batches,minimum_calls=minimum_calls,
@@ -70,7 +71,7 @@ class Queue:
             if not p.get('inventory'):
                 raise Conflict('先上传文件或导入网页')
             estimate=self.estimate(p['inventory'],pipeline=self.pipeline)
-            if self.pipeline != 'active_composition_v1' and not estimate['feasible']:
+            if self.pipeline not in {'active_composition_v1','active_composition_v2'} and not estimate['feasible']:
                 raise Conflict(f"原件至少需要 {estimate['minimum_calls']} 次调用完成基本视觉与正文流程，超过单篇 {estimate['max_calls']} 次上限，请先缩小本次材料范围")
             if p.get('draft'):
                 raise Conflict('已有正文，请建立材料副本或修改当前版本')
@@ -85,7 +86,7 @@ class Queue:
                        results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,writing_contract_version=7,review_order='style_first',transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],
                        source_digest=p['inventory']['digest'],source=p['inventory'],goal=p['goal'],project_goal=p['goal'],
                        writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')})
-            if self.pipeline == 'active_composition_v1':
+            if self.pipeline in {'active_composition_v1','active_composition_v2'}:
                 from .active_composition import initialize
                 initialize(job)
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',
@@ -95,7 +96,7 @@ class Queue:
                 incoming.update(status='completed',production_job=jid,finished=now)
                 cx.execute("UPDATE jobs SET status='completed',body=? WHERE id=?",(json.dumps(incoming,ensure_ascii=False),expected_intake))
             p.update(active_job=jid,state='queued',max_calls=24)
-            if self.pipeline=='active_composition_v1':p['max_calls']=None
+            if self.pipeline in {'active_composition_v1','active_composition_v2'}:p['max_calls']=None
             cx.execute('UPDATE projects SET body=? WHERE id=?', (json.dumps(p,ensure_ascii=False),pid))
         return job
 
@@ -129,7 +130,7 @@ class Queue:
 
     def rewrite_existing(self,pid,bundle,quality_parent=None):
         """Reuse verified source inventory, while recording a new rewrite of the saved version."""
-        if self.pipeline == 'active_composition_v1' and not quality_parent:
+        if self.pipeline in {'active_composition_v1','active_composition_v2'} and not quality_parent:
             return self.rewrite_active(pid,bundle)
         with self.store.connect() as cx:
             cx.execute('BEGIN IMMEDIATE')
@@ -380,7 +381,7 @@ class Queue:
             new=project.get('inventory',{})
             old_originals={(item['name'],item['sha256']) for item in old.get('originals',[])}
             new_originals={(item['name'],item['sha256']) for item in new.get('originals',[])}
-            if (job.get('pipeline')!='active_composition_v1' or job['status']!='failed'
+            if (job.get('pipeline') not in {'active_composition_v1','active_composition_v2'} or job['status']!='failed'
                     or job.get('calls') or job.get('pending') or job.get('draft',{}).get('blocks')
                     or job.get('stage') not in {'active_index','active_visual'}
                     or project.get('active_job') or project.get('draft')

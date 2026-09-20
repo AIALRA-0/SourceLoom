@@ -6,6 +6,52 @@ from .contracts import Draft, Patch, Plan
 from .store import Conflict, digest
 
 
+DELIVERY_STATES = {'draft', 'ready_for_review', 'accepted', 'published'}
+
+
+def transition_delivery(project, event):
+    """Apply the explicit review/accept/publish state machine in memory."""
+    production=project.setdefault('production', {})
+    current=production.get('delivery_state','draft')
+    if current not in DELIVERY_STATES:
+        raise Conflict('未知交付状态：'+str(current))
+    if event=='review_ready':
+        if not review_complete(project):
+            production['delivery_state']='ready_for_review'
+            return 'ready_for_review'
+        production['delivery_state']='ready_for_review'
+        return production['delivery_state']
+    if event=='accept':
+        if current!='ready_for_review':
+            raise Conflict('只有 ready_for_review 可以接受')
+        if not review_complete(project):
+            raise Conflict('未完成独立语义审核，不能接受')
+        project['accepted_revision']=project['revision']
+        production['delivery_state']='accepted'
+        return production['delivery_state']
+    if event=='publish':
+        # The existing HTTP acceptance endpoint records accepted_revision as
+        # its atomic user receipt. Normalize that receipt before an importer
+        # advances the candidate to published.
+        if current=='ready_for_review' and project.get('accepted_revision')==project.get('revision'):
+            current='accepted'
+            production['delivery_state']='accepted'
+        if current!='accepted' or project.get('accepted_revision')!=project.get('revision'):
+            raise Conflict('只有已接受的当前版本可以发布')
+        if not review_complete(project):
+            raise Conflict('未完成独立语义审核，不能发布')
+        production['delivery_state']='published'
+        return production['delivery_state']
+    raise Conflict('未知交付事件：'+str(event))
+
+
+def can_publish(project):
+    production=project.get('production') or {}
+    return (production.get('delivery_state')=='accepted'
+            and project.get('accepted_revision')==project.get('revision')
+            and review_complete(project))
+
+
 def source_quote_matches(quote,text):
     # A truly text-free image container has no characters to quote. Its
     # identity, raw structure and child image still require separate coverage.
@@ -118,7 +164,7 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
 
 def review_complete(project):
     production=project.get('production') or {}
-    if production.get('pipeline')=='active_composition_v1':
+    if production.get('pipeline') in {'active_composition_v1','active_composition_v2'}:
         # Completion means a generated, structurally checked candidate, not an independent semantic pass
         review=project.get('independent_review') or {}
         from .writing import canonical

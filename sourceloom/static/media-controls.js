@@ -1,5 +1,5 @@
 // Disclosure preferences belong to a material, without reloading its article.
-export function mediaControls(frames, input, documentId) {
+export function mediaControls(frames, input, documentId, collapsedByDefault = true) {
   frames = (Array.isArray(frames) ? frames : [frames]).filter(Boolean);
   if (!frames.length || !input) return;
   const key = 'loom-media-expanded-' + documentId;
@@ -25,7 +25,9 @@ export function mediaControls(frames, input, documentId) {
     if (!doc || doc.URL === 'about:blank' || doc.URL !== frame.src || doc === attachedDocuments.get(frame)) return;
     if (doc.readyState === 'loading') return;
     attachedDocuments.set(frame, doc);
-    for (const item of doc.querySelectorAll('details[data-media]')) item.open = localStorage.getItem(key) === 'true';
+    const saved=localStorage.getItem(key);
+    const expanded=saved===null?!collapsedByDefault:saved==='true';
+    for (const item of doc.querySelectorAll('details[data-media]')) item.open = expanded;
     reflect();
     doc.addEventListener('toggle', reflect, true);
   }

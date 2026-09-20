@@ -59,7 +59,7 @@ STAGES={'fetch':0,'intake':0,'received':1,'active_index':1,'active_visual':1,'ac
 
 def summary(job):
     stage=job.get('stage','');status=job.get('status');current=STAGES.get(stage,4)
-    if status=='completed' and job.get('role')=='production':current=5
+    if status in {'completed','ready_for_review'} and job.get('role')=='production':current=5
     detail={'fetch':'正在获取网页正文和附件','intake':'原始文件已收到，正在读取文字、图片和表格',
             'active_index':'正在保存原件并建立可回查的材料目录',
             'active_visual':'正在读取原图中的文字、数据和关系',
@@ -86,8 +86,8 @@ def summary(job):
     if stage=='inventory' and job.get('inventory_group_count'):detail=f"正在清点第 {min(job.get('inventory_group_index',0)+1,job['inventory_group_count'])} / {job['inventory_group_count']} 组原文"
     if stage=='style' and (job.get('style_part_count') or 0)>1:detail=f"正在核对第 {(job.get('style_part_index') or 0)+1} / {job['style_part_count']} 组要求，每组均阅读完整正文"
     if status=='queued':detail='任务已保存，正在等待后台处理'
-    if status=='completed':detail='正文已保存，可以阅读和下载' if job.get('role')=='production' else '原件已保存'
+    if status in {'completed','ready_for_review'}:detail='候选正文已保存，可以阅读和下载' if job.get('role')=='production' else '原件已保存'
     if status=='needs_attention':detail='已有结果已保存，部分内容仍需核对'
     if status in {'failed','uncertain','cancelled'}:detail='处理已暂停，已完成的结果仍保留'
     return {'steps':STEPS,'current':current,'label':detail,'started':job.get('started',job.get('created')),
-            'active':status in {'queued','running'},'completed':status=='completed' and job.get('role')=='production'}
+            'active':status in {'queued','running'},'completed':status in {'completed','ready_for_review'} and job.get('role')=='production'}
