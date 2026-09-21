@@ -67,6 +67,15 @@ def test_repeated_summary_node_does_not_duplicate_source_obligations():
     assert [node['id'] for node in validated['nodes']]==['n1']
 
 
+def test_redundant_effective_name_status_is_removed_only_from_validation_copy():
+    from sourceloom.active_composition import discard_known_plan_protocol_extras
+    raw={'result':{'concepts':[{'id':'cache','naming_status':'ambiguous',
+        'naming_status_effective':'ambiguous'}]}}
+    cleaned,removed=discard_known_plan_protocol_extras(raw)
+    assert removed==['cache'] and 'naming_status_effective' not in cleaned['result']['concepts'][0]
+    assert raw['result']['concepts'][0]['naming_status_effective']=='ambiguous'
+
+
 def test_unsupported_model_name_is_removed_instead_of_blocking_document(tmp_path):
     from sourceloom.active_composition import validate_names
     resources=Resources(Store(tmp_path),source());resources.read('s1')

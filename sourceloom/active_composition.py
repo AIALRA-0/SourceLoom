@@ -539,6 +539,17 @@ def discard_redundant_reads_with_result(response, resources):
     return response|{'actions':[]},[action['resource_id'] for action in actions]
 
 
+def discard_known_plan_protocol_extras(raw):
+    """Remove a redundant derived label from a validation copy, preserving raw output."""
+    cleaned=copy.deepcopy(raw);removed=[]
+    result=cleaned.get('result') if isinstance(cleaned,dict) else None
+    for concept in result.get('concepts',[]) if isinstance(result,dict) else []:
+        if 'naming_status_effective' in concept and 'naming_status' in concept:
+            removed.append(concept.get('id',''))
+            concept.pop('naming_status_effective',None)
+    return cleaned,removed
+
+
 def unique(values, label):
     if len(values) != len(set(values)) or '' in values:
         raise ValueError(label + '身份为空或重复')
@@ -1886,7 +1897,13 @@ class ActiveComposition:
                 request['protocol_correction'] = session['correction']
             raw = self.call(job, key + '-turn-' + str(session['round']), role, request, A.Turn[schema])
             try:
-                response = A.Turn[schema].model_validate(raw).model_dump()
+                checked_raw,removed_extras=(discard_known_plan_protocol_extras(raw)
+                    if is_v2(job) and role=='active_plan' else (raw,[]))
+                if removed_extras:
+                    job.setdefault('nonblocking_protocol_notes',[]).append(dict(
+                        step=key,reason='redundant naming_status_effective removed from validation copy',
+                        concept_ids=removed_extras))
+                response = A.Turn[schema].model_validate(checked_raw).model_dump()
                 response,reused=discard_redundant_reads_with_result(response,resources)
                 if reused:
                     session.setdefault('redundant_result_reads',[]).append(dict(
