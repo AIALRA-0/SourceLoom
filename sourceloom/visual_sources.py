@@ -12,6 +12,11 @@ from .store import digest
 def decorative_resource(obj):
     if obj.get('kind')=='text' and not obj.get('text','').strip():return True
     if obj.get('source_scope') in {'site_chrome','source_metadata'}:return True
+    if (obj.get('kind')=='link' and not obj.get('text','').strip()
+            and '/figure[' in obj.get('locator','')
+            and (re.search(r'\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)',obj.get('target',''),re.I)
+                 or 'substackcdn.com/image/' in obj.get('target','').casefold())):
+        return True
     evidence=obj.get('visual_classification') or {}
     if evidence.get('method')=='source_dom_heading_home_link' and evidence.get('source_role')=='site_branding':
         return True

@@ -536,6 +536,16 @@ def test_whitespace_only_source_text_is_preserved_without_an_explanation_obligat
     assert not decorative_resource(dict(kind='text',text='A real sentence'))
 
 
+def test_empty_figure_image_link_is_archived_without_hiding_the_image():
+    from sourceloom.visual_sources import decorative_resource
+    wrapper=dict(kind='link',text='',locator='snapshot.html/article[1]/figure[2]/a[1]',
+        target='https://substackcdn.com/image/fetch/example/photo.png')
+    image=dict(kind='image',text='Cache bandwidth chart',
+        locator='snapshot.html/article[1]/figure[2]/a[1]/img[1]',target='photo.png')
+    assert decorative_resource(wrapper)
+    assert not decorative_resource(image)
+
+
 def test_writer_concept_labels_can_be_aligned_only_from_exact_cited_ids():
     from sourceloom.active_composition import align_reported_concept_ids
     delta=dict(established_concepts=['the mission and its launch date'],
