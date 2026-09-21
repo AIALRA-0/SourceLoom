@@ -303,7 +303,10 @@ def fetch_bundle(url,include_manifest=False,rendered=False):
                    for image in BeautifulSoup(raw,'html.parser').find_all('img')]
         references=markdown_refs+html_refs
         base=final
-    else:return uploads,final,aliases,failures
+    else:
+        result=(uploads,final,aliases,failures)
+        manifest={'images':[],'rendered_objects':[],'rendered':None}
+        return result+(manifest,) if include_manifest else result
     for ref in references:
         if ref and not ref.startswith('data:'):
             target=urljoin(base,ref)
@@ -370,6 +373,9 @@ def fetch_bundle(url,include_manifest=False,rendered=False):
             except (ValueError,OSError,http.client.HTTPException) as exc:
                 failures.append(dict(target=target,reason=type(exc).__name__))
     manifest={'images':image_groups,'rendered_objects':rendered_manifest,
-              'rendered':rendered_success if rendered else None}
+              # Browser-rendering completeness applies only to HTML.  A PDF,
+              # DOCX, TXT, RST, or Markdown snapshot is already the fetched
+              # source document and must not acquire a false render failure.
+              'rendered':rendered_success if rendered and mime=='text/html' else None}
     result=(uploads,final,aliases,failures)
     return result+((manifest if rendered else image_groups),) if include_manifest else result

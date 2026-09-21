@@ -226,6 +226,21 @@ def test_document_links_keep_their_parseable_format(monkeypatch,mime,url,expecte
     assert network.fetch_bundle(url)[0]==[(expected,b'unchanged original')]
 
 
+@pytest.mark.parametrize('mime,url,expected',[
+    ('application/pdf','https://example.org/paper.pdf','snapshot.pdf'),
+    ('application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+     'https://example.org/checklist.docx','snapshot.docx'),
+    ('text/plain','https://example.org/tutorial.rst','snapshot.rst')])
+def test_non_html_document_bundle_returns_an_explicit_non_rendered_manifest(monkeypatch,mime,url,expected):
+    from sourceloom import network
+    monkeypatch.setattr(network,'fetch',lambda address:(b'unchanged original',mime,url))
+    uploads,final,aliases,failures,manifest=network.fetch_bundle(
+        url,include_manifest=True,rendered=True)
+    assert uploads==[(expected,b'unchanged original')]
+    assert final==url and aliases=={} and failures==[]
+    assert manifest=={'images':[],'rendered_objects':[],'rendered':None}
+
+
 @pytest.mark.parametrize('extra_status',['pass','not_applicable','fail','unknown'])
 def test_unassigned_positive_review_cannot_override_assigned_verdicts(extra_status):
     from sourceloom.style_parts import decode_indexed

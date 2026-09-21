@@ -39,6 +39,31 @@ def bind_web_material_manifest(source, manifest):
     rendered=[]
     for raw in rendered_manifest:
         item=copy.deepcopy(raw);obj=by_capture.get(item.get('id'))
+        # A nested SVG/canvas can be captured by the browser even when the
+        # structural parser has already consumed its outer visual container.
+        # Keep the independently archived screenshot as its own source object;
+        # the visual model will decide its meaning later.  This is preferable
+        # to dropping a real rendered object or blocking the entire document.
+        preview_id=originals.get(item.get('preview_name',''))
+        if not obj and preview_id:
+            source_id='rendered-'+str(item.get('id') or len(rendered)+1)
+            known_ids={entry['id'] for entry in result.get('objects',[])}
+            if source_id in known_ids:
+                suffix=2
+                while f'{source_id}-{suffix}' in known_ids:suffix+=1
+                source_id=f'{source_id}-{suffix}'
+            kind=item.get('kind','image')
+            obj=dict(id=source_id,kind='image' if kind=='image' else 'media',
+                text=item.get('alt') or item.get('text') or '',
+                locator='rendered-capture/'+str(item.get('id') or len(rendered)+1),
+                raw='',target=item.get('target') or item.get('poster') or '',
+                resource_id=preview_id,capture_id=item.get('id',''),
+                material_candidate=item.get('scope')=='article',
+                source_scope='article_media' if item.get('scope')=='article' else 'rendered_page',
+                rendered_box={key:item.get(key) for key in ('x','y','width','height')})
+            if kind!='image':obj['media_type']=kind
+            result.setdefault('objects',[]).append(obj)
+            by_capture[item.get('id')]=obj
         item.update(source_id=obj['id'] if obj else '',ready=bool(obj),
                     resource_id=obj.get('resource_id','') if obj else '')
         rendered.append(item)

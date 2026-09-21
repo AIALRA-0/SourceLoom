@@ -68,3 +68,17 @@ def test_dynamic_capture_failure_blocks_generation_before_writer(tmp_path):
     try:require_complete_web_materials(source)
     except ValueError as exc:assert '动态网页尚未完成' in str(exc)
     else:raise AssertionError('missing rendered page must not reach generation')
+
+
+def test_nested_rendered_visual_without_parser_node_becomes_a_source_object(tmp_path):
+    source=intake(Store(tmp_path),[('snapshot.html',b'<main><svg><svg></svg></svg></main>'),
+        ('web-captures/nested.png',png())],'https://example.org/chart')
+    row=dict(id='web-object-0015',kind='image',scope='article',target='',alt='',
+        preview_name='web-captures/nested.png',x=20,y=30,width=11,height=11)
+    source=bind_web_material_manifest(source,{'images':[],'rendered_objects':[row],'rendered':True})
+    require_complete_web_materials(source)
+    captured=next(obj for obj in source['objects'] if obj.get('capture_id')=='web-object-0015')
+    assert captured['kind']=='image' and captured['resource_id']
+    assert captured['source_scope']=='article_media'
+    rendered=source['web_snapshot']['rendered_capture']
+    assert rendered['gaps']==[] and rendered['objects'][0]['source_id']==captured['id']

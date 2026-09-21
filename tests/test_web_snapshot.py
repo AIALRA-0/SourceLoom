@@ -184,6 +184,13 @@ def test_markdown_snapshot_fetches_literal_html_images(tmp_path,monkeypatch):
     assert not inv['unknown']
 
 
+def test_markdown_bundle_never_claims_browser_rendering_was_attempted(monkeypatch):
+    base='https://raw.example.invalid/project/README.md'
+    monkeypatch.setattr(network,'fetch',lambda url,*args:(b'# Project\n','text/plain',url))
+    *_,manifest=network.fetch_bundle(base,include_manifest=True,rendered=True)
+    assert manifest['rendered'] is None
+
+
 def test_article_figure_uses_full_size_candidate_and_binds_manifest(tmp_path,monkeypatch):
     raw=(b'<article><figure><a href="full.png"><picture>'
          b'<source srcset="large.webp 1200w, small.webp 400w">'
