@@ -1,0 +1,21 @@
+tests/test_rendered_web_materials.py
+  s_36a381ab4bccf9::t_745e9198462f52 102-107
+sourceloom/materials.py
+  s_36a381ab4bccf9::t_b0e3c4618fb462 70-86,88-89,95-100,102,106-110,115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4c0b6a8bf5f00e0ad09b04e52385682a260e6aa3",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
