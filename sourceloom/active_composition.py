@@ -160,6 +160,23 @@ def exact_source_quote(quote, source, pdf_wrap=False):
     return matches[0].group() if len(matches)==1 else None
 
 
+def rebind_link_finding_evidence(finding, guides, resources):
+    """Bind a quoted destination claim to the saved target-page evidence."""
+    guide=next((item for item in guides if item.get('source_id')==finding.get('source_id')),None)
+    if not guide or not resources:return None
+    matches=[]
+    for evidence in guide.get('evidence',[]):
+        entry=resources.state.get('entries',{}).get(evidence.get('resource_id'),{})
+        if entry.get('kind') not in {'external','image'}:continue
+        exact=exact_source_quote(finding.get('source_quote',''),resources.text(evidence['resource_id']))
+        if exact is not None:matches.append((evidence['resource_id'],exact))
+    if len(matches)!=1:return None
+    submitted=finding['source_id'];finding['source_id'],exact=matches[0]
+    finding['source_quote']=exact
+    return dict(submitted_source_id=submitted,actual_source_id=finding['source_id'],
+                operation='content_link_destination_evidence_rebind')
+
+
 def bind_prefetched_link_evidence(result, source, resources, prefetched):
     """Replace misbound link citations with literal bytes from a fetched target.
 
@@ -2637,6 +2654,7 @@ class ActiveComposition:
                             actual_block_id=block['id'],operation='nearest_exact_line_for_reported_defect',
                             reviewer_quote_was_not_verbatim=True))
                 literals=protected_objects(job['inventory'])
+                guides=[]
                 if job.get('link_contract_version'):
                     guides=[g for g in current_link_guides if g['role']=='content']
                     content_ids={g['source_id'] for g in guides}
@@ -2682,6 +2700,8 @@ class ActiveComposition:
                     if finding['block_id'] not in blocks or finding['output_quote'] not in blocks[finding['block_id']]['markdown']:
                         raise ValueError('核对意见未准确引用实际正文')
                     if finding['source_id']:
+                        alignment=rebind_link_finding_evidence(finding,guides,resources)
+                        if alignment:result.setdefault('source_quote_alignments',[]).append(alignment)
                         sid=finding['source_id']
                         external=resources.state['entries'].get(sid,{}) if resources else {}
                         if sid not in node['source_ids'] and external.get('kind')!='external':

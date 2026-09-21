@@ -1154,6 +1154,19 @@ def test_review_quote_correction_uses_the_previous_review(tmp_path,monkeypatch):
     assert engine.turn(job,'review','active_review',Review,src,['s1'],{},validate)=={'quote':'exact'}
 
 
+def test_link_target_quote_rebinds_to_saved_destination_evidence(tmp_path):
+    from sourceloom.active_composition import rebind_link_finding_evidence
+    resources=Resources(Store(tmp_path),source())
+    resources.add('external-page','Heading\nExact destination statement',kind='external',
+                  locator='https://example.org/topic',original_url='https://example.org/topic')
+    finding=dict(source_id='link',source_quote='Exact destination statement')
+    guides=[dict(source_id='link',evidence=[dict(
+        resource_id='external-page',quote='Exact destination statement')])]
+    alignment=rebind_link_finding_evidence(finding,guides,resources)
+    assert finding==dict(source_id='external-page',source_quote='Exact destination statement')
+    assert alignment['operation']=='content_link_destination_evidence_rebind'
+
+
 def test_v2_prefetches_bounded_direct_link_before_first_planning_call(tmp_path,monkeypatch):
     from pydantic import BaseModel
     import sourceloom.network
