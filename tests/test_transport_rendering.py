@@ -294,6 +294,19 @@ def test_quoted_original_keeps_blank_lines_and_changed_pronoun_is_rejected(newli
     b['markdown']=b['markdown'].replace('We','They')
     assert any(x['code']=='embedded_bytes' for x in inspect_draft(inv,{'blocks':[b]}))
 
+
+def test_archived_layout_text_needs_no_detached_resource_blob():
+    from sourceloom.checks import inspect_draft
+    block=dict(id='b',unit_id='u',kind='explanation',markdown='正文',obligation_ids=[],
+        object_ids=[],embedded_object_ids=[],evidence=[])
+    inventory={'frozen':True,'objects':[dict(id='chrome',kind='text',text='Sign in',
+        source_scope='site_chrome')],'obligations':[],'resources':[]}
+    assert not inspect_draft(inventory,{'blocks':[block]})
+    inventory['objects']=[dict(id='icon',kind='image',text='',source_scope='layout_decorative',
+        resource_id='missing')]
+    assert [finding['code'] for finding in inspect_draft(inventory,{'blocks':[block]})]==['resource']
+
+
 def test_native_import_link_rewriting_cannot_change_literal_code_or_prose():
     import re
     from bs4 import BeautifulSoup

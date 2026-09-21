@@ -146,7 +146,11 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
     for sid, src in sources.items():
         from .visual_sources import decorative_resource
         if decorative_resource(src):
-            if src.get('resource_id') not in resources:
+            # Text, links and metadata remain byte-for-byte available inside
+            # the archived original document and do not own a separate blob.
+            # Only a decorative object that actually names a detached resource
+            # must have that resource in the manifest.
+            if src.get('resource_id') and src['resource_id'] not in resources:
                 error('resource','排版资源没有保存在原件资源清单中')
             continue
         if src["kind"] in {"image", "table", "code", "formula", "link", "page", "attachment", "footnote"} and sid not in object_coverage and sid not in earlier:
