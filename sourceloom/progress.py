@@ -87,7 +87,8 @@ def summary(job):
     if stage=='style' and (job.get('style_part_count') or 0)>1:detail=f"正在核对第 {(job.get('style_part_index') or 0)+1} / {job['style_part_count']} 组要求，每组均阅读完整正文"
     if status=='queued':detail='任务已保存，正在等待后台处理'
     if status in {'completed','ready_for_review'}:detail='候选正文已保存，可以阅读和下载' if job.get('role')=='production' else '原件已保存'
-    if status=='needs_attention':detail='已有结果已保存，部分内容仍需核对'
+    if status=='needs_attention':detail=('原件和已完成内容已保存，系统需要继续恢复处理'
+        if job.get('delivery_state')=='source_preserved_needs_recovery' else '已有结果已保存，部分内容仍需核对')
     if status in {'failed','uncertain','cancelled'}:detail='处理已暂停，已完成的结果仍保留'
     return {'steps':STEPS,'current':current,'label':detail,'started':job.get('started',job.get('created')),
             'active':status in {'queued','running'},'completed':status in {'completed','ready_for_review'} and job.get('role')=='production'}

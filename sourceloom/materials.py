@@ -7,13 +7,15 @@ from collections import defaultdict, deque
 def bind_web_material_manifest(source, manifest):
     """Attach every discovered image occurrence to its exact stored object."""
     result=copy.deepcopy(source)
+    image_manifest=manifest.get('images',[]) if isinstance(manifest,dict) else (manifest or [])
+    rendered_manifest=manifest.get('rendered_objects',[]) if isinstance(manifest,dict) else []
     originals={item['name']:item['sha256'] for item in result.get('originals',[])}
     by_resource=defaultdict(deque)
     for obj in result.get('objects',[]):
         if obj.get('kind')=='image' and obj.get('resource_id'):
             by_resource[obj['resource_id']].append(obj)
     bound=[]
-    for raw in manifest or []:
+    for raw in image_manifest:
         item=copy.deepcopy(raw);resource_id=originals.get(item.get('asset_name',''))
         candidates=by_resource.get(resource_id,deque())
         obj=candidates.popleft() if candidates else None
@@ -33,6 +35,20 @@ def bind_web_material_manifest(source, manifest):
     result['web_snapshot']=dict(result.get('web_snapshot') or {},material_manifest=bound,
         material_summary=dict(discovered=len(bound),article_figures=len(required),
                               ready_article_figures=len(required)-len(gaps),gaps=gaps))
+    by_capture={obj.get('capture_id'):obj for obj in result.get('objects',[]) if obj.get('capture_id')}
+    rendered=[]
+    for raw in rendered_manifest:
+        item=copy.deepcopy(raw);obj=by_capture.get(item.get('id'))
+        item.update(source_id=obj['id'] if obj else '',ready=bool(obj),
+                    resource_id=obj.get('resource_id','') if obj else '')
+        rendered.append(item)
+    rendered_gaps=[dict(material_id=item['id'],kind=item.get('kind','unknown'),
+                        failure='渲染对象没有绑定到原件清单') for item in rendered
+                   if item.get('scope')=='article' and not item['ready']]
+    result['web_snapshot'].update(rendered_capture=dict(
+        attempted=isinstance(manifest,dict) and manifest.get('rendered') is not None,
+        completed=bool(manifest.get('rendered')) if isinstance(manifest,dict) else False,
+        objects=rendered,gaps=rendered_gaps))
     return result
 
 
@@ -49,3 +65,10 @@ def require_complete_web_materials(source):
     object_ids={obj['id'] for obj in source.get('objects',[])}
     if any(not item.get('source_id') or item['source_id'] not in object_ids for item in required):
         raise ValueError('网页正文图片与材料位置未完整对应，未开始改写')
+    rendered=snapshot.get('rendered_capture')
+    if rendered and rendered.get('attempted'):
+        if not rendered.get('completed'):
+            raise ValueError('动态网页尚未完成浏览器渲染与非文字材料盘点，未开始改写')
+        if rendered.get('gaps'):
+            labels=', '.join(item['material_id'] for item in rendered['gaps'][:12])
+            raise ValueError('动态网页材料尚未完整绑定，未开始改写：'+labels)

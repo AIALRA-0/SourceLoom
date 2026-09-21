@@ -252,7 +252,7 @@ class Queue:
             for old in history:
                 cards=old.get('visual_cards',[])
                 expected={o['id'] for o in old.get('source',{}).get('objects',[])
-                    if o['kind'] in {'image','page'} and o.get('resource_id')
+                    if o['kind'] in {'image','page','media'} and o.get('resource_id')
                     and not decorative_resource(o)}
                 if (expected and material_signature(old.get('source',{}))==material_signature(job['source'])
                         and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']

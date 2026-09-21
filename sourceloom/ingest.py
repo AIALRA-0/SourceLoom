@@ -127,6 +127,11 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 if child in files:
                     raise ValueError("资源包与上传文件同名")
                 files[child] = content
+        elif name=='web-original.bin':
+            # Exact pre-render response bytes remain in originals/resources
+            # Rendered DOM is the parse target, so this archive is not a second
+            # source object and does not create a false parser gap
+            continue
         else:
             files[name] = raw
     if sum(len(raw) for raw in files.values()) > MAX_EXPANDED:
@@ -223,6 +228,26 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 return
             if not isinstance(node, Tag):
                 return
+            capture_id=node.get('data-sourceloom-capture-id','')
+            capture_kind=node.get('data-sourceloom-capture-kind','')
+            if capture_kind=='image' and node.name not in {'img','svg'}:
+                preview=resolve_asset('capture://'+capture_id,name)
+                material_candidate=bool(article and article in node.parents)
+                obj=add('image',node.get('aria-label') or node.get_text(' ',strip=True),locator,
+                        raw=str(node),target='',resource_id=preview,capture_id=capture_id,
+                        source_format='rendered-css-background',material_candidate=material_candidate,
+                        **({'source_scope':'article_media'} if material_candidate else {}))
+                if not preview:gap('背景图像没有取得渲染预览',locator,obj['id'])
+                return
+            if capture_kind=='animation' and node.name not in {'img','svg','canvas','video','audio','iframe','object','embed'}:
+                preview=resolve_asset('capture://'+capture_id,name)
+                material_candidate=bool(article and article in node.parents)
+                obj=add('media',node.get('aria-label') or node.get_text(' ',strip=True),locator,
+                        raw=str(node),target='',resource_id=preview,capture_id=capture_id,
+                        media_type='animation',material_candidate=material_candidate,
+                        **({'source_scope':'article_media'} if material_candidate else {}))
+                if not preview:gap('动画没有取得渲染预览',locator,obj['id'])
+                return
             if node.name == 'svg':
                 raw=str(node)
                 try:
@@ -234,15 +259,34 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                     label=node.get('aria-label') or (node.find('title').get_text(' ',strip=True)
                         if node.find('title') else '')
                     classification=inline_svg_classification(node)
-                    add('image',label,locator,resource_id=key,target='',raw=raw,
+                    add('image',label,locator,resource_id=key,target='',raw=raw,capture_id=capture_id,
                         source_format='inline-svg',
                         **({'visual_classification':classification,'source_scope':'layout_decorative'}
                            if classification else {}))
                 except (ValueError,TypeError):
-                    obj=add('unknown',node.get_text() or '原始 svg 对象',locator,raw=raw)
-                    gap('svg 未执行，需要独立解释或安全转换',locator,obj['id'])
+                    preview=resolve_asset('capture://'+capture_id,name) if capture_id else None
+                    if preview:
+                        label=node.get('aria-label') or (node.find('title').get_text(' ',strip=True)
+                            if node.find('title') else '')
+                        add('image',label,locator,resource_id=preview,target='',raw=raw,
+                            source_format='rendered-inline-svg',capture_id=capture_id)
+                    else:
+                        obj=add('unknown',node.get_text() or '原始 svg 对象',locator,raw=raw,capture_id=capture_id)
+                        gap('svg 未执行，需要独立解释或安全转换',locator,obj['id'])
                 return
-            if node.name in {"script", "style", "iframe", "object", "embed", "canvas"}:
+            if node.name in {"video","audio","iframe","object","embed","canvas"}:
+                media_type={'iframe':'embed','object':'embed','embed':'embed'}.get(node.name,node.name)
+                target=node.get('src') or node.get('data') or node.get('poster') or ''
+                preview=resolve_asset('capture://'+capture_id,name) if capture_id else None
+                material_candidate=bool(article and article in node.parents)
+                obj=add('media',node.get('aria-label') or node.get('title') or node.get_text(' ',strip=True),
+                        locator,raw=str(node),target=urljoin(document_base or '',target),resource_id=preview,
+                        capture_id=capture_id,media_type=media_type,material_candidate=material_candidate,
+                        **({'source_scope':'article_media'} if material_candidate else {}))
+                if not preview and not target:
+                    gap(f'{media_type} 没有可保存的资源地址或渲染预览',locator,obj['id'])
+                return
+            if node.name in {"script", "style"}:
                 obj = add("unknown", node.get_text() or f"原始 {node.name} 对象", locator, raw=str(node))
                 gap(f"{node.name} 未执行，需要独立解释或安全转换", locator, obj["id"])
                 return
@@ -258,6 +302,7 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 material_candidate=bool(figure and article and article in node.parents)
                 obj = add("image", node.get("alt", ""), locator, resource_id=key, target=ref,
                           raw=str(node),candidate_targets=[urljoin(document_base or '',item) for item in refs],
+                          capture_id=capture_id,
                           material_candidate=material_candidate,
                           figure_caption=caption.get_text(' ',strip=True) if caption else '',
                           **({'source_scope':'article_media'} if material_candidate else {}))
@@ -273,7 +318,7 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 kind = "table" if node.name == "table" else "code" if node.name == "pre" else "heading" if re.fullmatch("h[1-6]", node.name) else "text"
                 if node.get('role')=='doc-footnote' or re.match(r'^(fn|footnote)[-_:]?\d',str(node.get('id','')),re.I):kind='footnote'
                 html_ids=([node['id']] if node.get('id') else [])+[n['id'] for n in node.select('[id]')]
-                obj = add(kind, text, locator, raw=str(node),html_ids=html_ids)
+                obj = add(kind, text, locator, raw=str(node),html_ids=html_ids,capture_id=capture_id)
                 if kind=='code':
                     code=node.find('code')
                     classes=(code or node).get('class',[])
@@ -282,7 +327,9 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                     obj["cells"] = [[dict(text=c.get_text(), rowspan=c.get("rowspan", "1"), colspan=c.get("colspan", "1")) for c in r.find_all(["td", "th"], recursive=False)] for r in node.find_all("tr")]
                 for n, link in enumerate(node.find_all("a")):
                     target = link.get("href", "")
-                    add("link", link.get_text(), f"{locator}/a[{n+1}]", original_target=target,target=urljoin(document_base, target) if document_base else target, parent_id=obj["id"])
+                    add("link", link.get_text(), f"{locator}/a[{n+1}]", original_target=target,
+                        target=urljoin(document_base, target) if document_base else target,parent_id=obj["id"],
+                        capture_id=link.get('data-sourceloom-capture-id',''))
                 for n, pic in enumerate(node.find_all("img")):
                     walk(pic, f"{locator}/img[{n+1}]")
                 for n,math in enumerate(node.find_all('math')):
@@ -300,7 +347,8 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 return
             if node.name == "a":
                 target = node.get("href", "")
-                parent=add("link", node.get_text(), locator, original_target=target,target=urljoin(document_base, target) if document_base else target)
+                parent=add("link", node.get_text(), locator, original_target=target,
+                           target=urljoin(document_base, target) if document_base else target,capture_id=capture_id)
                 # Links frequently wrap a picture or icon.  Preserve the link
                 # relation and still inventory its non-text descendants.
                 for n,pic in enumerate(node.find_all('img')):

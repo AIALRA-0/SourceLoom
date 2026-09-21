@@ -51,6 +51,8 @@ def reading_draft(project):
     result=copy.deepcopy(project['draft'])
     if not result:return result
     objects={o['id']:o for o in (project.get('inventory') or {}).get('objects',[])}
+    from .writing import protected_objects
+    literals=protected_objects(project.get('inventory') or {'objects':[]})
     for block in result['blocks']:
         for sid in block.get('embedded_object_ids',[]):
             obj=objects.get(sid)
@@ -63,6 +65,15 @@ def reading_draft(project):
             if obj and (layout_reference(obj) or obj.get('kind')=='table' and '<img' in obj.get('raw','').lower()):
                 raw=obj['raw'];replacement='<details><summary>查看原文版式与配图</summary>\n\n'+raw+'\n\n</details>'
                 if replacement not in block['markdown']:block['markdown']=block['markdown'].replace(raw,replacement)
+            if obj and obj.get('kind')=='media':
+                literal=literals.get(sid,'')
+                if literal and literal in block['markdown'] and '<details' not in literal:
+                    label=html.escape({'video':'原视频','audio':'原音频','canvas':'动态画布',
+                        'animation':'原动画','embed':'原嵌入内容'}.get(obj.get('media_type'),'原媒体')+
+                        ' · '+obj.get('locator',''))
+                    block['markdown']=block['markdown'].replace(literal,
+                        '<details><summary>'+label+'</summary>\n\n'+literal+'\n\n</details>')
+                continue
             if not obj or obj['kind'] not in {'image','page'} or not obj.get('resource_id'):continue
             current=image_markup(obj)
             old=image_markup(obj,legacy=True)

@@ -249,7 +249,7 @@ def _html_image_groups(raw,base):
     return ordered
 
 
-def fetch_bundle(url,include_manifest=False):
+def fetch_bundle(url,include_manifest=False,rendered=False):
     """Snapshot original HTML/Markdown and bounded referenced images."""
     deadline=time.monotonic()+60
     raw,mime,final=fetch(url)
@@ -258,9 +258,24 @@ def fetch_bundle(url,include_manifest=False):
         source_suffix=PurePosixPath(urlsplit(final).path).suffix.lower()
         if source_suffix in {'.md','.markdown'}:suffix='md'
         elif source_suffix in {'.rst','.rest'}:suffix='rst'
-    uploads=[('snapshot.'+suffix,raw)];aliases={};failures=[]
+    uploads=[('snapshot.'+suffix,raw)];aliases={};failures=[];rendered_manifest=[];rendered_success=False
     targets=[];image_groups=[]
     if mime=='text/html':
+        if rendered:
+            try:
+                from .web_capture import capture
+                rendered_html,rendered_final,rendered_manifest,capture_assets=capture(final)
+                rendered_success=True
+                uploads=[('web-original.bin',raw),('snapshot.html',rendered_html),*capture_assets]
+                raw=rendered_html;final=rendered_final
+                for item in rendered_manifest:
+                    if item.get('preview_name'):
+                        aliases['capture://'+item['id']]=item['preview_name']
+            except Exception as exc:
+                # A raw response is retained, but this is an acquisition gap,
+                # never evidence that a dynamic page was completely collected
+                failures.append(dict(target=final,reason='rendered_capture_failed:'+type(exc).__name__,
+                                     scope='rendered_page'))
         soup=BeautifulSoup(raw,'html.parser')
         base=final
         if soup.find('base',href=True):base=urljoin(final,soup.find('base',href=True)['href'])
@@ -342,5 +357,7 @@ def fetch_bundle(url,include_manifest=False):
                 uploads.append((name,image));aliases[target]=name;aliases[resolved]=name;total+=len(image)
             except (ValueError,OSError,http.client.HTTPException) as exc:
                 failures.append(dict(target=target,reason=type(exc).__name__))
+    manifest={'images':image_groups,'rendered_objects':rendered_manifest,
+              'rendered':rendered_success if rendered else None}
     result=(uploads,final,aliases,failures)
-    return result+(image_groups,) if include_manifest else result
+    return result+((manifest if rendered else image_groups),) if include_manifest else result

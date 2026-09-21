@@ -1194,6 +1194,29 @@ def test_inline_svg_button_icon_is_chrome_but_article_svg_remains_unresolved(tmp
     assert store.read_blob(src['originals'][0]['sha256'])==raw
 
 
+def test_svg_use_inherits_only_a_proven_decorative_definition(tmp_path):
+    from sourceloom.source_context import classify_web_chrome
+    store=Store(tmp_path);raw=b'<html><body><main><article><h1>Report</h1></article></main></body></html>'
+    key=store.blob(raw)
+    source=dict(source_url='https://example.org/report',
+        originals=[dict(name='snapshot.html',sha256=key,size=len(raw))],resources=[],
+        objects=[
+            dict(id='use',kind='unknown',text='原始 svg 对象',locator='snapshot.html/main/svg[1]',
+                 raw='<svg><use href="#chevron"></use></svg>'),
+            dict(id='definition',kind='image',text='',locator='snapshot.html/footer/svg[1]',
+                 raw='<svg id="chevron"><path d="M0 0L1 1"></path></svg>',source_scope='site_chrome'),
+            dict(id='content-use',kind='unknown',text='原始 svg 对象',locator='snapshot.html/main/svg[2]',
+                 raw='<svg><use href="#content-diagram"></use></svg>'),
+            dict(id='content-definition',kind='image',text='Architecture',locator='snapshot.html/main/svg[3]',
+                 raw='<svg id="content-diagram"><path d="M0 0L5 5"></path></svg>')],
+        unknown=[dict(id='g1',object_id='use',reason='svg 未执行，需要独立解释或安全转换'),
+                 dict(id='g2',object_id='content-use',reason='svg 未执行，需要独立解释或安全转换')])
+    result=classify_web_chrome(store,source);objects={o['id']:o for o in result['objects']}
+    assert objects['use']['source_scope']=='site_chrome'
+    assert objects['use']['visual_classification']['definition_source_id']=='definition'
+    assert [gap['object_id'] for gap in result['unknown']]==['content-use']
+
+
 def test_article_breadcrumb_excludes_only_parent_link_not_body_reference(tmp_path):
     from sourceloom.ingest import intake
     from sourceloom.source_context import classify_web_chrome
@@ -1540,7 +1563,7 @@ def test_content_correction_routes_through_committer_and_scoped_review(tmp_path,
     assert saved['delivery_checks']['compiled_inventory_digest']==saved['inventory']['digest']
 
 
-def test_v2_failure_publishes_saved_work_and_missing_source_instead_of_failed_state(tmp_path,skill,monkeypatch):
+def test_v2_failure_preserves_work_without_claiming_a_reviewable_result(tmp_path,skill,monkeypatch):
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
     engine=Production(store,{'generation_pipeline':'active_composition_v2'})
@@ -1555,8 +1578,9 @@ def test_v2_failure_publishes_saved_work_and_missing_source_instead_of_failed_st
     monkeypatch.setattr(engine,'step',fail_after_partial_writer)
     assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
-    assert saved['status']=='ready_for_review' and saved.get('error') is None
-    assert published['state']=='ready_for_review' and published['delivery_state']=='fallback_ready'
+    assert saved['status']=='needs_attention' and saved.get('error')=='模拟检查失败'
+    assert published['state']=='needs_attention'
+    assert published['delivery_state']=='source_preserved_needs_recovery'
     represented={sid for block in published['draft']['blocks'] for sid in block.get('object_ids',[])}
     assert represented=={obj['id'] for obj in published['inventory']['objects']}
     assert published['draft']['blocks'][0]['markdown']=='已生成的正文'
@@ -1584,12 +1608,12 @@ def test_v2_explicit_gateway_timeout_retries_current_saved_stage_once(tmp_path,s
     assert saved['transient_gateway_retries']['active-plan-p1']['attempts']==1
     assert saved['internal_recoveries'][0]['http_status']==524
 
-    # A second explicit timeout for the same stage reaches the source-preserving
-    # fallback instead of forming an unbounded retry loop
+    # A second explicit timeout preserves source and checkpoints without
+    # claiming that the fallback is a completed reviewable rewrite
     assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
-    assert saved['status']=='ready_for_review'
-    assert published['delivery_state']=='fallback_ready'
+    assert saved['status']=='needs_attention'
+    assert published['delivery_state']=='source_preserved_needs_recovery'
 
 
 def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code():

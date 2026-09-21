@@ -1732,15 +1732,15 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
     all_blocks=prior['blocks']+draft['blocks']
     for sid in node['source_ids']:
         obj=sources[sid]
-        if (obj.get('kind')!='image' or obj.get('source_scope') in
+        if (obj.get('kind') not in {'image','media'} or obj.get('source_scope') in
                 {'site_chrome','source_metadata','layout_decorative'}):
             continue
         if not any(sid in block.get('embedded_object_ids',[]) for block in all_blocks):
-            raise ValueError('正文图片没有保留原始对象：'+sid)
+            raise ValueError('正文非文字材料没有保留原始对象：'+sid)
         if not any(block.get('kind')=='explanation'
                    and sid in {item.get('source_id') for item in block.get('evidence',[])}
                    and block.get('markdown','').strip() for block in all_blocks):
-            raise ValueError('正文图片缺少与原图绑定的说明：'+sid)
+            raise ValueError('正文非文字材料缺少与原对象绑定的说明：'+sid)
     subset = inventory | {'obligations': [o for o in inventory['obligations'] if o['id'] in allowed],
                           'objects': [o for o in inventory['objects'] if o['id'] in node['source_ids']]}
     findings = inspect_draft(subset, draft, prior_draft=prior)
@@ -2337,7 +2337,7 @@ class ActiveComposition:
             for resource in source.get('resources', []):
                 self.store.read_blob(resource.get('sha256', resource['id']))
             job['source'] = source
-            job['visual_count']=sum(o['kind'] in {'image','page'} and bool(o.get('resource_id'))
+            job['visual_count']=sum(o['kind'] in {'image','page','media'} and bool(o.get('resource_id'))
                 and not o.get('visual_classification') and o.get('source_scope') not in
                 {'site_chrome','source_metadata'} for o in source['objects'])
             job['stage'] = 'active_visual'
@@ -2349,7 +2349,7 @@ class ActiveComposition:
             source=classify_web_chrome(self.store,source)
             job['source']=source
             done = {card['source_id'] for card in job['visual_cards']}
-            pending = [o for o in source['objects'] if o['kind'] in {'image','page'}
+            pending = [o for o in source['objects'] if o['kind'] in {'image','page','media'}
                        and o.get('resource_id') and not o.get('visual_classification')
                        and o.get('source_scope') not in {'site_chrome','source_metadata'}
                        and o['id'] not in done]

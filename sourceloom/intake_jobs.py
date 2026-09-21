@@ -93,7 +93,7 @@ class IntakeQueue:
             if job.get('inventory_saved'):
                 inv=None
             elif job.get('url'):
-                uploads,url,aliases,failures,manifest=fetch_bundle(job['url'],include_manifest=True)
+                uploads,url,aliases,failures,manifest=fetch_bundle(job['url'],include_manifest=True,rendered=True)
                 # Persist fetched originals before parsing, including failed parsing.
                 job['files']=[{'name':n,'sha256':self.store.blob(raw),'bytes':len(raw)} for n,raw in uploads]
                 job.update(stage='intake');self.save_owned(job,owner)

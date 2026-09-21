@@ -86,6 +86,22 @@ def classify_web_chrome(store,source):
     from urllib.parse import urljoin,urlsplit
     from bs4 import BeautifulSoup
     result=copy.deepcopy(source)
+    # Responsive pages can keep several equivalent embeds in the DOM while
+    # rendering only one of them.  A browser-bound capture proves which exact
+    # occurrence was visible; archive only uncaptured duplicates with the same
+    # non-empty target, never distinct media
+    media_by_target={}
+    for obj in result.get('objects',[]):
+        if obj.get('kind')=='media' and obj.get('target'):
+            media_by_target.setdefault(obj['target'],[]).append(obj)
+    for items in media_by_target.values():
+        visible=[obj for obj in items if obj.get('capture_id')]
+        if not visible:continue
+        for obj in items:
+            if obj.get('capture_id'):continue
+            obj['source_scope']='layout_decorative'
+            obj['visual_classification']=dict(method='rendered_dom_duplicate_media_reference',
+                source_role='layout_decorative',visible_source_id=visible[0]['id'])
     page_url=result.get('source_url','')
     if not page_url:return result
     parsed=urlsplit(page_url)
@@ -242,6 +258,26 @@ def classify_web_chrome(store,source):
                 resolved.append(obj['id'])
                 break
             if obj.get('visual_classification'):break
+    # A captured page can place reusable SVG symbols at the end of the file and
+    # reference them from the article with ``<use href="#id">``.  The isolated
+    # reference cannot be rasterized by itself, but it has the same structural
+    # role as its archived definition.  Propagate only a definition already
+    # proven to be chrome, metadata or layout decoration; an article diagram
+    # with a meaningful definition remains normal source material.
+    definitions={}
+    for obj in result['objects']:
+        match=re.search(r'<svg\b[^>]*\bid=(["\'])([^"\']+)\1',obj.get('raw',''),re.I)
+        if match:definitions[match[2]]=obj
+    for obj in result['objects']:
+        if obj.get('kind')!='unknown' or not re.fullmatch(
+                r'\s*<svg\b[^>]*>\s*<use\b[^>]*\bhref=(["\'])#([^"\']+)\1\s*></use>\s*</svg>\s*',
+                obj.get('raw',''),re.I):continue
+        target_id=re.search(r'\bhref=(["\'])#([^"\']+)\1',obj['raw'],re.I)[2]
+        target=definitions.get(target_id);scope=target.get('source_scope') if target else None
+        if scope not in {'site_chrome','source_metadata','layout_decorative'}:continue
+        obj['visual_classification']=dict(method='source_dom_svg_use_of_decorative_symbol',
+            source_role=scope,definition_source_id=target['id'],resource_available=False)
+        obj['source_scope']=scope;resolved.append(obj['id'])
     if resolved:
         result['resolved_chrome_gaps']=result.get('resolved_chrome_gaps',[])+[
             gap for gap in result.get('unknown',[]) if gap['object_id'] in resolved]

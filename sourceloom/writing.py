@@ -94,6 +94,14 @@ def protected_objects(inventory):
         if kind in {'image','page'} and o.get('resource_id'):
             from .media import image_markup
             text=image_markup(o)
+        elif kind=='media':
+            label=o.get('text') or {'video':'原视频','audio':'原音频','canvas':'动态画布',
+                'animation':'原动画','embed':'原嵌入内容'}.get(o.get('media_type'),'原媒体')
+            target=o.get('target','')
+            preview=('<img src="assets/'+o['resource_id']+'" alt="'+
+                     __import__('html').escape(label,quote=True)+'">') if o.get('resource_id') else ''
+            link=('\n\n['+label.replace('[','\\[').replace(']','\\]')+']('+target+')') if target else ''
+            text=preview+link
         elif kind=='table' and o.get('raw','').lstrip().startswith('<table'):
             text=o['raw']
         elif kind=='code' and o.get('fence_raw'):

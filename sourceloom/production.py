@@ -1664,20 +1664,22 @@ class Production:
                     job.setdefault('internal_failures',[]).append(dict(stage=job.get('stage'),
                         type=type(exc).__name__,detail=(detail[:500] if detail else type(exc).__name__),
                         recovered_at=time.time()))
-                    job.update(inventory=inventory,plan=plan,draft=draft,error=None,error_type=None,
-                        quality_issues=[],delivery_state='fallback_ready')
-                    receipt=dict(job=job['id'],status='ready_for_review',
+                    job.update(inventory=inventory,plan=plan,draft=draft,
+                        error=(detail[:500] if detail else type(exc).__name__),error_type=type(exc).__name__,
+                        quality_issues=['材料或生成流程仍需自动恢复，当前保存稿不是完成的改写成品'],
+                        delivery_state='source_preserved_needs_recovery')
+                    receipt=dict(job=job['id'],status='needs_attention',
                         canonical_digest=digest(canonical(draft).encode()),
                         skill_digest=job['writing_skill']['instruction_digest'],issues=[],automatic=True,
                         manual_edits=0,revision=job['base_revision']+1,
                         teaching_version=job.get('teaching_version',0),pipeline=job['pipeline'],
-                        delivery_checks=dict(structural_status='source_preserving_fallback',
-                            semantic_status='not_independently_reviewed',publication_status='ready_for_review'),
-                        semantic_status='not_independently_reviewed',delivery_state='fallback_ready')
+                        delivery_checks=dict(structural_status='source_preserved_after_interruption',
+                            semantic_status='not_independently_reviewed',publication_status='needs_attention'),
+                        semantic_status='not_independently_reviewed',delivery_state='source_preserved_needs_recovery')
                     publish=dict(inventory=inventory,plan=plan,draft=draft,production=receipt,
                         review=None,accepted_revision=None,repair_rounds=job.get('repair_rounds',0),
-                        delivery_state='fallback_ready',independent_review=None)
-                    self.queue.finish(job,self.owner,'ready_for_review',publish)
+                        delivery_state='source_preserved_needs_recovery',independent_review=None)
+                    self.queue.finish(job,self.owner,'needs_attention',publish)
                 except Exception as recovery_error:
                     job['error']=((detail or type(exc).__name__)+'；自动恢复失败：'+str(recovery_error))[:500]
                     job['error_type']=type(recovery_error).__name__

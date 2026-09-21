@@ -130,7 +130,7 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
         text=b['markdown'];fragments={}
         for sid in embedded:
             obj=src.get(sid)
-            if not obj or obj['kind'] not in {'image','page','table'} or sid not in literals:continue
+            if not obj or obj['kind'] not in {'image','page','media','table'} or sid not in literals:continue
             for literal in source_literals(obj,literals[sid]):
                 if not literal.lstrip().startswith(('<img ','<table')) or literal not in text:continue
                 token='SOURCELOOMRESOURCE'+digest(literal.encode())
@@ -165,6 +165,12 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
                     parts.append(f'<figure class="image"><img loading="lazy" decoding="async" src="{html.escape(asset_url(o["resource_id"]),quote=True)}" alt="{html.escape(o["text"][:160] or o["locator"],quote=True)}"></figure>')
                 else:
                     parts.append("<p>图片资源尚未取得</p>")
+            elif o['kind']=='media':
+                if o.get('resource_id'):
+                    parts.append(f'<figure class="image"><img loading="lazy" decoding="async" src="{html.escape(asset_url(o["resource_id"]),quote=True)}" alt="{html.escape(o.get("text") or o.get("media_type","原媒体"),quote=True)}"></figure>')
+                target=o.get('target','')
+                if urlsplit(target).scheme in {'http','https'}:
+                    parts.append(f'<p><a href="{html.escape(target,quote=True)}">打开原始媒体</a></p>')
             elif o["kind"]=="table" and o.get("raw", "").lstrip().startswith("<table"):
                 parts.append(resource_html(o['raw']))
             elif o["kind"]=="link":
