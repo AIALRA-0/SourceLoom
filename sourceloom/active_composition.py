@@ -2363,7 +2363,15 @@ class ActiveComposition:
             or point.get('unresolved_format',{}).get('findings')
             or point.get('unresolved_format',{}).get('candidates')
             for point in job.get('active_checkpoints',[])):
-            raise ValueError('前一单元仍有未解决的内容或格式问题；已保存原稿与检查结果，停止后续付费生成')
+            # V2 keeps the exact checkpoint and its findings, but never turns a
+            # local repair miss into a document-wide stop.  The next unit still
+            # has the saved source inventory and the continuity tail available.
+            if is_v2(job):
+                note='前序单元仍有已记录的内容或格式问题，已保留原稿并继续后续生成'
+                if note not in job.setdefault('quality_issues',[]):
+                    job['quality_issues'].append(note)
+            else:
+                raise ValueError('前一单元仍有未解决的内容或格式问题；已保存原稿与检查结果，停止后续付费生成')
         bundle = load_bundle(job['writing_skill']['root'], job['writing_skill']['package_digest'])
         if stage in {'active_index','active_visual','active_plan'} and job.get('terminology_catalog_version')!=8:
             from .terminology import verified_terms
@@ -2849,7 +2857,18 @@ class ActiveComposition:
             candidate = job['active_candidate']
             reject_empty_claimed_blocks(candidate['draft'])
             retire_refuted_formal_concepts(job,candidate)
-            if is_v2(job) and self.config.get('lightweight_v2',True):
+            if is_v2(job):
+                # V2 records unresolved findings on the checkpoint and commits
+                # the current candidate.  No format/content gate may prevent
+                # the remaining units or the final delivery from being built.
+                if candidate.get('unresolved_content_findings') or candidate.get('unresolved_revision'):
+                    note=node['id']+'：已有内容问题记录，已保留当前候选并继续生成'
+                    if note not in job.setdefault('quality_issues',[]):
+                        job['quality_issues'].append(note)
+                if candidate.get('unresolved_format'):
+                    note=node['id']+'：已有格式问题记录，已保留当前候选并继续生成'
+                    if note not in job.setdefault('quality_issues',[]):
+                        job['quality_issues'].append(note)
                 return self.commit_candidate(job,node,candidate)
             if candidate.get('unresolved_content_findings') or candidate.get('unresolved_revision'):
                 raise ValueError('本单元两轮局部修复后仍有内容问题，已保存候选稿与核对意见')

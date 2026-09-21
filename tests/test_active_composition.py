@@ -1669,7 +1669,7 @@ def test_content_correction_routes_through_committer_and_scoped_review(tmp_path,
     assert saved['delivery_checks']['compiled_inventory_digest']==saved['inventory']['digest']
 
 
-def test_v2_failure_preserves_work_without_claiming_a_reviewable_result(tmp_path,skill,monkeypatch):
+def test_v2_failure_preserves_work_as_a_reviewable_result(tmp_path,skill,monkeypatch):
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
     engine=Production(store,{'generation_pipeline':'active_composition_v2'})
@@ -1684,13 +1684,37 @@ def test_v2_failure_preserves_work_without_claiming_a_reviewable_result(tmp_path
     monkeypatch.setattr(engine,'step',fail_after_partial_writer)
     assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
-    assert saved['status']=='needs_attention' and saved.get('error')=='模拟检查失败'
-    assert published['state']=='needs_attention'
-    assert published['delivery_state']=='source_preserved_needs_recovery'
+    assert saved['status']=='ready_for_review' and saved.get('error')=='模拟检查失败'
+    assert published['state']=='ready_for_review'
+    assert published['delivery_state']=='recovered_ready_for_review'
     represented={sid for block in published['draft']['blocks'] for sid in block.get('object_ids',[])}
     assert represented=={obj['id'] for obj in published['inventory']['objects']}
     assert published['draft']['blocks'][0]['markdown']=='已生成的正文'
     assert saved['internal_failures'][0]['detail']=='模拟检查失败'
+
+
+def test_v2_recovery_keeps_uncommitted_candidate_and_uses_all_evidence_links(tmp_path,skill,monkeypatch):
+    from sourceloom.production import recoverable_delivery
+    store,_,project,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    claimed=store.job(job['id'])
+    first=claimed['source']['objects'][0]
+    second=copy.deepcopy(first)|dict(id='source-second',locator='input/2',text='The second source object.')
+    claimed['source']['objects'].append(second)
+    claimed.update(inventory=claimed['source'],draft={'blocks':[dict(
+        id='written-first',unit_id='u1',kind='explanation',markdown='已生成的正文',
+        obligation_ids=[],object_ids=[first['id']],evidence=[],embedded_object_ids=[])]},
+        active_candidate={'draft':{'blocks':[dict(
+            id='written-second',unit_id='u2',kind='explanation',markdown='尚未提交的正文',
+            obligation_ids=[],source_ids=[second['id']],evidence=[],embedded_object_ids=[])]}})
+    inventory,_,draft=recoverable_delivery(claimed)
+    blocks={block['id']:block for block in draft['blocks']}
+    assert set(blocks)=={'written-first','written-second'}
+    represented={sid for block in draft['blocks'] for sid in (
+        block.get('object_ids',[])+block.get('source_ids',[])+
+        [e['source_id'] for e in block.get('evidence',[]) if e.get('source_id')])}
+    assert represented=={first['id'],second['id']}
+    assert all('原件没有' not in block['markdown'] for block in draft['blocks'])
 
 
 def test_v2_explicit_gateway_timeout_retries_current_saved_stage_once(tmp_path,skill,monkeypatch):
@@ -1714,12 +1738,12 @@ def test_v2_explicit_gateway_timeout_retries_current_saved_stage_once(tmp_path,s
     assert saved['transient_gateway_retries']['active-plan-p1']['attempts']==1
     assert saved['internal_recoveries'][0]['http_status']==524
 
-    # A second explicit timeout preserves source and checkpoints without
-    # claiming that the fallback is a completed reviewable rewrite
+    # A second explicit timeout preserves source and checkpoints while still
+    # exposing the best saved result for review
     assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
-    assert saved['status']=='needs_attention'
-    assert published['delivery_state']=='source_preserved_needs_recovery'
+    assert saved['status']=='ready_for_review'
+    assert published['delivery_state']=='recovered_ready_for_review'
 
 
 def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code():

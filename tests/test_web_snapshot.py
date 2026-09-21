@@ -14,6 +14,21 @@ class ApiResponse:
         return self.body[:limit]
 
 
+def test_pinned_https_uses_packaged_ca_bundle(monkeypatch):
+    observed={}
+    marker=object()
+    monkeypatch.setattr(network.certifi,'where',lambda:'maintained-ca.pem')
+    def context(*,cafile=None):
+        observed['cafile']=cafile
+        return marker
+    monkeypatch.setattr(network.ssl,'create_default_context',context)
+    # Do not connect; construction is enough to prove certificate discovery is
+    # independent of an incomplete host certificate store.
+    connection=network.PinnedHTTPS('example.test','203.0.113.9')
+    assert observed['cafile']=='maintained-ca.pem'
+    assert connection._context is marker
+
+
 def test_api_request_pins_address_and_sends_bounded_json(monkeypatch):
     observed={}
     class Connection:

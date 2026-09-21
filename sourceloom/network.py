@@ -4,6 +4,7 @@ import http.client
 import ipaddress
 import socket
 import ssl
+import certifi
 import time
 import hashlib
 import json
@@ -89,7 +90,12 @@ def public_addresses(host):
 
 class PinnedHTTPS(http.client.HTTPSConnection):
     def __init__(self,hostname,address,timeout=12):
-        super().__init__(hostname,timeout=timeout,context=ssl.create_default_context())
+        # Use the same maintained CA bundle as the HTTP client dependency
+        # instead of the host machine's optional certificate store.  Minimal
+        # Windows and VPS images frequently have an incomplete store even when
+        # the public site has a valid chain.
+        context=ssl.create_default_context(cafile=certifi.where())
+        super().__init__(hostname,timeout=timeout,context=context)
         self.address=address
 
     def connect(self):

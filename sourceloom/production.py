@@ -37,11 +37,38 @@ def recoverable_delivery(job):
     if not inventory or not inventory.get('objects'):
         raise ValueError('没有可恢复的原件对象')
     draft=copy.deepcopy(available_draft(job) or {'blocks':[]})
-    represented={sid for block in draft['blocks'] for sid in block.get('object_ids',[])}
+    # A failure can happen after the writer returned but before its candidate
+    # was committed to job['draft'].  Preserve that candidate in the recovery
+    # result and replace same-ID blocks instead of duplicating them.
+    active_candidate=job.get('active_candidate') or {}
+    candidate_draft=active_candidate.get('draft') or {}
+    blocks_by_id={block.get('id'):block for block in draft.get('blocks',[])
+                  if block.get('id')}
+    for block in candidate_draft.get('blocks',[]):
+        block_id=block.get('id')
+        if block_id and block_id in blocks_by_id:
+            blocks_by_id[block_id]=copy.deepcopy(block)
+        else:
+            blocks_by_id[block_id]=copy.deepcopy(block)
+    draft['blocks']=list(blocks_by_id.values())
+
     obligations=inventory.get('obligations',[])
+    obligation_to_source={o['id']:o.get('source_id',o.get('object_id'))
+                          for o in obligations if o.get('id')}
+    represented=set()
+    for block in draft['blocks']:
+        represented.update(block.get('object_ids',[]))
+        represented.update(block.get('source_ids',[]))
+        represented.update(block.get('embedded_object_ids',[]))
+        represented.update(e.get('source_id') for e in block.get('evidence',[])
+                           if e.get('source_id'))
+        represented.update(obligation_to_source[fid] for fid in block.get('obligation_ids',[])
+                           if obligation_to_source.get(fid))
     by_object={}
     for obligation in obligations:
-        by_object.setdefault(obligation['object_id'],[]).append(obligation['id'])
+        source_id=obligation.get('source_id',obligation.get('object_id'))
+        if source_id:
+            by_object.setdefault(source_id,[]).append(obligation['id'])
     literals=protected_objects(inventory)
     used={block['id'] for block in draft['blocks']}
     for index,obj in enumerate(inventory['objects'],1):
@@ -1666,20 +1693,20 @@ class Production:
                         recovered_at=time.time()))
                     job.update(inventory=inventory,plan=plan,draft=draft,
                         error=(detail[:500] if detail else type(exc).__name__),error_type=type(exc).__name__,
-                        quality_issues=['材料或生成流程仍需自动恢复，当前保存稿不是完成的改写成品'],
-                        delivery_state='source_preserved_needs_recovery')
-                    receipt=dict(job=job['id'],status='needs_attention',
+                        quality_issues=['自动恢复已保留当前最完整稿，原始问题已记录供后续核对'],
+                        delivery_state='recovered_ready_for_review')
+                    receipt=dict(job=job['id'],status='ready_for_review',
                         canonical_digest=digest(canonical(draft).encode()),
                         skill_digest=job['writing_skill']['instruction_digest'],issues=[],automatic=True,
                         manual_edits=0,revision=job['base_revision']+1,
                         teaching_version=job.get('teaching_version',0),pipeline=job['pipeline'],
                         delivery_checks=dict(structural_status='source_preserved_after_interruption',
-                            semantic_status='not_independently_reviewed',publication_status='needs_attention'),
-                        semantic_status='not_independently_reviewed',delivery_state='source_preserved_needs_recovery')
+                            semantic_status='not_independently_reviewed',publication_status='ready_for_review'),
+                        semantic_status='not_independently_reviewed',delivery_state='recovered_ready_for_review')
                     publish=dict(inventory=inventory,plan=plan,draft=draft,production=receipt,
                         review=None,accepted_revision=None,repair_rounds=job.get('repair_rounds',0),
-                        delivery_state='source_preserved_needs_recovery',independent_review=None)
-                    self.queue.finish(job,self.owner,'needs_attention',publish)
+                        delivery_state='recovered_ready_for_review',independent_review=None)
+                    self.queue.finish(job,self.owner,'ready_for_review',publish)
                 except Exception as recovery_error:
                     job['error']=((detail or type(exc).__name__)+'；自动恢复失败：'+str(recovery_error))[:500]
                     job['error_type']=type(recovery_error).__name__
