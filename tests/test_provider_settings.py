@@ -366,7 +366,8 @@ def test_responses_transport_normalizes_usage_and_keeps_wire_protocol(tmp_path, 
 
 
 def test_kuafu_chat_stream_reassembles_content_tools_and_usage():
-    from sourceloom.providers import chat_completion_from_sse,streaming_chat_enabled
+    from sourceloom.providers import (apply_stream_timeout, chat_completion_from_sse,
+                                      completed_chat_sse, streaming_chat_enabled)
     lines=[
         'data: {"id":"chat-1","model":"deepseek","choices":[{"delta":{"content":"{\\"ok\\":"},"finish_reason":null}]}',
         'data: {"choices":[{"delta":{"content":"true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}',
@@ -376,9 +377,14 @@ def test_kuafu_chat_stream_reassembles_content_tools_and_usage():
     assert body['choices'][0]['message']['content']=='{"ok":true}'
     assert body['choices'][0]['finish_reason']=='stop'
     assert body['usage']=={'prompt_tokens':10,'completion_tokens':2}
+    assert completed_chat_sse(lines)
+    assert not completed_chat_sse(lines[:1])
     assert streaming_chat_enabled({'base_url':'https://api.kuafushe.cc/v1'},'chat_completions')
     assert not streaming_chat_enabled({'base_url':'https://api.kuafushe.cc/v1'},'responses')
     assert not streaming_chat_enabled({'base_url':'https://api.deepseek.com/v1'},'chat_completions')
+    timed=apply_stream_timeout({'base_url':'https://api.kuafushe.cc/v1',
+        'protocol':'chat_completions','call_timeout':90,'kuafu_stream_timeout':240})
+    assert timed['call_timeout']==240
 
 
 def test_kuafu_transient_401_replays_once_only_after_catalog_revalidation(tmp_path, skill, monkeypatch):

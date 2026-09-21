@@ -310,22 +310,47 @@ def chat_completion_from_sse(lines):
             'usage':usage}
 
 
+def completed_chat_sse(lines):
+    """Accept an unclean transport close only after the model ended its reply."""
+    for line in reversed(lines):
+        line=line.strip()
+        if not line.startswith('data:'):continue
+        data=line[5:].strip()
+        if not data or data=='[DONE]':continue
+        try:chunk=json.loads(data)
+        except ValueError:continue
+        if any(choice.get('finish_reason') is not None for choice in chunk.get('choices') or []):
+            return True
+    return False
+
+
 def post_stream_before_deadline(url,headers,body,deadline):
     """Read SSE within one total deadline and return a normal JSON response."""
     async def request():
         remaining=max(.001,deadline-time.time())
         async with httpx.AsyncClient(timeout=remaining,follow_redirects=False) as client:
+            lines=[];response=None
             try:
                 async with client.stream('POST',url,headers=headers,json=body) as response:
                     if response.status_code>=400:
                         data=await response.aread()
                         return httpx.Response(response.status_code,content=data,
                             headers=response.headers,request=response.request)
-                    lines=[]
                     async for line in response.aiter_lines():lines.append(line)
                     assembled=chat_completion_from_sse(lines)
                     return httpx.Response(response.status_code,json=assembled,
                         headers=response.headers,request=response.request)
+            except httpx.TransportError:
+                # Some OpenAI-compatible gateways close chunked transfer
+                # without a clean HTTP terminator after already sending the
+                # model's finish_reason. The received artifact is complete in
+                # that narrow case and will still pass the ordinary JSON and
+                # schema validation below. A mid-answer close remains unknown.
+                if response is not None and completed_chat_sse(lines):
+                    assembled=chat_completion_from_sse(lines)
+                    return httpx.Response(response.status_code,json=assembled,
+                        headers=response.headers,request=response.request)
+                raise
             except TimeoutError:
                 raise Uncertain('本次流式模型响应超过等待上限，原请求及预留费用保留，不自动重发') from None
     async def bounded():
@@ -339,6 +364,16 @@ def streaming_chat_enabled(config,protocol):
     from urllib.parse import urlsplit
     return (protocol=='chat_completions' and bool(config.get('kuafu_streaming',True))
             and urlsplit(config.get('base_url','')).hostname=='api.kuafushe.cc')
+
+
+def apply_stream_timeout(config):
+    """Give Kuafu SSE enough wall time while preserving an outer deadline."""
+    result=dict(config)
+    protocol=normalize_protocol(result)
+    if streaming_chat_enabled(result,protocol):
+        result['call_timeout']=max(float(result.get('call_timeout',90)),
+                                   float(result.get('kuafu_stream_timeout',240)))
+    return result
 
 
 def kuafu_auth_is_current(config, headers, deadline):

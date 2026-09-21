@@ -17,6 +17,7 @@ def load_config():
             "call_timeout":90, "job_timeout":900, "max_input_bytes":450000,
             "kuafu_safe_input_bytes":180000,
             "kuafu_streaming":True,
+            "kuafu_stream_timeout":240,
             "kuafu_fallback_roles":[],
             "router_max_objective_chars":300000,
             "daily_budget_usd":None,"daily_call_limit":None,

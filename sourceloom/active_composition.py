@@ -13,7 +13,7 @@ from . import active_contracts as A
 from .active_resources import Resources, canonical_url
 from .checks import freeze, inspect_draft
 from .contracts import Plan
-from .providers import Provider, Uncertain
+from .providers import Provider, Uncertain, apply_stream_timeout
 from .skills import load_bundle
 from .source_context import classify_inert_markup, classify_layout_tables, inventory_groups
 from .store import Conflict, digest
@@ -1808,11 +1808,13 @@ class ActiveComposition:
             cfg = self.config | self.config.get('role_providers', {}).get(role, {})
             if role == 'active_visual' and role not in self.config.get('role_providers', {}):
                 cfg |= self.config.get('role_providers', {}).get('visual_extract', {})
+            cfg=apply_stream_timeout(cfg)
             if self.config.get('job_timeout',0)>0 and job.get('started'):
                 remaining=self.config['job_timeout']-(time.time()-job['started'])
                 if remaining<=0:
                     raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
                 cfg['call_timeout']=min(float(cfg.get('call_timeout',90)),remaining)
+            cfg['deadline_at']=time.time()+float(cfg['call_timeout'])
             cfg['role_providers'] = {}
             before = len(job['calls'])
             try:

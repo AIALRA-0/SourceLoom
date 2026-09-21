@@ -14,7 +14,7 @@ from .checks import freeze, inspect_draft, validate_plan,source_quote_matches
 from .durable import Queue
 from .export import render
 from .ingest import decode, attach_markdown_fences
-from .providers import Provider, Uncertain, ReasoningExhausted
+from .providers import Provider, Uncertain, ReasoningExhausted, apply_stream_timeout
 from .skills import load_bundle, rule_catalog
 from .store import Conflict, digest, identity
 from .source_context import objects_view,inventory_groups,merge_inventories,patch_inventory,classify_inert_markup
@@ -502,6 +502,7 @@ class Production:
                 config['max_output_tokens']=min(config['max_output_tokens'],2000)
             if role.endswith('__fallback'):
                 config.update(self.config.get('fallback_providers',{}).get(role.removesuffix('__fallback'),{}))
+            config=apply_stream_timeout(config)
             if self.config.get('job_timeout',0)>0:
                 remaining=max(1,int(self.config['job_timeout']-(time.time()-job.get('started',time.time()))))
                 config['call_timeout']=min(config['call_timeout'],remaining)
