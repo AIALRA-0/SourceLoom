@@ -1,0 +1,165 @@
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_d95f62fa3bc487 83
+config.example.json
+  s_36a381ab4bccf9::t_3a5de8a6db6c91 11
+  s_36a381ab4bccf9::t_d95f62fa3bc487 16,40-41
+  s_36a381ab4bccf9::t_6a26185a698e5e 25-27
+  s_36a381ab4bccf9::t_6c19b1f1b169ae 12
+  s_36a381ab4bccf9::t_bed60c60cd3514 28
+  s_36a381ab4bccf9::t_f73187c1349547 45
+sourceloom/config.py
+  s_36a381ab4bccf9::t_bed60c60cd3514 36
+  s_36a381ab4bccf9::t_6c19b1f1b169ae 19
+  s_36a381ab4bccf9::t_d95f62fa3bc487 21,24
+  s_36a381ab4bccf9::t_6a26185a698e5e 34-35
+  s_36a381ab4bccf9::t_3a5de8a6db6c91 18
+  s_36a381ab4bccf9::t_6c1aee4b3cf7be 22-23
+  s_36a381ab4bccf9::t_205731e9e17a8a 11,49-53
+tests/test_v2_real_eval.py
+  s_36a381ab4bccf9::t_08a2fed69b8db2 162,216-254
+  s_36a381ab4bccf9::t_6bd47ef72eef2d 67-76
+tests/test_provider_settings.py
+  s_36a381ab4bccf9::t_1bd013469fd915 58-68,491-519
+  s_36a381ab4bccf9::t_a845c4d4f1f8cc 458-490,520-521
+  s_36a381ab4bccf9::t_6a628325f8121f 368-397
+  s_36a381ab4bccf9::t_6c19b1f1b169ae 428-457
+  s_36a381ab4bccf9::t_20b32c7a49acb0 102-123
+  s_36a381ab4bccf9::t_a49c29400f9213 398-427
+  s_36a381ab4bccf9::t_268f7bc72ddf7c 22,69-77
+  s_36a381ab4bccf9::t_1e7d658c9f9fc0 145-146
+  s_36a381ab4bccf9::t_6c1aee4b3cf7be 124-144,147-154
+  s_36a381ab4bccf9::t_107c30b414c9cf 15,17-18,78-99
+  s_e8850ef125fb32::t_be87f778549da8 100-101
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_72723f7f51a3ee 822-838,2120-2121
+  s_36a381ab4bccf9::t_0edc4df85284e0 730-736,2367
+  s_36a381ab4bccf9::t_b6908293008f61 998-1006,1019-1020
+  s_36a381ab4bccf9::t_bd7d50acda0139 1886-1892
+  s_36a381ab4bccf9::t_7453736936d27a 1655-1656,1675-1677,1688
+  s_36a381ab4bccf9::t_b1e37a96f6e977 2276-2294
+  s_36a381ab4bccf9::t_8d8131615dcb36 799-809,1712,2048,2053
+  s_36a381ab4bccf9::t_65b071865d20a4 469-479,955
+  s_36a381ab4bccf9::t_2bc95d0c918552 810-821,2052
+tests/test_web_snapshot.py
+  s_36a381ab4bccf9::t_66ae87a19b7138 131-153
+  s_36a381ab4bccf9::t_59477fd2b847d3 130
+  s_36a381ab4bccf9::t_e16e0c43198ddb 119-129,154-155
+scripts/v2_real_eval.py
+  s_36a381ab4bccf9::t_94869a4e3ab305 143,147,153-154,198-199,487-488
+  s_36a381ab4bccf9::t_08a2fed69b8db2 370-371,389-394,479,482-486
+tests/test_word_intake.py
+  s_36a381ab4bccf9::t_ef8a86086d5ab9 9-11,59-88
+  s_36a381ab4bccf9::t_6a628325f8121f 89-103
+sourceloom/store.py
+  s_36a381ab4bccf9::t_d95f62fa3bc487 178
+sourceloom/network.py
+  s_36a381ab4bccf9::t_66ae87a19b7138 22-74,226
+tests/test_active_composition_v2.py
+  s_36a381ab4bccf9::t_d95f62fa3bc487 154-163
+sourceloom/roles/active_plan.md
+  s_36a381ab4bccf9::t_b6908293008f61 17
+  s_36a381ab4bccf9::t_332afbcff4a7e4 1-16,18-27
+sourceloom/source_context.py
+  s_36a381ab4bccf9::t_7d38cef1f7bb57 92,106-112,204-208
+  s_36a381ab4bccf9::t_66ae87a19b7138 203
+sourceloom/providers.py
+  s_36a381ab4bccf9::t_21a2f19f6d34e0 281-299,847-855
+  s_36a381ab4bccf9::t_a845c4d4f1f8cc 334-337,778,780,805,843
+  s_36a381ab4bccf9::t_39e0d9a3ec5e1b 771-774
+  s_36a381ab4bccf9::t_a49c29400f9213 660-672
+  s_36a381ab4bccf9::t_e80f737507d0b0 656-657,779
+  s_36a381ab4bccf9::t_ab5d8bba5f506d 775-777
+  s_36a381ab4bccf9::t_6c19b1f1b169ae 520-528
+  s_36a381ab4bccf9::t_1bd013469fd915 806-816,840-842
+  s_36a381ab4bccf9::t_268f7bc72ddf7c 300-315,514,533,868-870
+  s_36a381ab4bccf9::t_8d8131615dcb36 649-655,678
+tests/test_active_composition.py
+  s_36a381ab4bccf9::t_7d38cef1f7bb57 747-757,759-761,763
+  s_36a381ab4bccf9::t_7453736936d27a 663-681,683-691
+  s_36a381ab4bccf9::t_62c50c8dc53c30 682
+  s_36a381ab4bccf9::t_66ae87a19b7138 758,762,764
+  s_36a381ab4bccf9::t_fa90300e8f5d9c 765-767
+README.en.md
+  s_36a381ab4bccf9::t_e15fc3a45007b5 79
+  s_9f7652456e8616::t_9d8dea712df9e5 81
+sourceloom/active_contracts.py
+  s_36a381ab4bccf9::t_b6908293008f61 35-37
+sourceloom/provider_settings.py
+  s_36a381ab4bccf9::t_20b32c7a49acb0 477-481,483-487
+  s_36a381ab4bccf9::t_6c1aee4b3cf7be 583-586
+  s_36a381ab4bccf9::t_f73187c1349547 411-423,489,587
+  s_36a381ab4bccf9::t_1bd013469fd915 225-226,228-229
+docs/ACTIVE_COMPOSITION_V2_EXECUTION_PLAN.md
+  s_36a381ab4bccf9::t_022157cb77b47b 17,95,180-181,207
+  s_36a381ab4bccf9::t_4f33999e77c015 3,94
+  s_f4bc084e1b5e1b::t_807ea5afecc84c 300
+sourceloom/ingest.py
+  s_36a381ab4bccf9::t_8f8d4b96d611af 24-49,292-310
+  s_36a381ab4bccf9::t_66ae87a19b7138 192-208,243-244,251
+  s_9f7652456e8616::t_9b303712f1ba74 50
+README.md
+  s_36a381ab4bccf9::t_e15fc3a45007b5 103,112-114
+  s_9f7652456e8616::t_0fd4310e65caff 115
+tests/test_skill_integration.py
+  s_36a381ab4bccf9::t_b6908293008f61 85-87,91-99
+  s_e8850ef125fb32::t_54b52e8ffb9138 100
+tests/test_rst_intake.py
+  s_36a381ab4bccf9::t_5c01f9eedb5dc9 1-29
+sourceloom/word_intake.py
+  s_36a381ab4bccf9::t_0d300c821ef739 34-35,176-177
+  s_36a381ab4bccf9::t_21a2f19f6d34e0 90-91,93-95
+  s_36a381ab4bccf9::t_fc33bba05b056b 11-12,32-33,36-42,45,59-71,73,104-105,114,117,123,125,129-131,134-152,155-156,158-163,168,175,178-180
+  s_36a381ab4bccf9::t_5a9abc0396fef8 153-154,157
+frontend/settings.test.js
+  s_36a381ab4bccf9::t_659c2f9c339990 8
+deploy/README.md
+  s_f0dc1701fc0031::t_9829210f9df9f2 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ba0ea2623c219d776f1b122948f9b6b86c197dbe",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_9f7652456e8616": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03a0f-6460-7b73-bec4-9acbdcd78a39",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_e8850ef125fb32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0457f-8774-7b32-a516-a974107d6ab1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_f0dc1701fc0031": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc521-e36b-7fd3-8f60-ebd14a6657c9",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_f4bc084e1b5e1b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a05e85-d752-7582-abf7-4d4f5901369e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
