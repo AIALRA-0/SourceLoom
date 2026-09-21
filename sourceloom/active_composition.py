@@ -522,6 +522,9 @@ def normalize_visual_card_lists(value):
         for key in ('relationships','uncertainty','limitations','blocking_uncertainty'):
             item=card.get(key)
             if isinstance(item,str):card[key]=[item] if item.strip() else []
+        uncertainty=card.get('uncertainty',[])
+        for item in card.get('blocking_uncertainty',[]):
+            if item not in uncertainty:uncertainty.append(item)
     return result
 
 
@@ -2374,6 +2377,10 @@ class ActiveComposition:
                 for page,card in zip(batch,result['cards']):
                     if not set(card['blocking_uncertainty'])<=set(card['uncertainty']):
                         raise ValueError('视觉阻断项必须引用实际无法确定的内容')
+                    if page.get('kind')=='media' and card['blocking_uncertainty']:
+                        card['limitations']=list(dict.fromkeys(card.get('limitations',[])+
+                            card['blocking_uncertainty']))
+                        card['blocking_uncertainty']=[]
                     if card['blocking_uncertainty']:
                         # One targeted read of the same image, not a mandatory second reviewer
                         detail = A.VisualCards.model_validate(normalize_visual_card_lists(self.call(job, key+'-detail-'+page['id'], 'active_visual',

@@ -227,10 +227,10 @@ def test_active_rewrite_keeps_the_configured_v2_pipeline(tmp_path,skill):
 def test_visual_card_scalar_lists_are_repaired_without_changing_words():
     from sourceloom.active_composition import normalize_visual_card_lists
     raw={'cards':[dict(source_id='image',visible_content='chart',source_text='',role='diagram',
-        relationships='A points to B',uncertainty='',limitations=['cropped'],blocking_uncertainty=[])]}
+        relationships='A points to B',uncertainty='',limitations=['cropped'],blocking_uncertainty='motion unseen')]}
     fixed=normalize_visual_card_lists(raw)
     assert fixed['cards'][0]['relationships']==['A points to B']
-    assert fixed['cards'][0]['uncertainty']==[]
+    assert fixed['cards'][0]['uncertainty']==['motion unseen']
     assert fixed['cards'][0]['limitations']==['cropped']
     assert raw['cards'][0]['relationships']=='A points to B'
 
