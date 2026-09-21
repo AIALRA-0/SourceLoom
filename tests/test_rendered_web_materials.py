@@ -7,6 +7,7 @@ from sourceloom.materials import bind_web_material_manifest,require_complete_web
 from sourceloom.store import Store
 from sourceloom.writing import protected_objects
 from sourceloom.media import reading_draft
+from sourceloom.source_context import classify_web_chrome
 
 
 def png():
@@ -44,6 +45,20 @@ def test_rendered_browser_inventory_binds_video_canvas_table_and_links(tmp_path)
     draft=reading_draft({'inventory':source,'draft':{'blocks':[dict(id='b',kind='object',
         markdown=literal,embedded_object_ids=[sid])]}})
     assert '<details><summary>原视频 · ' in draft['blocks'][0]['markdown']
+
+
+def test_rendered_top_navigation_is_archived_without_hiding_article_link(tmp_path):
+    raw=b'''<body><a data-sourceloom-capture-id="top" href="/manifesto">Manifesto</a>
+      <a data-sourceloom-capture-id="body" href="/paper">Paper</a></body>'''
+    source=intake(Store(tmp_path),[('snapshot.html',raw)],'https://example.org/post')
+    rows=[dict(id='top',kind='link',scope='page',y=20),
+          dict(id='body',kind='link',scope='page',y=700)]
+    source=bind_web_material_manifest(source,{'images':[],'rendered_objects':rows,'rendered':True})
+    result=classify_web_chrome(Store(tmp_path),source)
+    links={obj['text']:obj for obj in result['objects'] if obj['kind']=='link'}
+    assert links['Manifesto']['source_scope']=='site_chrome'
+    assert links['Manifesto']['visual_classification']['method']=='rendered_top_navigation_position'
+    assert links['Paper'].get('source_scope') is None
 
 
 def test_dynamic_capture_failure_blocks_generation_before_writer(tmp_path):

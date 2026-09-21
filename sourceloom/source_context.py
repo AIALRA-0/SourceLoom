@@ -86,6 +86,15 @@ def classify_web_chrome(store,source):
     from urllib.parse import urljoin,urlsplit
     from bs4 import BeautifulSoup
     result=copy.deepcopy(source)
+    rendered_rows={row.get('id'):row for row in
+        (result.get('web_snapshot',{}).get('rendered_capture',{}).get('objects',[]))}
+    for obj in result.get('objects',[]):
+        row=rendered_rows.get(obj.get('capture_id'))
+        if (obj.get('kind')=='link' and row and row.get('scope')=='page'
+                and isinstance(row.get('y'),(int,float)) and row['y']<=120):
+            obj['source_scope']='site_chrome'
+            obj['visual_classification']=dict(method='rendered_top_navigation_position',
+                source_role='site_chrome',capture_id=row['id'],y=row['y'])
     # Responsive pages can keep several equivalent embeds in the DOM while
     # rendering only one of them.  A browser-bound capture proves which exact
     # occurrence was visible; archive only uncaptured duplicates with the same
