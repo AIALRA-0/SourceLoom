@@ -945,7 +945,13 @@ def validate_names(plan, resources, allow_unverified_downgrade=False):
                 naming_status_reason='unsearched_model_name_was_removed')
         if concept['naming_status']=='verified':
             if not concept['english_name'].strip() or not concept['name_evidence']:
-                raise ValueError('已核实术语缺少英文或来源：'+concept['id'])
+                if not allow_unverified_downgrade:
+                    raise ValueError('已核实术语缺少英文或来源：'+concept['id'])
+                concept.update(english_name='',naming_status='ambiguous',name_evidence=[],
+                    abbreviations=[],
+                    naming_note='当前材料没有提供可核对的英文名称来源；正文只保留原文字面内容。',
+                    naming_status_reason='incomplete_verified_name_was_removed')
+                continue
             evidence=[]
             for item in concept['name_evidence']:
                 key=item['resource_id']
