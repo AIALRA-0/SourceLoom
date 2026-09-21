@@ -1397,6 +1397,30 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
                     for item in brief['evidence']):
                     raise ValueError('目标页主要内容在图片中，规划前须读取图片：'+brief['source_id'])
     nodes = plan['nodes']
+    claimed=set();dropped={};kept=[]
+    for node in nodes:
+        unique_obligations=[fid for fid in node['obligation_ids'] if fid not in claimed]
+        if unique_obligations!=node['obligation_ids']:
+            if not unique_obligations and node['establishes_concepts']:
+                raise ValueError('重复义务节点仍承担新概念，不能自动删除：'+node['id'])
+            node['obligation_ids']=unique_obligations
+            node['source_ids']=list(dict.fromkeys(obligations[fid]['source_id'] for fid in unique_obligations))
+        if not node['obligation_ids']:
+            dropped[node['id']]=list(node['depends_on'])
+            continue
+        claimed.update(node['obligation_ids']);kept.append(node)
+    if dropped:
+        def live_dependencies(items):
+            result=[];pending=list(items);visited=set()
+            while pending:
+                dependency=pending.pop(0)
+                if dependency in visited:continue
+                visited.add(dependency)
+                if dependency in dropped:pending[0:0]=dropped[dependency]
+                else:result.append(dependency)
+            return result
+        for node in kept:node['depends_on']=live_dependencies(node['depends_on'])
+        plan['nodes']=nodes=kept
     prior_nodes = [n for part in prior for n in part['nodes']]
     prior_concepts = [c for part in prior for c in part['concepts']]
     unique([n['id'] for n in prior_nodes + nodes], '编排节点')

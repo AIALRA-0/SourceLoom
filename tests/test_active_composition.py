@@ -58,6 +58,15 @@ def test_same_node_concepts_are_established_in_dependency_order():
     assert validated['nodes'][0]['requires_concepts']==[]
 
 
+def test_repeated_summary_node_does_not_duplicate_source_obligations():
+    candidate=plan();summary=copy.deepcopy(candidate['nodes'][0])
+    summary.update(id='n2',title='重复汇总',depends_on=['n1'],
+        requires_concepts=[],establishes_concepts=[])
+    candidate['nodes'].append(summary)
+    validated=validate_plan(candidate,source(),['s1','s2'])
+    assert [node['id'] for node in validated['nodes']]==['n1']
+
+
 def test_unsupported_model_name_is_removed_instead_of_blocking_document(tmp_path):
     from sourceloom.active_composition import validate_names
     resources=Resources(Store(tmp_path),source());resources.read('s1')
