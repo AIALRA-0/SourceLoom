@@ -82,7 +82,7 @@ def test_repeated_summary_node_does_not_duplicate_source_obligations():
 
 def test_redundant_effective_name_status_is_removed_only_from_validation_copy():
     from sourceloom.active_composition import discard_known_plan_protocol_extras
-    raw={'result':{'concepts':[{'id':'cache','naming_status':'ambiguous',
+    raw={'result':{'concepts':[{'id':'cache','requires':[],'naming_status':'ambiguous',
         'naming_status_effective':'ambiguous'}],
         'nodes':[{'id':'node-1','explanation_placeholder':''}]}}
     cleaned,removed=discard_known_plan_protocol_extras(raw)
@@ -90,6 +90,14 @@ def test_redundant_effective_name_status_is_removed_only_from_validation_copy():
     assert 'explanation_placeholder' not in cleaned['result']['nodes'][0]
     assert raw['result']['concepts'][0]['naming_status_effective']=='ambiguous'
     assert raw['result']['nodes'][0]['explanation_placeholder']==''
+
+
+def test_missing_concept_dependency_list_is_normalized_without_another_model_call():
+    from sourceloom.active_composition import discard_known_plan_protocol_extras
+    raw={'result':{'concepts':[{'id':'faq','name':'FAQ'}],'nodes':[]}}
+    cleaned,changed=discard_known_plan_protocol_extras(raw)
+    assert changed==['faq'] and cleaned['result']['concepts'][0]['requires']==[]
+    assert 'requires' not in raw['result']['concepts'][0]
 
 
 def test_empty_review_reason_note_is_removed_only_from_validation_copy():

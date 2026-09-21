@@ -554,10 +554,13 @@ def discard_redundant_reads_with_result(response, resources):
 
 
 def discard_known_plan_protocol_extras(raw):
-    """Remove a redundant derived label from a validation copy, preserving raw output."""
+    """Normalize harmless plan-shape omissions in a copy, preserving raw output."""
     cleaned=copy.deepcopy(raw);removed=[]
     result=cleaned.get('result') if isinstance(cleaned,dict) else None
     for concept in result.get('concepts',[]) if isinstance(result,dict) else []:
+        if 'requires' not in concept:
+            removed.append(concept.get('id',''))
+            concept['requires']=[]
         if 'naming_status_effective' in concept and 'naming_status' in concept:
             removed.append(concept.get('id',''))
             concept.pop('naming_status_effective',None)
