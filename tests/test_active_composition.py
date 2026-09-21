@@ -243,6 +243,17 @@ def test_visual_card_scalar_lists_are_repaired_without_changing_words():
     assert raw['cards'][0]['relationships']=='A points to B'
 
 
+def test_visual_card_missing_optional_lists_are_filled_without_another_model_call():
+    from sourceloom.active_composition import normalize_visual_card_lists
+    raw={'cards':[dict(source_id='image',visible_content='icon',source_text='',role='decorative')]}
+    fixed=normalize_visual_card_lists(raw)
+    assert {key:fixed['cards'][0][key] for key in
+        ('relationships','uncertainty','limitations','blocking_uncertainty')}=={
+            'relationships':[],'uncertainty':[],'limitations':[],'blocking_uncertainty':[]}
+    assert all(key not in raw['cards'][0] for key in
+        ('relationships','uncertainty','limitations','blocking_uncertainty'))
+
+
 def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tmp_path,skill):
     store,_,project,bundle=prepared(tmp_path,skill)
     def add_images(p):

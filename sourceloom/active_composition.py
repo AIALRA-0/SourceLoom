@@ -538,7 +538,8 @@ def normalize_visual_card_lists(value):
     for card in result.get('cards',[]) if isinstance(result,dict) else []:
         for key in ('relationships','uncertainty','limitations','blocking_uncertainty'):
             item=card.get(key)
-            if isinstance(item,str):card[key]=[item] if item.strip() else []
+            if item is None:card[key]=[]
+            elif isinstance(item,str):card[key]=[item] if item.strip() else []
         uncertainty=card.get('uncertainty',[])
         for item in card.get('blocking_uncertainty',[]):
             if item not in uncertainty:uncertainty.append(item)
