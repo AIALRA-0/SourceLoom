@@ -260,6 +260,9 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
                            blocking_uncertainty=[]),
                       dict(source_id='content-media',visible_content='Video frame',source_text='',
                            role='video',relationships=[],uncertainty=[],limitations=[],
+                           blocking_uncertainty=[]),
+                      dict(source_id='chrome-image',visible_content='Logo',source_text='',
+                           role='decoration',relationships=[],uncertainty=[],limitations=[],
                            blocking_uncertainty=[])])
     store.put_job(old)
     interrupted=copy.deepcopy(old)
@@ -274,7 +277,8 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
     store.change(project['id'],lambda p:p.update(active_job=None,inventory=published))
     rewritten=queue.rewrite_active(project['id'],bundle)
     assert rewritten['reused_visual_job']==old['id']
-    assert [card['source_id'] for card in rewritten['visual_cards']]==['content-image','content-media']
+    assert [card['source_id'] for card in rewritten['visual_cards']]==[
+        'content-image','content-media','chrome-image']
     assert rewritten['stage']=='active_plan' and rewritten['reused_plan_job']==old['id']
     assert rewritten['active_partition_index']==1
 

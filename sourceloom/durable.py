@@ -251,12 +251,14 @@ class Queue:
             # Search history for the newest exact, complete visual checkpoint
             for old in history:
                 cards=old.get('visual_cards',[])
+                visual_ids={o['id'] for o in old.get('source',{}).get('objects',[])
+                    if o['kind'] in {'image','page','media'} and o.get('resource_id')}
                 expected={o['id'] for o in old.get('source',{}).get('objects',[])
-                    if o['kind'] in {'image','page','media'} and o.get('resource_id')
-                    and not decorative_resource(o)}
+                    if o['id'] in visual_ids and not decorative_resource(o)}
+                card_ids={c['source_id'] for c in cards}
                 if (expected and material_signature(old.get('source',{}))==material_signature(job['source'])
                         and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
-                        and {c['source_id'] for c in cards}==expected
+                        and expected<=card_ids<=visual_ids
                         and not any(c.get('blocking_uncertainty',c.get('uncertainty',[])) for c in cards)
                         and not old.get('source',{}).get('unknown')):
                     job.update(source=copy.deepcopy(old['source']),visual_cards=copy.deepcopy(cards),
