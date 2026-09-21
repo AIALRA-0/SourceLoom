@@ -304,6 +304,17 @@ class Resources:
                             snapshot_blob=self.store.blob(raw),fetched_at=time.time())
                         self.state['reads'].append(result)
                         return result
+                    original_path=urlsplit(url).path.rstrip('/').lower()
+                    final_path=urlsplit(final).path.rstrip('/').lower()
+                    access_segments={'login','signin','sign-in','auth','authenticate'}
+                    redirected_to_access_gate=(original_path!=final_path and
+                        any(part in access_segments for part in final_path.split('/')))
+                    if redirected_to_access_gate:
+                        result=dict(kind='page',url=url,status='unavailable',
+                            reason='目标页重定向到登录或访问验证页面，未返回链接所指正文',
+                            resolved_url=final,snapshot_blob=self.store.blob(raw),fetched_at=time.time())
+                        self.state['reads'].append(result)
+                        return result
                     image_refs=[]
                     for image in doc.find_all('img'):
                         address=image.get('src') or image.get('data-src') or ''

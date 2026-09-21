@@ -833,6 +833,22 @@ def test_client_challenge_is_recorded_as_unavailable_page_not_project_evidence(t
     assert not any(entry.get('kind')=='external' for entry in resource.state['entries'].values())
 
 
+def test_redirected_login_page_is_not_mistaken_for_image_led_link_content(tmp_path,monkeypatch):
+    from sourceloom.active_resources import Resources
+    from sourceloom.store import Store
+    from sourceloom import network
+    raw=(b'<html><body><main><img src="/transparent-square.png">'
+         b'<form>Continue with account</form></main></body></html>')
+    monkeypatch.setattr(network,'fetch',lambda *args,**kwargs:(
+        raw,'text/html','https://example.org/login?returnTo=%2Fshared%2F123'))
+    resource=Resources(Store(tmp_path),{'objects':[]})
+    result=resource.execute(dict(kind='page',url='https://example.org/shared/123',resource_id=''))
+    assert result['status']=='unavailable'
+    assert result['resolved_url'].startswith('https://example.org/login')
+    assert result['snapshot_blob']
+    assert not any(entry.get('kind')=='external' for entry in resource.state['entries'].values())
+
+
 def test_standalone_heading_merges_into_its_following_code_unit():
     from sourceloom.active_composition import merge_adjacent_heading_only_nodes
     heading=dict(id='h',title='简单示例',source_ids=['s1'],obligation_ids=['f1'],
