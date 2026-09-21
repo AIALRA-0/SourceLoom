@@ -33,7 +33,7 @@ def load_config():
             "worker_concurrency":2,
             "generation_pipeline":"active_composition_v2",
             "active_plan_source_chars":12000,"active_node_source_chars":6500,
-            "active_v2_visual_batch_size":6,"active_v2_plan_source_chars":16000,
+            "active_v2_visual_batch_size":6,"active_v2_plan_source_chars":9000,
             "active_v2_plan_source_objects":128,"active_v2_node_source_chars":12000,
             "active_v2_node_source_objects":128,
             "search_order":["tinyfish","octen","parallel"],

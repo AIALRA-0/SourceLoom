@@ -2249,7 +2249,7 @@ class ActiveComposition:
                 raise ValueError('原件正文仍有无法读取的对象，尚未开始改写：' + json.dumps(unresolved, ensure_ascii=False))
             from .visual_sources import decorative_resource
             job['archived_layout_source_ids']=[o['id'] for o in source['objects'] if decorative_resource(o)]
-            plan_chars=(self.config.get('active_v2_plan_source_chars',30000) if is_v2(job)
+            plan_chars=(self.config.get('active_v2_plan_source_chars',9000) if is_v2(job)
                         else self.config.get('active_plan_source_chars',12000))
             plan_objects=(self.config.get('active_v2_plan_source_objects',24) if is_v2(job)
                           else self.config.get('active_plan_source_objects',10))
