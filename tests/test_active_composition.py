@@ -238,20 +238,23 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
     old=queue.enqueue(project['id'],bundle)
     classified=copy.deepcopy(store.get(project['id'])['inventory'])
     classified['classification_version']=1
-    old.update(status='ready_for_review',source=classified,
+    old.update(status='ready_for_review',source=classified,stage='active_plan',
+        active_groups=[['s1'],['content-image']],active_plans=[{'contract':{'purpose':'kept'}}],
+        active_partition_index=1,
         visual_cards=[dict(source_id='content-image',visible_content='Chart',source_text='',
                            role='diagram',relationships=[],uncertainty=[],limitations=[],
                            blocking_uncertainty=[])])
     store.put_job(old)
     interrupted=copy.deepcopy(old)
     interrupted.update(id='newer-cancelled-visual',created=old['created']+1,
-                       status='cancelled',visual_cards=[])
+                       status='cancelled',visual_cards=[],active_plans=[],active_partition_index=0)
     store.put_job(interrupted)
     store.change(project['id'],lambda p:p.update(active_job=None,inventory=copy.deepcopy(classified)))
     rewritten=queue.rewrite_active(project['id'],bundle)
-    assert rewritten['stage']=='active_visual'
     assert rewritten['reused_visual_job']==old['id']
     assert [card['source_id'] for card in rewritten['visual_cards']]==['content-image']
+    assert rewritten['stage']=='active_plan' and rewritten['reused_plan_job']==old['id']
+    assert rewritten['active_partition_index']==1
 
 
 def test_active_call_honors_the_whole_job_deadline_before_dispatch(tmp_path,skill,monkeypatch):

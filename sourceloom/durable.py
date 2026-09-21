@@ -223,10 +223,11 @@ class Queue:
                 writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')}))
             from .visual_sources import decorative_resource
             previous=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC",(pid,)).fetchall()
+            history=[json.loads(row[0]) for row in previous]
             # A cancelled retry can be newer than the last complete visual pass
             # Search history for the newest exact, complete visual checkpoint
-            for row in previous:
-                old=json.loads(row[0]);cards=old.get('visual_cards',[])
+            for old in history:
+                cards=old.get('visual_cards',[])
                 expected={o['id'] for o in old.get('source',{}).get('objects',[])
                     if o['kind'] in {'image','page'} and o.get('resource_id')
                     and not decorative_resource(o)}
@@ -237,6 +238,23 @@ class Queue:
                         and not old.get('source',{}).get('unknown')):
                     job.update(source=copy.deepcopy(old['source']),visual_cards=copy.deepcopy(cards),
                         visual_index=len(cards),visual_count=len(cards),stage='active_visual',reused_visual_job=old['id'])
+                    break
+            # Reuse only plans that already passed the full validator. Failed
+            # partition sessions and their raw responses remain historical, while
+            # the new job resumes at the first unvalidated source group
+            for old in history:
+                completed=old.get('active_plans',[]);index=old.get('active_partition_index',0)
+                if (job.get('reused_visual_job') and completed and index==len(completed)
+                        and index<len(old.get('active_groups',[]))
+                        and digest(old.get('source',{}))==job['source_snapshot_digest']
+                        and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
+                        and old.get('role_policy_digest')==job.get('role_policy_digest')):
+                    job.update(active_groups=copy.deepcopy(old['active_groups']),
+                        active_plans=copy.deepcopy(completed),active_partition_index=index,
+                        active_partition_count=len(old['active_groups']),stage='active_plan',
+                        archived_layout_source_ids=copy.deepcopy(old.get('archived_layout_source_ids',[])),
+                        web_chrome_scope_version=old.get('web_chrome_scope_version',2),
+                        reused_plan_job=old['id'])
                     break
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',(jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
             cx.execute('INSERT INTO production_control(id,project,status,created) VALUES(?,?,?,?)',(jid,pid,'queued',now))

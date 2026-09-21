@@ -36,6 +36,7 @@ def load_config():
             "active_v2_visual_batch_size":6,"active_v2_plan_source_chars":9000,
             "active_v2_plan_source_objects":128,"active_v2_node_source_chars":12000,
             "active_v2_node_source_objects":128,
+            "active_node_concept_limit":16,
             "search_order":["tinyfish","octen","parallel"],
             "evidence_query_limit":2,"evidence_open_limit":4,
             "active_content_patch_limit":2,"active_format_patch_limit":2,
