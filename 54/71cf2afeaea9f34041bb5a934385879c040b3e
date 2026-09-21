@@ -1,0 +1,22 @@
+tests/test_active_composition.py
+  s_36a381ab4bccf9::t_92bc33dda22bec 395-405
+  s_36a381ab4bccf9::t_aa2866f69a381a 406-407
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_422291885f6315 1318-1326,1328
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5471cf2afeaea9f34041bb5a934385879c040b3e",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
