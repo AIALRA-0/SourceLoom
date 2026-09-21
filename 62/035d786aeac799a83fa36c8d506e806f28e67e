@@ -1,0 +1,28 @@
+sourceloom/network.py
+  s_36a381ab4bccf9::t_6743d16cf6f385 306-309,376-379
+tests/test_rendered_web_materials.py
+  s_36a381ab4bccf9::t_eac1c7d5958d8c 71-84
+tests/test_iteration10.py
+  s_36a381ab4bccf9::t_6743d16cf6f385 230-243
+  s_36a381ab4bccf9::t_8222af028e1970 229
+tests/test_web_snapshot.py
+  s_36a381ab4bccf9::t_6743d16cf6f385 187-193
+sourceloom/materials.py
+  s_36a381ab4bccf9::t_eac1c7d5958d8c 42-66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "62035d786aeac799a83fa36c8d506e806f28e67e",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
