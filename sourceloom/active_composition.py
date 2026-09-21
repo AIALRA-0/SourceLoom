@@ -1441,6 +1441,15 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
                         destination='；'.join(lines[:3])[:500],limitation=brief.get('limitation',''),
                         evidence=[dict(resource_id=resource_id,quote=quote)],unavailable_reason='')
                     continue
+            unavailable=next((item for item in reversed(resources.state.get('reads',[]))
+                if item.get('status')=='unavailable' and
+                canonical_url(item.get('url',''))==canonical_url(obj.get('target',''))),None) if resources else None
+            if unavailable:
+                brief.update(role='content',topic=obj.get('text','').strip() or obj.get('target',''),
+                    connection='原文在当前位置提供该内容链接，链接文字与地址均需保留',
+                    destination='',limitation='',evidence=[],
+                    unavailable_reason=unavailable.get('reason','目标页未取得'))
+                continue
             raise ValueError('正文知识链接不能仅按导航链接跳过目标内容：'+brief['source_id'])
     obligations = {o['id']: o for o in plan['obligations']}
     validate_evidence_plan(plan, obligations, objects, assigned, resources)

@@ -693,6 +693,22 @@ def test_article_reference_cannot_be_declared_navigation_to_skip_research():
         validate_plan(p,src,['link'],require_link_briefs=True)
 
 
+def test_unavailable_article_reference_becomes_explicit_content_gap(tmp_path):
+    src=source();src['source_url']='https://example.org/article'
+    src['objects']=[dict(id='link',kind='link',text='Research background',
+        locator='input/p/a',target='https://example.org/background')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='Research background')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    p['link_briefs']=[dict(source_id='link',role='navigation')]
+    resources=Resources(Store(tmp_path),src)
+    resources.state['reads'].append(dict(kind='page',url='https://example.org/background',
+        status='unavailable',reason='目标站返回 429'))
+    brief=validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)['link_briefs'][0]
+    assert brief['role']=='content' and brief['topic']=='Research background'
+    assert brief['unavailable_reason']=='目标站返回 429'
+
+
 def test_same_page_back_to_top_is_navigation_even_inside_article():
     src=source();src['source_url']='https://example.org/article/'
     src['objects']=[dict(id='link',kind='link',text=' Back to Top',
