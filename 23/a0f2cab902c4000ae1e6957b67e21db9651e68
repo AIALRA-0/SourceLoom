@@ -1,0 +1,27 @@
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_3bfeb98dcb6232 1259-1301,2175-2186
+  s_36a381ab4bccf9::t_054136e59e88d5 1863,2187-2195
+  s_36a381ab4bccf9::t_8cb3af359dc7d9 1302-1304
+sourceloom/active_contracts.py
+  s_36a381ab4bccf9::t_3bfeb98dcb6232 205-214
+tests/test_active_composition.py
+  s_36a381ab4bccf9::t_054136e59e88d5 999-1001
+  s_36a381ab4bccf9::t_3bfeb98dcb6232 2092-2109
+  s_36a381ab4bccf9::t_e6cbefe0a49186 2090-2091,2110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "23a0f2cab902c4000ae1e6957b67e21db9651e68",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null
+    }
+  }
+}
