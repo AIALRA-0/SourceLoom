@@ -949,6 +949,40 @@ def test_linked_page_image_is_read_once_and_reused_in_planning(tmp_path,monkeypa
     assert len(job['external_resources'])==2
 
 
+def test_writer_structure_corrections_edit_the_previous_candidate_incrementally(tmp_path,monkeypatch):
+    from sourceloom import active_contracts as A
+    store=Store(tmp_path);engine=ActiveComposition(Production(store,{}))
+    src=source();requests=[]
+    job=dict(id='incremental-writer',project='project',role='production',status='running',
+        created=1,pipeline='active_composition_v2',results={},calls=[],active_sessions={},
+        external_resources={},generated_resources={},verified_terminology=[],
+        archived_layout_source_ids=[],active_plans=[])
+    node=dict(id='n1',title='English Source Title',section_outline=[])
+    def unit(title,body):
+        return dict(blocks=[dict(id='n1-b1',kind='explanation',markdown='## '+title+'\n\n'+body,
+            obligation_ids=[],source_ids=['s1'])],coverage=[],knowledge_delta=dict(
+            established_concepts=[],explained_obligations=[],unresolved_prerequisites=[],
+            next_bridge='',concept_evidence=[]))
+    answers=[unit('English Source Title','正文'),unit('中文标题','正文'),unit('中文标题','正文\n\n图片说明')]
+    def call(job,key,role,payload,schema):
+        requests.append(payload)
+        if len(requests)==2:
+            assert payload['previous_invalid_result']==answers[0]
+        if len(requests)==3:
+            assert payload['previous_invalid_result']==answers[1]
+            assert 'Preserve the existing Chinese headings' in payload['protocol_correction']['instruction']
+        return dict(gaps=[],actions=[],ready_reason='ready',result=answers[len(requests)-1])
+    monkeypatch.setattr(engine,'call',call)
+    def validate(value,_):
+        markdown=value['blocks'][0]['markdown']
+        if len(requests)==1:raise ValueError('正文标题照搬了未解释的英文，需要按完整写作技能改写')
+        if len(requests)==2:raise ValueError('正文图片缺少与原图绑定的说明：image-1')
+        return value
+    result=engine.turn(job,'writer','active_write',A.WrittenUnit,src,['s1'],{'node':node},validate)
+    assert result['blocks'][0]['markdown'].endswith('图片说明')
+    assert len(requests)==3
+
+
 def test_v2_prefetches_bounded_direct_link_before_first_planning_call(tmp_path,monkeypatch):
     from pydantic import BaseModel
     import sourceloom.network

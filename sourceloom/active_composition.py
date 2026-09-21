@@ -1939,6 +1939,12 @@ class ActiveComposition:
                                      action_history=session.get('action_history', []))
             if session.get('correction'):
                 request['protocol_correction'] = session['correction']
+                if role=='active_write' and session.get('previous_invalid_result'):
+                    request['previous_invalid_result']=session['previous_invalid_result']
+                    request['correction_scope']=(
+                        'Return the complete corrected WrittenUnit. Change only what protocol_correction '
+                        'requires, preserve every already-correct paragraph, heading, source binding, image '
+                        'marker, factual qualification and prior correction')
             raw = self.call(job, key + '-turn-' + str(session['round']), role, request, A.Turn[schema])
             try:
                 if is_v2(job) and role=='active_plan':
@@ -2125,6 +2131,8 @@ class ActiveComposition:
                 if session['corrections'] >= correction_limit:
                     raise ValueError('当前阶段结构修正后仍不成立：' + str(error)) from error
                 session['corrections'] += 1
+                if role=='active_write' and isinstance(raw,dict) and isinstance(raw.get('result'),dict):
+                    session['previous_invalid_result']=raw['result']
                 # The exact rejected response already lives in the provider
                 # call receipt. Replaying a full invalid plan can push a
                 # correction over relay limits; the deterministic validation
@@ -2170,6 +2178,12 @@ class ActiveComposition:
                         'English names in parentheses at first use and explain unfamiliar abbreviations; do '
                         'not leave any heading as an unexplained copy of the English source title. Preserve '
                         'all body content, source bindings, images and factual qualifications')
+                elif role=='active_write' and '正文图片缺少与原图绑定的说明' in str(error):
+                    session['correction']['instruction']=(
+                        'Add a concise explanatory block immediately after each named source image. Bind '
+                        'that block to the same source_id and state only what the saved visual card, caption '
+                        'and adjacent source text support. Preserve the existing Chinese headings and every '
+                        'other already-correct block exactly')
                 session['round'] += 1
         raise ValueError('按需取材仍未收敛，已保存资料与具体缺口，没有生成替代稿')
 
