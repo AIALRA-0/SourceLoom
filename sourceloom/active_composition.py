@@ -515,6 +515,16 @@ def initialize(job):
     return job
 
 
+def normalize_visual_card_lists(value):
+    """Repair a schema-only scalar list without another paid model call"""
+    result=copy.deepcopy(value)
+    for card in result.get('cards',[]) if isinstance(result,dict) else []:
+        for key in ('relationships','uncertainty','limitations','blocking_uncertainty'):
+            item=card.get(key)
+            if isinstance(item,str):card[key]=[item] if item.strip() else []
+    return result
+
+
 def link_guides(job, source_ids):
     """Reuse the plan's already-fetched target evidence without another read turn."""
     selected=set(source_ids)
@@ -2060,7 +2070,7 @@ class ActiveComposition:
                             card_response=self.call(job,key+'-linked-visual-'+visual_id,'active_visual',
                                 dict(pages=[page],linked_target_page=item['parent_page_url'],
                                      _image_resources=[dict(source_id=visual_id,sha256=item['sha256'])]),A.VisualCards)
-                            cards=A.VisualCards.model_validate(card_response).cards
+                            cards=A.VisualCards.model_validate(normalize_visual_card_lists(card_response)).cards
                             if len(cards)!=1 or cards[0].source_id!=visual_id:
                                 raise ValueError('链接图片识别没有对应目标图片')
                             card=cards[0]
@@ -2357,8 +2367,8 @@ class ActiveComposition:
                 visual_batch_size=(self.config.get('active_v2_visual_batch_size',6) if is_v2(job) else 3)
                 batch=pending[:max(1,min(8,int(visual_batch_size)))]
                 key = 'active-visual-' + '-'.join(page['id'] for page in batch)
-                result = A.VisualCards.model_validate(self.call(job, key, 'active_visual',
-                    dict(pages=batch, _image_resources=image_resources(self.store, batch, source)), A.VisualCards)).model_dump()
+                result = A.VisualCards.model_validate(normalize_visual_card_lists(self.call(job, key, 'active_visual',
+                    dict(pages=batch, _image_resources=image_resources(self.store, batch, source)), A.VisualCards))).model_dump()
                 if [c['source_id'] for c in result['cards']] != [page['id'] for page in batch]:
                     raise ValueError('视觉卡没有准确对应原对象')
                 for page,card in zip(batch,result['cards']):
@@ -2366,9 +2376,9 @@ class ActiveComposition:
                         raise ValueError('视觉阻断项必须引用实际无法确定的内容')
                     if card['blocking_uncertainty']:
                         # One targeted read of the same image, not a mandatory second reviewer
-                        detail = A.VisualCards.model_validate(self.call(job, key+'-detail-'+page['id'], 'active_visual',
+                        detail = A.VisualCards.model_validate(normalize_visual_card_lists(self.call(job, key+'-detail-'+page['id'], 'active_visual',
                             dict(pages=[page], previous_card=card,
-                                 _image_resources=image_resources(self.store, [page], source, [page['id']])), A.VisualCards)).model_dump()
+                                 _image_resources=image_resources(self.store, [page], source, [page['id']])), A.VisualCards))).model_dump()
                         if [c['source_id'] for c in detail['cards']] != [page['id']] or detail['cards'][0]['blocking_uncertainty']:
                             raise ValueError('图像仍有无法确定的内容，原图与识别结果已保存')
                         card = detail['cards'][0]

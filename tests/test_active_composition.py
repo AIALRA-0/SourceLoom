@@ -224,6 +224,17 @@ def test_active_rewrite_keeps_the_configured_v2_pipeline(tmp_path,skill):
     assert store.job(job['id'])['pipeline']=='active_composition_v2'
 
 
+def test_visual_card_scalar_lists_are_repaired_without_changing_words():
+    from sourceloom.active_composition import normalize_visual_card_lists
+    raw={'cards':[dict(source_id='image',visible_content='chart',source_text='',role='diagram',
+        relationships='A points to B',uncertainty='',limitations=['cropped'],blocking_uncertainty=[])]}
+    fixed=normalize_visual_card_lists(raw)
+    assert fixed['cards'][0]['relationships']==['A points to B']
+    assert fixed['cards'][0]['uncertainty']==[]
+    assert fixed['cards'][0]['limitations']==['cropped']
+    assert raw['cards'][0]['relationships']=='A points to B'
+
+
 def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tmp_path,skill):
     store,_,project,bundle=prepared(tmp_path,skill)
     def add_images(p):
