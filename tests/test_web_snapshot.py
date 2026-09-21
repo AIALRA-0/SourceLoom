@@ -167,3 +167,55 @@ def test_markdown_snapshot_fetches_literal_html_images(tmp_path,monkeypatch):
     assert failures==[] and seen==[base,'https://raw.example.invalid/project/docs/diagram.png']
     assert len([o for o in inv['objects'] if o['kind']=='image' and o['resource_id']])==1
     assert not inv['unknown']
+
+
+def test_article_figure_uses_full_size_candidate_and_binds_manifest(tmp_path,monkeypatch):
+    raw=(b'<article><figure><a href="full.png"><picture>'
+         b'<source srcset="large.webp 1200w, small.webp 400w">'
+         b'<img src="thumb.png" alt="GPU chart"></picture></a>'
+         b'<figcaption>Measured throughput</figcaption></figure></article>')
+    picture=BytesIO();Image.new('RGB',(4,3),'blue').save(picture,'PNG')
+    seen=[]
+    def fetch(url,*args):
+        seen.append(url)
+        return (raw,'text/html',url) if len(seen)==1 else (picture.getvalue(),'image/png',url)
+    monkeypatch.setattr(network,'fetch',fetch)
+    uploads,final,aliases,failures,manifest=network.fetch_bundle(
+        'https://example.invalid/article',include_manifest=True)
+    inv=intake(Store(tmp_path),uploads,final,aliases)
+    from sourceloom.materials import bind_web_material_manifest, require_complete_web_materials
+    inv=bind_web_material_manifest(inv,manifest);require_complete_web_materials(inv)
+    images=[obj for obj in inv['objects'] if obj['kind']=='image']
+    assert seen[1]=='https://example.invalid/full.png'
+    assert len(images)==1 and images[0]['source_scope']=='article_media'
+    assert images[0]['figure_caption']=='Measured throughput'
+    assert inv['web_snapshot']['material_summary']=={
+        'discovered':1,'article_figures':1,'ready_article_figures':1,'gaps':[]}
+
+
+def test_web_snapshot_has_no_twenty_four_image_cutoff(tmp_path,monkeypatch):
+    raw=('<article>'+''.join(
+        f'<figure><img src="fig-{index}.png"></figure>' for index in range(31))+'</article>').encode()
+    picture=BytesIO();Image.new('RGB',(2,2),'white').save(picture,'PNG')
+    def fetch(url,*args):
+        return (raw,'text/html',url) if url=='https://example.invalid/many' else (
+            picture.getvalue(),'image/png',url)
+    monkeypatch.setattr(network,'fetch',fetch)
+    uploads,final,aliases,failures,manifest=network.fetch_bundle(
+        'https://example.invalid/many',include_manifest=True)
+    inv=intake(Store(tmp_path),uploads,final,aliases)
+    from sourceloom.materials import bind_web_material_manifest, require_complete_web_materials
+    inv=bind_web_material_manifest(inv,manifest);require_complete_web_materials(inv)
+    assert not failures and len(manifest)==31
+    assert len([obj for obj in inv['objects'] if obj['kind']=='image'])==31
+    assert inv['web_snapshot']['material_summary']['ready_article_figures']==31
+
+
+def test_heading_link_icon_is_archived_without_visual_model(tmp_path):
+    from sourceloom.visual_sources import decorative_resource
+    raw=(b'<article><h2>Result<a href="#result"><svg class="lucide-link" '
+         b'width="20" height="20"><path d="M 1 1 L 10 10"/></svg></a></h2></article>')
+    source=intake(Store(tmp_path),[('snapshot.html',raw)],source_url='https://example.invalid/article')
+    icon=next(obj for obj in source['objects'] if obj.get('source_format')=='inline-svg')
+    assert icon['source_scope']=='layout_decorative'
+    assert decorative_resource(icon)

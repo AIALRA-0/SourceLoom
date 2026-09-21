@@ -8,10 +8,11 @@ import time
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import PurePosixPath
 from bs4 import BeautifulSoup
 from markdown_it import MarkdownIt
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 from .ingest import MAX_FILE
 
@@ -182,7 +183,73 @@ def api_request(url, method="GET", headers=None, json_body=None, timeout=15, max
     raise ValueError("API 没有可用地址")
 
 
-def fetch_bundle(url):
+def _srcset_urls(value):
+    """Return srcset URLs from largest advertised candidate to smallest."""
+    candidates=[]
+    for item in (value or '').split(','):
+        parts=item.strip().split()
+        if not parts:continue
+        score=0.0
+        if len(parts)>1:
+            descriptor=parts[-1].lower()
+            try:
+                score=float(descriptor[:-1]) if descriptor.endswith(('w','x')) else 0.0
+            except ValueError:score=0.0
+        candidates.append((score,parts[0]))
+    return [item[1] for item in sorted(candidates,reverse=True)]
+
+
+def _looks_like_image_url(value):
+    parsed=urlsplit(value or '')
+    decoded=unquote(parsed.path).lower()
+    return bool(re.search(r'\.(?:avif|gif|jpe?g|png|svg|webp)(?:$|[?#])',decoded)
+                or '/image/' in parsed.path.lower())
+
+
+def _html_image_groups(raw,base):
+    """Discover one ordered download group for every HTML image occurrence.
+
+    A group keeps every URL spelling used by picture/srcset/link wrappers, while
+    downloading only the best available representation.  Article figures come
+    before site chrome so a page with many icons cannot starve its actual media.
+    """
+    soup=BeautifulSoup(raw,'html.parser')
+    document_base=base
+    if soup.find('base',href=True):document_base=urljoin(base,soup.find('base',href=True)['href'])
+    article=soup.find('article') or soup.find('main')
+    ordered=[]
+    seen_nodes=set()
+    pools=[]
+    if article:pools.append(('article',article.find_all('img')))
+    pools.append(('page',soup.find_all('img')))
+    for scope,images in pools:
+        for image in images:
+            if id(image) in seen_nodes:continue
+            seen_nodes.add(id(image))
+            refs=[]
+            figure=image.find_parent('figure')
+            anchor=image.find_parent('a',href=True)
+            if figure and anchor and _looks_like_image_url(urljoin(document_base,anchor.get('href',''))):
+                refs.append(anchor.get('href',''))
+            for source in (image.find_parent('picture') or image).find_all('source') if image.find_parent('picture') else []:
+                refs.extend(_srcset_urls(source.get('srcset','')))
+            refs.extend(_srcset_urls(image.get('srcset','')))
+            for key in ('data-original','data-src','data-lazy-src','src'):
+                if image.get(key):refs.append(image.get(key))
+            urls=[]
+            for ref in refs:
+                if not ref or ref.startswith('data:'):continue
+                target=urljoin(document_base,ref)
+                if target not in urls:urls.append(target)
+            if not urls:continue
+            caption=figure.find('figcaption').get_text(' ',strip=True) if figure and figure.find('figcaption') else ''
+            ordered.append(dict(id=f'web-image-{len(ordered)+1:04d}',scope='article' if article and article in image.parents else scope,
+                figure=bool(figure),alt=image.get('alt',''),caption=caption,urls=urls,
+                selected_url=urls[0],fetched=False,asset_name='',failure=''))
+    return ordered
+
+
+def fetch_bundle(url,include_manifest=False):
     """Snapshot original HTML/Markdown and bounded referenced images."""
     deadline=time.monotonic()+60
     raw,mime,final=fetch(url)
@@ -192,12 +259,13 @@ def fetch_bundle(url):
         if source_suffix in {'.md','.markdown'}:suffix='md'
         elif source_suffix in {'.rst','.rest'}:suffix='rst'
     uploads=[('snapshot.'+suffix,raw)];aliases={};failures=[]
-    targets=[]
+    targets=[];image_groups=[]
     if mime=='text/html':
         soup=BeautifulSoup(raw,'html.parser')
         base=final
         if soup.find('base',href=True):base=urljoin(final,soup.find('base',href=True)['href'])
-        references=(image.get('src') or image.get('data-src') or '' for image in soup.find_all('img'))
+        image_groups=_html_image_groups(raw,final)
+        references=[]
     elif suffix=='md':
         tokens=MarkdownIt('commonmark').parse(raw.decode('utf-8',errors='replace'))
         markdown_refs=[child.attrGet('src') or '' for token in tokens for child in token.children or []
@@ -216,17 +284,63 @@ def fetch_bundle(url):
     total=len(raw)
     types={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp',
            'image/svg+xml':'png'}
-    for index,target in enumerate(targets):
-        if index>=24 or time.monotonic()>=deadline:
-            failures.append(dict(target=target,reason='网页图片数量或 60 秒获取时限已达到，原地址保留'))
-            continue
-        try:
-            image,kind,resolved=fetch(target,set(types),min(12,deadline-time.monotonic()))
-            if kind=='image/svg+xml':
-                image=rasterize_svg(image)
-            if total+len(image)>MAX_FILE*4:raise ValueError('网页与资源超过 100 MB 总量')
-            name='web-assets/'+hashlib.sha256(target.encode()).hexdigest()+'.'+types[kind]
-            uploads.append((name,image));aliases[target]=name;total+=len(image)
-        except (ValueError,OSError,http.client.HTTPException) as exc:
-            failures.append(dict(target=target,reason=type(exc).__name__))
-    return uploads,final,aliases,failures
+    if image_groups:
+        # Download occurrences concurrently, but preserve DOM order in the
+        # manifest and output bundle.  Each occurrence tries its full-size link,
+        # srcset and img fallback URLs before becoming an explicit gap.
+        deadline=time.monotonic()+180
+        def get_group(index,group):
+            last=None
+            for target in group['urls']:
+                try:
+                    remaining=deadline-time.monotonic()
+                    if remaining<=0:raise ValueError('网页图片获取已达到等待上限')
+                    image,kind,resolved=fetch(target,set(types),min(18,remaining))
+                    if kind=='image/svg+xml':image=rasterize_svg(image);kind='image/png'
+                    return index,target,image,kind,resolved,None
+                except (ValueError,OSError,http.client.HTTPException) as exc:last=exc
+            return index,group['selected_url'],None,None,None,last
+        completed={};signatures={}
+        for index,group in enumerate(image_groups):signatures.setdefault(tuple(group['urls']),[]).append(index)
+        # Four in-flight files keep the worst-case image buffer near the same
+        # 100 MB ceiling as the persisted bundle on the production VPS
+        with ThreadPoolExecutor(max_workers=min(4,max(1,len(image_groups)))) as pool:
+            futures={pool.submit(get_group,index,image_groups[index]):indexes
+                     for indexes in signatures.values() for index in indexes[:1]}
+            for future in as_completed(futures):
+                result=future.result()
+                for index in futures[future]:completed[index]=(index,*result[1:])
+        stored_by_digest={}
+        for index,group in enumerate(image_groups):
+            _,target,image,kind,resolved,error=completed[index]
+            if error is not None:
+                group['failure']=type(error).__name__
+                failures.append(dict(target=target,reason=type(error).__name__,material_id=group['id'],scope=group['scope']))
+                continue
+            if total+len(image)>MAX_FILE*4:
+                group['failure']='网页与资源超过 100 MB 总量'
+                failures.append(dict(target=target,reason=group['failure'],material_id=group['id'],scope=group['scope']))
+                continue
+            sha=hashlib.sha256(image).hexdigest()
+            name=stored_by_digest.get(sha)
+            if not name:
+                name='web-assets/'+hashlib.sha256(target.encode()).hexdigest()+'.'+types[kind]
+                uploads.append((name,image));stored_by_digest[sha]=name;total+=len(image)
+            for alias in group['urls']:aliases[alias]=name
+            aliases[resolved]=name
+            group.update(selected_url=target,fetched=True,asset_name=name)
+    else:
+        for target in targets:
+            if time.monotonic()>=deadline:
+                failures.append(dict(target=target,reason='网页图片获取已达到等待上限，原地址保留'))
+                continue
+            try:
+                image,kind,resolved=fetch(target,set(types),min(12,deadline-time.monotonic()))
+                if kind=='image/svg+xml':image=rasterize_svg(image);kind='image/png'
+                if total+len(image)>MAX_FILE*4:raise ValueError('网页与资源超过 100 MB 总量')
+                name='web-assets/'+hashlib.sha256(target.encode()).hexdigest()+'.'+types[kind]
+                uploads.append((name,image));aliases[target]=name;aliases[resolved]=name;total+=len(image)
+            except (ValueError,OSError,http.client.HTTPException) as exc:
+                failures.append(dict(target=target,reason=type(exc).__name__))
+    result=(uploads,final,aliases,failures)
+    return result+(image_groups,) if include_manifest else result

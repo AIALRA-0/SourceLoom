@@ -1668,6 +1668,20 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
     allowed = set(node['obligation_ids'])
     if any(not set(b['obligation_ids']) <= allowed for b in draft['blocks']):
         raise ValueError('写作把其他单元的事实声明为已经覆盖')
+    # The visual model supplies image semantics. This check only makes sure the
+    # writer retained the original pixels and placed a source-bound explanation
+    all_blocks=prior['blocks']+draft['blocks']
+    for sid in node['source_ids']:
+        obj=sources[sid]
+        if (obj.get('kind')!='image' or obj.get('source_scope') in
+                {'site_chrome','source_metadata','layout_decorative'}):
+            continue
+        if not any(sid in block.get('embedded_object_ids',[]) for block in all_blocks):
+            raise ValueError('正文图片没有保留原始对象：'+sid)
+        if not any(block.get('kind')=='explanation'
+                   and sid in {item.get('source_id') for item in block.get('evidence',[])}
+                   and block.get('markdown','').strip() for block in all_blocks):
+            raise ValueError('正文图片缺少与原图绑定的说明：'+sid)
     subset = inventory | {'obligations': [o for o in inventory['obligations'] if o['id'] in allowed],
                           'objects': [o for o in inventory['objects'] if o['id'] in node['source_ids']]}
     findings = inspect_draft(subset, draft, prior_draft=prior)
@@ -2178,6 +2192,8 @@ class ActiveComposition:
             source = resolve_word_structures(self.store, classify_layout_tables(
                 classify_web_chrome(self.store,classify_inert_markup(job['source']))))
             source = classify_transparent(self.store, source)
+            from .materials import require_complete_web_materials
+            require_complete_web_materials(source)
             for original in source.get('originals', []):
                 self.store.read_blob(original['sha256'])
             for resource in source.get('resources', []):

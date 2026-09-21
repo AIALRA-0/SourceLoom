@@ -323,9 +323,11 @@ def create_app(config=None):
         if body.get('background'):
             from .intake_jobs import IntakeQueue
             return JSONResponse(IntakeQueue(store,config).enqueue(pid,url=str(body.get('url','')),generate=bool(body.get('generate')),request_id=body.get('request_id')),status_code=202)
-        uploads,url,aliases,failures=fetch_bundle(str(body.get('url','')))
+        uploads,url,aliases,failures,manifest=fetch_bundle(str(body.get('url','')),include_manifest=True)
         inv=isolated_intake(store,uploads,source_url=url,asset_aliases=aliases)
         inv['web_snapshot']={'asset_aliases':aliases,'fetch_failures':failures,'scope':'complete supplied HTML body'}
+        from .materials import bind_web_material_manifest
+        inv=bind_web_material_manifest(inv,manifest)
         return assign_inventory(pid,inv)
 
     @app.post("/api/projects/{pid}/freeze")

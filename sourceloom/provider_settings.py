@@ -433,15 +433,19 @@ def activate_staged_route(config: Mapping[str, Any], provider_id: str) -> dict[s
     next_config = deepcopy(dict(config))
     previous_provider_id = next_config.get("provider_id")
     route = dict(raw)
+    route_host=(urlsplit(str(route.get('base_url') or '')).hostname or '').casefold()
+    billing_mode=str(route.get('billing_mode') or
+        ('metered' if route_host=='api.kuafushe.cc' else next_config.get('billing_mode','metered')))
     frozen_route = {
         key: route[key]
         for key in ("provider", "provider_id", "model", "protocol", "endpoint", "base_url",
                     "pricing_currency", "pricing_cny", "pricing_source", "pricing_version",
                     "pricing_effective_at", "display_multiplier", "route_role", "priority", "enabled", "route_kind",
-                    "auth_type", "authType", "model_parameters", "modelParameters",
+                    "auth_type", "authType", "model_parameters", "modelParameters", "billing_mode",
                     "search_per_request", "searchPerRequest")
         if key in route
     }
+    frozen_route['billing_mode']=billing_mode
     next_config.update({
         "provider": route.get("provider", "openai-compatible"),
         "provider_id": provider_id,
@@ -455,6 +459,7 @@ def activate_staged_route(config: Mapping[str, Any], provider_id: str) -> dict[s
         "pricing_version": route.get("pricing_version", ""),
         "pricing_effective_at": route.get("pricing_effective_at", ""),
         "display_multiplier": route.get("display_multiplier"),
+        "billing_mode": billing_mode,
         "route_kind": route.get("route_kind", route.get("kind", "model")),
         "auth_type": route.get("auth_type", route.get("authType", "bearer")),
         "model_parameters": deepcopy(route.get("model_parameters", route.get("modelParameters", {})) or {}),

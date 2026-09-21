@@ -93,12 +93,14 @@ class IntakeQueue:
             if job.get('inventory_saved'):
                 inv=None
             elif job.get('url'):
-                uploads,url,aliases,failures=fetch_bundle(job['url'])
+                uploads,url,aliases,failures,manifest=fetch_bundle(job['url'],include_manifest=True)
                 # Persist fetched originals before parsing, including failed parsing.
                 job['files']=[{'name':n,'sha256':self.store.blob(raw),'bytes':len(raw)} for n,raw in uploads]
                 job.update(stage='intake');self.save_owned(job,owner)
                 inv=isolated_intake(self.store,uploads,source_url=url,asset_aliases=aliases)
                 inv['web_snapshot']={'asset_aliases':aliases,'fetch_failures':failures,'scope':'complete supplied HTML body'}
+                from .materials import bind_web_material_manifest
+                inv=bind_web_material_manifest(inv,manifest)
             else:inv=isolated_intake(self.store,[(f['name'],self.store.read_blob(f['sha256'])) for f in job['files']])
             with self.store.connect() as cx:
                 cx.execute('BEGIN IMMEDIATE')

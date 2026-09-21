@@ -177,7 +177,41 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
         if document_base and soup.find('base',href=True):
             document_base=urljoin(document_base,soup.find('base',href=True)['href'])
         root = soup.body or soup
+        article = soup.find('article') or soup.find('main')
         blocks = {"p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "table", "figcaption", "blockquote", "dt", "dd", "summary"}
+
+        def srcset_refs(value):
+            candidates=[]
+            for item in (value or '').split(','):
+                parts=item.strip().split()
+                if not parts:continue
+                score=0.0
+                if len(parts)>1:
+                    try:score=float(parts[-1][:-1]) if parts[-1][-1:] in {'w','x'} else 0.0
+                    except ValueError:score=0.0
+                candidates.append((score,parts[0]))
+            return [item[1] for item in sorted(candidates,reverse=True)]
+
+        def image_refs(node):
+            refs=[];figure=node.find_parent('figure');anchor=node.find_parent('a',href=True)
+            if figure and anchor:refs.append(anchor.get('href',''))
+            picture=node.find_parent('picture')
+            if picture:
+                for source in picture.find_all('source'):refs.extend(srcset_refs(source.get('srcset','')))
+            refs.extend(srcset_refs(node.get('srcset','')))
+            for key in ('data-original','data-src','data-lazy-src','src'):
+                if node.get(key):refs.append(node.get(key))
+            return list(dict.fromkeys(ref for ref in refs if ref))
+
+        def inline_svg_classification(node):
+            classes=' '.join(node.get('class',[])).casefold()
+            interactive=node.find_parent(['button','nav']) is not None
+            heading=node.find_parent(re.compile(r'^h[1-6]$'))
+            heading_anchor=bool(heading and ('lucide-link' in classes or
+                (node.find_parent('a',href=True) and node.find_parent('a',href=True).get('href','').startswith('#'))))
+            if interactive or heading_anchor:
+                return dict(method='source_dom_interactive_icon',source_role='layout_decorative')
+            return None
 
         def walk(node, locator):
             if isinstance(node, Comment):
@@ -199,8 +233,11 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                                           size=len(image),mime='image/png'))
                     label=node.get('aria-label') or (node.find('title').get_text(' ',strip=True)
                         if node.find('title') else '')
+                    classification=inline_svg_classification(node)
                     add('image',label,locator,resource_id=key,target='',raw=raw,
-                        source_format='inline-svg')
+                        source_format='inline-svg',
+                        **({'visual_classification':classification,'source_scope':'layout_decorative'}
+                           if classification else {}))
                 except (ValueError,TypeError):
                     obj=add('unknown',node.get_text() or '原始 svg 对象',locator,raw=raw)
                     gap('svg 未执行，需要独立解释或安全转换',locator,obj['id'])
@@ -210,10 +247,20 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 gap(f"{node.name} 未执行，需要独立解释或安全转换", locator, obj["id"])
                 return
             if node.name == "img":
-                ref = node.get("src", node.get("data-src", ""))
-                key = resolve_asset(ref, name)
+                refs=image_refs(node)
+                ref=refs[0] if refs else '';key=None
+                for candidate in refs:
+                    candidate_key=resolve_asset(candidate,name)
+                    if candidate_key:
+                        ref,key=candidate,candidate_key
+                        break
+                figure=node.find_parent('figure');caption=figure.find('figcaption') if figure else None
+                material_candidate=bool(figure and article and article in node.parents)
                 obj = add("image", node.get("alt", ""), locator, resource_id=key, target=ref,
-                          raw=str(node))
+                          raw=str(node),candidate_targets=[urljoin(document_base or '',item) for item in refs],
+                          material_candidate=material_candidate,
+                          figure_caption=caption.get_text(' ',strip=True) if caption else '',
+                          **({'source_scope':'article_media'} if material_candidate else {}))
                 if not key:
                     gap("图片资源尚未取得，原地址已保留", locator, obj["id"])
                 return
@@ -253,7 +300,15 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 return
             if node.name == "a":
                 target = node.get("href", "")
-                add("link", node.get_text(), locator, original_target=target,target=urljoin(document_base, target) if document_base else target)
+                parent=add("link", node.get_text(), locator, original_target=target,target=urljoin(document_base, target) if document_base else target)
+                # Links frequently wrap a picture or icon.  Preserve the link
+                # relation and still inventory its non-text descendants.
+                for n,pic in enumerate(node.find_all('img')):
+                    before=len(objects);walk(pic,f'{locator}/img[{n+1}]')
+                    if len(objects)>before:objects[before]['parent_id']=parent['id']
+                for n,svg in enumerate(node.find_all('svg')):
+                    before=len(objects);walk(svg,f'{locator}/svg[{n+1}]')
+                    if len(objects)>before:objects[before]['parent_id']=parent['id']
                 return
             for n, child in enumerate(node.children):
                 walk(child, f"{locator}/{getattr(child, 'name', None) or 'text'}[{n+1}]")

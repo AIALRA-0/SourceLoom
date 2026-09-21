@@ -116,7 +116,7 @@ def test_activated_route_drops_stale_role_credential_and_transport():
     role=activated['role_providers']['active_plan']
     assert role['provider_id']=='kuafu' and role['protocol']=='chat_completions'
     assert role['max_output_tokens']==4321
-    assert 'api_key' not in role and 'billing_mode' not in role
+    assert 'api_key' not in role and role['billing_mode']=='metered'
     effective=activated|role
     assert effective['api_key']=='kuafu-key'
 

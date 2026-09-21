@@ -10,8 +10,11 @@ from .store import digest
 
 
 def decorative_resource(obj):
+    # A figure inside the article remains source material even with no alt text
+    # or caption. Its semantic value is decided by the visual model
+    if obj.get('source_scope')=='article_media':return False
     if obj.get('kind')=='text' and not obj.get('text','').strip():return True
-    if obj.get('source_scope') in {'site_chrome','source_metadata'}:return True
+    if obj.get('source_scope') in {'site_chrome','source_metadata','layout_decorative'}:return True
     card=obj.get('visual_card') or {}
     if (obj.get('kind') in {'image','page'} and card.get('role')=='decorative'
             and not card.get('source_text','').strip()):
@@ -22,6 +25,9 @@ def decorative_resource(obj):
                  or 'substackcdn.com/image/' in obj.get('target','').casefold())):
         return True
     evidence=obj.get('visual_classification') or {}
+    if (evidence.get('method')=='source_dom_interactive_icon'
+            and evidence.get('source_role')=='layout_decorative'):
+        return True
     if evidence.get('method')=='source_dom_heading_home_link' and evidence.get('source_role')=='site_branding':
         return True
     return (evidence.get('method')=='all_pixels_alpha_zero'
