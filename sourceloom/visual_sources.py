@@ -12,6 +12,10 @@ from .store import digest
 def decorative_resource(obj):
     if obj.get('kind')=='text' and not obj.get('text','').strip():return True
     if obj.get('source_scope') in {'site_chrome','source_metadata'}:return True
+    card=obj.get('visual_card') or {}
+    if (obj.get('kind') in {'image','page'} and card.get('role')=='decorative'
+            and not card.get('source_text','').strip()):
+        return True
     if (obj.get('kind')=='link' and not obj.get('text','').strip()
             and '/figure[' in obj.get('locator','')
             and (re.search(r'\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)',obj.get('target',''),re.I)

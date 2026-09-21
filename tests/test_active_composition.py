@@ -546,6 +546,19 @@ def test_empty_figure_image_link_is_archived_without_hiding_the_image():
     assert not decorative_resource(image)
 
 
+def test_visual_card_archives_a_confirmed_textless_decorative_icon():
+    from sourceloom.visual_sources import decorative_resource
+    icon=dict(kind='image',text='A chain icon',visual_card=dict(
+        role='decorative',source_text='',visible_content='A chain icon'))
+    chart=dict(kind='image',text='Cache bandwidth chart',visual_card=dict(
+        role='diagram',source_text='',visible_content='Cache bandwidth chart'))
+    labelled=dict(kind='image',text='OPEN',visual_card=dict(
+        role='decorative',source_text='OPEN',visible_content='OPEN'))
+    assert decorative_resource(icon)
+    assert not decorative_resource(chart)
+    assert not decorative_resource(labelled)
+
+
 def test_writer_concept_labels_can_be_aligned_only_from_exact_cited_ids():
     from sourceloom.active_composition import align_reported_concept_ids
     delta=dict(established_concepts=['the mission and its launch date'],
