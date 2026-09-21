@@ -221,23 +221,23 @@ class Queue:
                 source_snapshot_digest=digest(p['inventory']),source=copy.deepcopy(p['inventory']),
                 goal=p['goal'],project_goal=p['goal'],transformation_mode=p.get('mode','rewrite'),
                 writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')}))
-            previous=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
-            old=json.loads(previous[0]) if previous else {}
-            cards=old.get('visual_cards',[])
-            # Reuse exactly the semantic images that reached the visual model
-            # after chrome/layout classification. Raw inventory also contains
-            # avatars and control icons which intentionally have no visual card
             from .visual_sources import decorative_resource
-            expected={o['id'] for o in old.get('source',{}).get('objects',[])
-                if o['kind'] in {'image','page'} and o.get('resource_id')
-                and not decorative_resource(o)}
-            if (expected and digest(old.get('source',{}))==job['source_snapshot_digest']
-                    and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
-                    and {c['source_id'] for c in cards}==expected
-                    and not any(c.get('blocking_uncertainty',c.get('uncertainty',[])) for c in cards)
-                    and not old.get('source',{}).get('unknown')):
-                job.update(source=copy.deepcopy(old['source']),visual_cards=copy.deepcopy(cards),
-                    visual_index=len(cards),visual_count=len(cards),stage='active_visual',reused_visual_job=old['id'])
+            previous=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC",(pid,)).fetchall()
+            # A cancelled retry can be newer than the last complete visual pass
+            # Search history for the newest exact, complete visual checkpoint
+            for row in previous:
+                old=json.loads(row[0]);cards=old.get('visual_cards',[])
+                expected={o['id'] for o in old.get('source',{}).get('objects',[])
+                    if o['kind'] in {'image','page'} and o.get('resource_id')
+                    and not decorative_resource(o)}
+                if (expected and digest(old.get('source',{}))==job['source_snapshot_digest']
+                        and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
+                        and {c['source_id'] for c in cards}==expected
+                        and not any(c.get('blocking_uncertainty',c.get('uncertainty',[])) for c in cards)
+                        and not old.get('source',{}).get('unknown')):
+                    job.update(source=copy.deepcopy(old['source']),visual_cards=copy.deepcopy(cards),
+                        visual_index=len(cards),visual_count=len(cards),stage='active_visual',reused_visual_job=old['id'])
+                    break
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',(jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
             cx.execute('INSERT INTO production_control(id,project,status,created) VALUES(?,?,?,?)',(jid,pid,'queued',now))
             p.update(active_job=jid,state='queued',max_calls=None)

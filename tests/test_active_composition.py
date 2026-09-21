@@ -240,6 +240,10 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
                            role='diagram',relationships=[],uncertainty=[],limitations=[],
                            blocking_uncertainty=[])])
     store.put_job(old)
+    interrupted=copy.deepcopy(old)
+    interrupted.update(id='newer-cancelled-visual',created=old['created']+1,
+                       status='cancelled',visual_cards=[])
+    store.put_job(interrupted)
     store.change(project['id'],lambda p:p.update(active_job=None,inventory=copy.deepcopy(classified)))
     rewritten=queue.rewrite_active(project['id'],bundle)
     assert rewritten['stage']=='active_visual'
