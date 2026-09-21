@@ -2201,6 +2201,12 @@ class ActiveComposition:
                         'to exactly node.obligation_ids, and unresolved_prerequisites to an empty list after '
                         'confirming the prose explains them. Bind every concept_evidence quote to an exact '
                         'substring of its named block. Preserve all authored blocks and source bindings exactly')
+                elif role=='active_write' and '正文引用了当前单元之外的原文' in str(error):
+                    session['correction']['instruction']=(
+                        'Remove every source_ids value that is not listed in node.source_ids and rebind the '
+                        'affected block only to the exact in-scope source objects that support its text. Prior '
+                        'tail context may guide a transition but is not evidence for this batch. Preserve the '
+                        'Chinese headings, image explanations and all other already-correct prose')
                 elif role=='active_review' and ('核对意见未准确引用实际正文' in str(error)
                                                 or '核对意见未准确引用当前原文' in str(error)):
                     session['correction']['instruction']=(
@@ -2427,6 +2433,10 @@ class ActiveComposition:
                           if is_v2(job) and node.get('cross_batch_risks') else [])
             payload = dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')), node=writer_node_context(node), obligations=prompt_obligations(obligations),
                 obligation_source_rule='Resolve each obligation through source_id and source_span_ids in opened_resources.',
+                displayed_heading_rule=('Every displayed heading must contain natural Chinese. Keep necessary official '
+                    'English names in parentheses after the Chinese wording; never copy an English-only source heading.'),
+                source_binding_rule=('Every authored block source_ids entry must come only from node.source_ids. Prior-tail '
+                    'context is for transitions and must never be rebound as evidence for this batch.'),
                 link_guides=link_guides(job,node['source_ids']),
                 protected_object_catalog=[dict(source_id=sid,kind=next(o['kind'] for o in source['objects'] if o['id']==sid),
                     insert_marker='{{source:'+sid+'}}') for sid in protected_objects(job['inventory']) if sid in node['source_ids']],

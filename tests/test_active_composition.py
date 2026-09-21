@@ -996,6 +996,7 @@ def test_writer_structure_corrections_edit_the_previous_candidate_incrementally(
     answers=[unit('English Source Title','正文'),unit('中文标题','正文'),unit('中文标题','正文\n\n图片说明')]
     def call(job,key,role,payload,schema):
         requests.append(payload)
+        assert 'previous_invalid_result' in payload or len(requests)==1
         if len(requests)==2:
             assert payload['previous_invalid_result']==answers[0]
         if len(requests)==3:
