@@ -39,6 +39,11 @@ def test_plan_requires_all_sources_and_preserves_explicit_qualifications():
     with pytest.raises(ValueError,match='全部原对象'):validate_plan(broken,source(),['s1','s2'])
 
 
+def test_internal_english_plan_title_does_not_block_generation():
+    candidate=plan();candidate['nodes'][0]['title']='Compute Throughput'
+    assert validate_plan(candidate,source(),['s1','s2'])['nodes'][0]['title']=='Compute Throughput'
+
+
 @pytest.mark.parametrize('mutate',[
     lambda p:p['nodes'][0].update(depends_on=['future']),
     lambda p:p['nodes'][0].update(requires_concepts=['unlearned']),

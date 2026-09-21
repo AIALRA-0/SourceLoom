@@ -1365,8 +1365,9 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
             raise ValueError('节点原对象与义务来源不一致')
         if all(objects[s]['kind']=='heading' for s in node['source_ids']):
             raise ValueError('单独标题不能消耗一个写作单元，应与实际正文一起安排')
-        if re.search(r'[A-Za-z]',node['title']) and not re.search(r'[\u3400-\u9fff]',node['title']):
-            raise ValueError('面向中文读者的编排标题不能照搬未解释的英文标题')
+        # A planning title is an internal routing label.  The writer still
+        # receives the full Chinese writing policy, so an English-only label
+        # must not prevent an otherwise complete source plan from running.
         node_spans={s for f in node['obligation_ids'] for s in obligations[f].get('source_span_ids',[])}
         size=sum(spans[s]['end']-spans[s]['start'] for s in node_spans) if node_spans else sum(len(obligations[f]['quote']) for f in node['obligation_ids'])
         if size > node_limit:
