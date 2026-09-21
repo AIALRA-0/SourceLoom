@@ -1,0 +1,27 @@
+tests/test_real_output_audit.py
+  s_36a381ab4bccf9::t_8722ba45abcf44 94-102
+  s_36a381ab4bccf9::t_927d0fc3095257 7-8,68-69
+  s_36a381ab4bccf9::t_12fa4bcc803424 1-6,9-67,70-93
+scripts/audit_real_outputs.py
+  s_36a381ab4bccf9::t_12fa4bcc803424 1-23,28-29,32-137,146-200,202-209,211-247,260,262-283
+  s_36a381ab4bccf9::t_1f784b5995e330 24-27
+  s_36a381ab4bccf9::t_5830bd38117eb6 30-31,201
+  s_36a381ab4bccf9::t_34959976b4e8ae 248-259,261
+  s_36a381ab4bccf9::t_85257d1abc8ecd 138-145,210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cbd53973b7e13f9f16d0407190c9399fb70fd71d",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
