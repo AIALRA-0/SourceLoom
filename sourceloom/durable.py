@@ -266,17 +266,23 @@ class Queue:
             # the new job resumes at the first unvalidated source group
             for old in history:
                 completed=old.get('active_plans',[]);index=old.get('active_partition_index',0)
+                groups=old.get('active_groups',[])
                 if (job.get('reused_visual_job') and completed and index==len(completed)
-                        and index<len(old.get('active_groups',[]))
+                        and index<=len(groups)
                         and material_signature(old.get('source',{}))==material_signature(job['source'])
                         and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
                         and old.get('role_policy_digest')==job.get('role_policy_digest')):
-                    job.update(active_groups=copy.deepcopy(old['active_groups']),
+                    job.update(active_groups=copy.deepcopy(groups),
                         active_plans=copy.deepcopy(completed),active_partition_index=index,
-                        active_partition_count=len(old['active_groups']),stage='active_plan',
+                        active_partition_count=len(groups),stage='active_plan',
                         archived_layout_source_ids=copy.deepcopy(old.get('archived_layout_source_ids',[])),
                         web_chrome_scope_version=old.get('web_chrome_scope_version',2),
                         reused_plan_job=old['id'])
+                    if index==len(groups) and old.get('writing_batches') and old.get('plan') and old.get('inventory'):
+                        job.update(stage='active_write',unit_index=0,
+                            writing_batches=copy.deepcopy(old['writing_batches']),
+                            inventory=copy.deepcopy(old['inventory']),plan=copy.deepcopy(old['plan']),
+                            draft={'blocks':[]},reused_writing_preparation_job=old['id'])
                     break
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',(jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
             cx.execute('INSERT INTO production_control(id,project,status,created) VALUES(?,?,?,?)',(jid,pid,'queued',now))

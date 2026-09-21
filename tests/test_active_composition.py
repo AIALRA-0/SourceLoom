@@ -261,6 +261,34 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
     assert rewritten['active_partition_index']==1
 
 
+def test_active_rewrite_reuses_complete_planning_before_first_writer(tmp_path,skill):
+    store,_,project,bundle=prepared(tmp_path,skill)
+    store.change(project['id'],lambda p:p['inventory']['objects'].append(dict(
+        id='content-image',kind='image',locator='source/figure[1]',text='',
+        resource_id='a'*64,source_scope='article_media')))
+    queue=Queue(store,pipeline='active_composition_v2')
+    old=queue.enqueue(project['id'],bundle)
+    classified=copy.deepcopy(store.get(project['id'])['inventory'])
+    old.update(status='ready_for_review',source=classified,stage='active_write',
+        active_groups=[['s1']],active_plans=[{'contract':{'purpose':'kept'}}],
+        active_partition_index=1,writing_batches=[{'id':'write-1'}],
+        inventory=copy.deepcopy(classified),plan={'title':'validated'},
+        visual_cards=[dict(source_id='content-image',visible_content='Chart',source_text='',
+                           role='diagram',relationships=[],uncertainty=[],limitations=[],
+                           blocking_uncertainty=[])])
+    store.put_job(old)
+    published=copy.deepcopy(classified)
+    published.update(frozen=True,inventory_review={'status':'complete'},
+        obligations=[dict(id='derived',object_id='s1',statement='same source')],digest='derived')
+    store.change(project['id'],lambda p:p.update(active_job=None,inventory=published))
+    rewritten=queue.rewrite_active(project['id'],bundle)
+    assert rewritten['stage']=='active_write' and rewritten['unit_index']==0
+    assert rewritten['reused_visual_job']==old['id']
+    assert rewritten['reused_plan_job']==old['id']
+    assert rewritten['reused_writing_preparation_job']==old['id']
+    assert rewritten['writing_batches']==[{'id':'write-1'}]
+
+
 def test_active_call_honors_the_whole_job_deadline_before_dispatch(tmp_path,skill,monkeypatch):
     import time
     from sourceloom import active_contracts as A
