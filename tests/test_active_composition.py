@@ -277,13 +277,18 @@ def test_active_rewrite_reuses_complete_planning_before_first_writer(tmp_path,sk
                            role='diagram',relationships=[],uncertainty=[],limitations=[],
                            blocking_uncertainty=[])])
     store.put_job(old)
+    newer=copy.deepcopy(old)
+    newer.update(id='newer-partial-plan',created=old['created']+1,status='cancelled',
+        stage='active_plan',active_groups=[['s1'],['s2']],active_plans=[{'contract':{'purpose':'partial'}}],
+        active_partition_index=1,writing_batches=[],inventory=None,plan=None)
+    store.put_job(newer)
     published=copy.deepcopy(classified)
     published.update(frozen=True,inventory_review={'status':'complete'},
         obligations=[dict(id='derived',object_id='s1',statement='same source')],digest='derived')
     store.change(project['id'],lambda p:p.update(active_job=None,inventory=published))
     rewritten=queue.rewrite_active(project['id'],bundle)
     assert rewritten['stage']=='active_write' and rewritten['unit_index']==0
-    assert rewritten['reused_visual_job']==old['id']
+    assert rewritten['reused_visual_job']==newer['id']
     assert rewritten['reused_plan_job']==old['id']
     assert rewritten['reused_writing_preparation_job']==old['id']
     assert rewritten['writing_batches']==[{'id':'write-1'}]
