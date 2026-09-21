@@ -136,6 +136,13 @@ def test_pipeline_identity_is_frozen_at_enqueue(tmp_path,skill):
     assert claimed['source_snapshot_digest']==digest(store.get(p['id'])['inventory'])
 
 
+def test_active_rewrite_keeps_the_configured_v2_pipeline(tmp_path,skill):
+    store,_,project,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v2').rewrite_active(project['id'],bundle)
+    assert job['pipeline']=='active_composition_v2'
+    assert store.job(job['id'])['pipeline']=='active_composition_v2'
+
+
 def test_active_calls_replay_saved_result_without_provider_cost(tmp_path,monkeypatch):
     engine=ActiveComposition(Production(Store(tmp_path),{}))
     monkeypatch.setattr('sourceloom.active_composition.Provider.call',lambda *a:pytest.fail('Repeated paid request'))

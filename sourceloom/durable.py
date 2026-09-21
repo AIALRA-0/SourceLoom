@@ -216,7 +216,7 @@ class Queue:
             if cx.execute("SELECT 1 FROM production_control WHERE project=? AND status='uncertain'",(pid,)).fetchone():
                 raise Conflict('原请求仍未确定，不能借重新改写重复提交')
             jid=identity();now=time.time()
-            job=initialize(dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
+            job=initialize(dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],pipeline=self.pipeline,
                 results={},repair_rounds=0,base_revision=p['revision'],source_digest=p['inventory']['digest'],
                 source_snapshot_digest=digest(p['inventory']),source=copy.deepcopy(p['inventory']),
                 goal=p['goal'],project_goal=p['goal'],transformation_mode=p.get('mode','rewrite'),
