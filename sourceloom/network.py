@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import PurePosixPath
 from bs4 import BeautifulSoup
 from markdown_it import MarkdownIt
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import quote, unquote, urljoin, urlsplit
 
 from .ingest import MAX_FILE
 
@@ -121,7 +121,13 @@ def fetch(url,allowed_types=None,timeout=12):
             if remaining<=0:raise ValueError('网页获取已达到等待上限')
             cx=PinnedHTTPS(parsed.hostname,address,min(4,remaining) if index+1<len(candidates) else remaining)
             try:
-                cx.request("GET",(parsed.path or "/")+("?"+parsed.query if parsed.query else ""),headers={"User-Agent":"SourceLoom/0.1 (+bounded document snapshot)","Accept-Encoding":"identity"})
+                # HTML permits literal spaces and other Unicode characters in
+                # discovered href/src values, while the HTTP request target
+                # requires their percent-encoded wire form.  Preserve existing
+                # escapes and URL separators instead of rejecting a valid asset.
+                path=quote(parsed.path or "/",safe="/%:@-._~!$&'()*+,;=")
+                query=quote(parsed.query,safe="=&?/:;+,%@-._~!$'()*")
+                cx.request("GET",path+("?"+query if query else ""),headers={"User-Agent":"SourceLoom/0.1 (+bounded document snapshot)","Accept-Encoding":"identity"})
                 r=cx.getresponse()
                 if r.status in (301,302,303,307,308):
                     url=urljoin(url,r.getheader("Location", ""))

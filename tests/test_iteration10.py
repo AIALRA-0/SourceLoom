@@ -180,6 +180,25 @@ def test_web_fetch_retries_only_transport_failure_on_a_validated_address(monkeyp
     assert len(closed)==len(attempts)
 
 
+def test_web_fetch_percent_encodes_literal_spaces_in_asset_path(monkeypatch):
+    from sourceloom import network
+    observed={}
+    monkeypatch.setattr(network,'public_addresses',lambda host:['public-address'])
+    class Connection:
+        def __init__(self,*args):pass
+        def request(self,method,path,headers=None):observed.update(method=method,path=path)
+        def getresponse(self):return self
+        status=200
+        def getheader(self,*args):return 'image/jpeg'
+        def read(self,*args):return b'image'
+        def close(self):pass
+    monkeypatch.setattr(network,'PinnedHTTPS',Connection)
+    raw,mime,_=network.fetch('https://example.org/gallery/Named Image.jpg?size=large image',
+        allowed_types={'image/jpeg'})
+    assert raw==b'image' and mime=='image/jpeg'
+    assert observed['path']=='/gallery/Named%20Image.jpg?size=large%20image'
+
+
 def test_plan_repair_receives_only_independently_unresolved_claims(tmp_path,skill,monkeypatch):
     from sourceloom.production import Production
     store,queue,p,bundle=prepared(tmp_path,skill);job=queue.enqueue(p['id'],bundle)
