@@ -241,6 +241,9 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
         p['inventory']['objects'] += [
             dict(id='content-image',kind='image',locator='source/figure[1]',text='',
                  resource_id='a'*64,source_scope='article_media'),
+            dict(id='content-media',kind='media',locator='source/iframe[1]',text='',
+                 resource_id='c'*64,target='https://player.vimeo.com/video/123',
+                 source_scope='article_media'),
             dict(id='chrome-image',kind='image',locator='source/header/img[1]',text='',
                  resource_id='b'*64,source_scope='site_chrome'),
         ]
@@ -250,10 +253,13 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
     classified=copy.deepcopy(store.get(project['id'])['inventory'])
     classified['classification_version']=1
     old.update(status='ready_for_review',source=classified,stage='active_plan',
-        active_groups=[['s1'],['content-image']],active_plans=[{'contract':{'purpose':'kept'}}],
+        active_groups=[['s1'],['content-image','content-media']],active_plans=[{'contract':{'purpose':'kept'}}],
         active_partition_index=1,
         visual_cards=[dict(source_id='content-image',visible_content='Chart',source_text='',
                            role='diagram',relationships=[],uncertainty=[],limitations=[],
+                           blocking_uncertainty=[]),
+                      dict(source_id='content-media',visible_content='Video frame',source_text='',
+                           role='video',relationships=[],uncertainty=[],limitations=[],
                            blocking_uncertainty=[])])
     store.put_job(old)
     interrupted=copy.deepcopy(old)
@@ -261,13 +267,14 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
                        status='cancelled',visual_cards=[],active_plans=[],active_partition_index=0)
     store.put_job(interrupted)
     published=copy.deepcopy(classified)
+    next(obj for obj in published['objects'] if obj['id']=='content-media')['text']='模型生成的视频说明'
     published.update(frozen=True,inventory_review={'status':'complete'},
         obligations=[dict(id='derived-obligation',object_id='s1',statement='same source')],
         digest='derived-published-inventory')
     store.change(project['id'],lambda p:p.update(active_job=None,inventory=published))
     rewritten=queue.rewrite_active(project['id'],bundle)
     assert rewritten['reused_visual_job']==old['id']
-    assert [card['source_id'] for card in rewritten['visual_cards']]==['content-image']
+    assert [card['source_id'] for card in rewritten['visual_cards']]==['content-image','content-media']
     assert rewritten['stage']=='active_plan' and rewritten['reused_plan_job']==old['id']
     assert rewritten['active_partition_index']==1
 

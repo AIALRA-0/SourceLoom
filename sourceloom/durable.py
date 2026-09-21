@@ -27,7 +27,7 @@ def material_signature(source):
     objects=[]
     for obj in source.get('objects',[]):
         row={key:obj.get(key) for key in ('id','kind','locator','resource_id','target','raw')}
-        if obj.get('kind') not in {'image','page'}:
+        if obj.get('kind') not in {'image','page','media'}:
             row['text']=obj.get('text','')
         objects.append(row)
     originals=[{key:item.get(key) for key in ('name','sha256','size')}
