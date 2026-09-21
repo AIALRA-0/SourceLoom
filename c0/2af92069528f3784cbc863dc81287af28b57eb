@@ -1,0 +1,30 @@
+sourceloom/source_context.py
+  s_36a381ab4bccf9::t_5a6430ee360364 89-97
+tests/test_rendered_web_materials.py
+  s_36a381ab4bccf9::t_5a6430ee360364 10,50-61
+  s_e8850ef125fb32::t_fead7bdf0ff5a1 62-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c02af92069528f3784cbc863dc81287af28b57eb",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_e8850ef125fb32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0457f-8774-7b32-a516-a974107d6ab1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
