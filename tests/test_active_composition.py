@@ -392,6 +392,19 @@ def test_empty_figure_link_to_full_size_image_is_administrative():
     assert result['link_briefs'][0]['role']=='administrative'
 
 
+def test_omitted_empty_image_wrapper_gets_a_deterministic_noncontent_role():
+    src=source();src['source_url']='https://example.org/article'
+    src['objects']=[dict(id='figure-link',kind='link',text='',locator='input/article/a',
+        target='https://substackcdn.com/image/fetch/example.png')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='figure-link',quote='')
+    p['nodes'][0].update(source_ids=['figure-link'],obligation_ids=['f1'])
+    p['link_briefs']=[]
+    result=validate_plan(p,src,['figure-link'],require_link_briefs=True)
+    assert result['link_briefs']==[dict(source_id='figure-link',role='administrative',
+        topic='',connection='',destination='',limitation='',evidence=[],unavailable_reason='')]
+
+
 def test_article_reference_cannot_be_declared_navigation_to_skip_research():
     src=source();src['source_url']='https://example.org/article'
     src['objects']=[dict(id='link',kind='link',text='Research background',

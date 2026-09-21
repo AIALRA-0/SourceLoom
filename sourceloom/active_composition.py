@@ -1315,10 +1315,17 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
         # turn asking for invented destination explanations.
         planned_ids={item['source_id'] for item in briefs}
         for sid in sorted(link_ids-planned_ids):
-            scope=objects[sid].get('source_scope')
-            if scope in {'site_chrome','source_metadata'}:
+            item=objects[sid];scope=item.get('source_scope');target=item.get('target','')
+            parsed=urlsplit(target);path=parsed.path.casefold()
+            image_wrapper=(not item.get('text','').strip() and
+                (parsed.hostname or '').casefold().endswith('substackcdn.com') or (not item.get('text','').strip() and
+                 path.endswith(('.png','.jpg','.jpeg','.gif','.webp','.svg'))))
+            duplicate_empty=(not item.get('text','').strip() and any(
+                objects[other].get('target')==target and objects[other].get('text','').strip()
+                for other in link_ids if other!=sid))
+            if scope in {'site_chrome','source_metadata'} or image_wrapper or duplicate_empty:
                 briefs.append(dict(source_id=sid,
-                    role='administrative' if scope=='source_metadata' else 'navigation',
+                    role='administrative' if scope=='source_metadata' or image_wrapper else 'navigation',
                     topic='',connection='',destination='',limitation='',evidence=[],
                     unavailable_reason=''))
         unique([item['source_id'] for item in briefs], '链接解释责任')
