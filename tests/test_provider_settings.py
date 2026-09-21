@@ -365,6 +365,22 @@ def test_responses_transport_normalizes_usage_and_keeps_wire_protocol(tmp_path, 
     assert row["body"]["actual_cny"] == pytest.approx(.00017145)
 
 
+def test_kuafu_chat_stream_reassembles_content_tools_and_usage():
+    from sourceloom.providers import chat_completion_from_sse,streaming_chat_enabled
+    lines=[
+        'data: {"id":"chat-1","model":"deepseek","choices":[{"delta":{"content":"{\\"ok\\":"},"finish_reason":null}]}',
+        'data: {"choices":[{"delta":{"content":"true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}',
+        'data: [DONE]',
+    ]
+    body=chat_completion_from_sse(lines)
+    assert body['choices'][0]['message']['content']=='{"ok":true}'
+    assert body['choices'][0]['finish_reason']=='stop'
+    assert body['usage']=={'prompt_tokens':10,'completion_tokens':2}
+    assert streaming_chat_enabled({'base_url':'https://api.kuafushe.cc/v1'},'chat_completions')
+    assert not streaming_chat_enabled({'base_url':'https://api.kuafushe.cc/v1'},'responses')
+    assert not streaming_chat_enabled({'base_url':'https://api.deepseek.com/v1'},'chat_completions')
+
+
 def test_kuafu_transient_401_replays_once_only_after_catalog_revalidation(tmp_path, skill, monkeypatch):
     store, queue, project, bundle = prepared(tmp_path, skill)
     job = queue.enqueue(project["id"], bundle)

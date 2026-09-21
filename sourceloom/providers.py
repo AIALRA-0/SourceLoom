@@ -278,6 +278,69 @@ def post_before_deadline(url,headers,body,deadline):
     return asyncio.run(request())
 
 
+def chat_completion_from_sse(lines):
+    """Reassemble OpenAI-compatible chat-completion SSE chunks."""
+    content=[];reasoning=[];tools={};usage={};model=None;finish=None;response_id=None
+    for line in lines:
+        line=line.strip()
+        if not line.startswith('data:'):continue
+        data=line[5:].strip()
+        if not data or data=='[DONE]':continue
+        chunk=json.loads(data)
+        response_id=response_id or chunk.get('id');model=model or chunk.get('model')
+        if chunk.get('usage'):usage=chunk['usage']
+        choice=(chunk.get('choices') or [{}])[0]
+        delta=choice.get('delta') or {}
+        if delta.get('content') is not None:content.append(delta['content'])
+        if delta.get('reasoning_content') is not None:reasoning.append(delta['reasoning_content'])
+        for part in delta.get('tool_calls') or []:
+            index=int(part.get('index',0));current=tools.setdefault(index,{
+                'id':'','type':'function','function':{'name':'','arguments':''}})
+            if part.get('id'):current['id']=part['id']
+            if part.get('type'):current['type']=part['type']
+            function=part.get('function') or {}
+            current['function']['name']+=function.get('name') or ''
+            current['function']['arguments']+=function.get('arguments') or ''
+        if choice.get('finish_reason') is not None:finish=choice['finish_reason']
+    message={'role':'assistant','content':''.join(content)}
+    if reasoning:message['reasoning_content']=''.join(reasoning)
+    if tools:message['tool_calls']=[tools[index] for index in sorted(tools)]
+    return {'id':response_id or 'streamed-chat-completion','object':'chat.completion',
+            'model':model,'choices':[{'index':0,'message':message,'finish_reason':finish or 'stop'}],
+            'usage':usage}
+
+
+def post_stream_before_deadline(url,headers,body,deadline):
+    """Read SSE within one total deadline and return a normal JSON response."""
+    async def request():
+        remaining=max(.001,deadline-time.time())
+        async with httpx.AsyncClient(timeout=remaining,follow_redirects=False) as client:
+            try:
+                async with client.stream('POST',url,headers=headers,json=body) as response:
+                    if response.status_code>=400:
+                        data=await response.aread()
+                        return httpx.Response(response.status_code,content=data,
+                            headers=response.headers,request=response.request)
+                    lines=[]
+                    async for line in response.aiter_lines():lines.append(line)
+                    assembled=chat_completion_from_sse(lines)
+                    return httpx.Response(response.status_code,json=assembled,
+                        headers=response.headers,request=response.request)
+            except TimeoutError:
+                raise Uncertain('本次流式模型响应超过等待上限，原请求及预留费用保留，不自动重发') from None
+    async def bounded():
+        try:return await asyncio.wait_for(request(),timeout=max(.001,deadline-time.time()))
+        except TimeoutError:
+            raise Uncertain('本次流式模型响应超过等待上限，原请求及预留费用保留，不自动重发') from None
+    return asyncio.run(bounded())
+
+
+def streaming_chat_enabled(config,protocol):
+    from urllib.parse import urlsplit
+    return (protocol=='chat_completions' and bool(config.get('kuafu_streaming',True))
+            and urlsplit(config.get('base_url','')).hostname=='api.kuafushe.cc')
+
+
 def kuafu_auth_is_current(config, headers, deadline):
     """Confirm a surprising Kuafu 401 before one safe replay.
 
@@ -825,6 +888,9 @@ class Provider:
                 else:
                     request['messages'] = messages
                     request['max_tokens'] = request.pop('max_output_tokens')
+                    if streaming_chat_enabled(c,protocol):
+                        request['stream']=True
+                        request['stream_options']={'include_usage':True}
                 if strict_output and protocol != 'responses':
                     endpoint='https://api.deepseek.com/beta'
                     request.update(tools=[dict(type='function',function=dict(name='emit_artifact',strict=True,
@@ -841,8 +907,10 @@ class Provider:
                                               or str(c.get('provider_id') or '').startswith('model-router')
                                               or c.get('responses_profile') == 'model_router'):
                     headers['Idempotency-Key']=call_id
-                response=post_before_deadline(
-                    request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
+                streaming=streaming_chat_enabled(c,protocol)
+                job['calls'][-1]['streaming']=streaming;self.store.put_job(job)
+                post=post_stream_before_deadline if streaming else post_before_deadline
+                response=post(request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
                     headers,request,deadline)
                 if response.status_code==401 and kuafu_auth_is_current(c,headers,deadline):
                     # The first request was rejected before inference. Replay
@@ -850,8 +918,7 @@ class Provider:
                     # model catalog.
                     job['calls'][-1].update(auth_revalidated=True,dispatch_attempts=2)
                     self.store.put_job(job)
-                    response=post_before_deadline(
-                        request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
+                    response=post(request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
                         headers,request,deadline)
                 if response.status_code >= 400:
                     from urllib.parse import urlsplit

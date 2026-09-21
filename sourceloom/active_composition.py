@@ -2194,6 +2194,13 @@ class ActiveComposition:
                         'is in another block; remove a concept from established_concepts and concept_evidence '
                         'when the draft does not actually establish it. Preserve the authored prose and all '
                         'source bindings exactly')
+                elif role=='active_write' and '实际知识增量与规划不符' in str(error):
+                    session['correction']['instruction']=(
+                        'Correct only knowledge_delta against the supplied node and completed prose. Set '
+                        'established_concepts to exactly node.establishes_concepts, explained_obligations '
+                        'to exactly node.obligation_ids, and unresolved_prerequisites to an empty list after '
+                        'confirming the prose explains them. Bind every concept_evidence quote to an exact '
+                        'substring of its named block. Preserve all authored blocks and source bindings exactly')
                 elif role=='active_review' and ('核对意见未准确引用实际正文' in str(error)
                                                 or '核对意见未准确引用当前原文' in str(error)):
                     session['correction']['instruction']=(
