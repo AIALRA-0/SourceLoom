@@ -2267,7 +2267,7 @@ class ActiveComposition:
                 # several independent source/link/concept constraints in turn.
                 # Contract-shape corrections precede the candidate draft and
                 # do not consume either of its two scoped content patch rounds.
-                correction_limit=(max(0,min(1,int(self.config.get('max_plan_repairs',1))))
+                correction_limit=(max(1,min(2,int(self.config.get('max_plan_repairs',2))))
                                   if role=='active_plan' else
                                   max(1,min(2,int(self.config.get('active_structure_correction_limit',2)))))
                 if session['corrections'] >= correction_limit:
