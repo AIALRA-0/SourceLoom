@@ -249,7 +249,11 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
     interrupted.update(id='newer-cancelled-visual',created=old['created']+1,
                        status='cancelled',visual_cards=[],active_plans=[],active_partition_index=0)
     store.put_job(interrupted)
-    store.change(project['id'],lambda p:p.update(active_job=None,inventory=copy.deepcopy(classified)))
+    published=copy.deepcopy(classified)
+    published.update(frozen=True,inventory_review={'status':'complete'},
+        obligations=[dict(id='derived-obligation',object_id='s1',statement='same source')],
+        digest='derived-published-inventory')
+    store.change(project['id'],lambda p:p.update(active_job=None,inventory=published))
     rewritten=queue.rewrite_active(project['id'],bundle)
     assert rewritten['reused_visual_job']==old['id']
     assert [card['source_id'] for card in rewritten['visual_cards']]==['content-image']

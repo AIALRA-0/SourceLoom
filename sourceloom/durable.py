@@ -15,6 +15,28 @@ def planning_policy_digest():
     return digest({name:(roles/(name+'.md')).read_text(encoding='utf-8') for name in names})
 
 
+def material_signature(source):
+    """Identify immutable supplied material across later audit annotations.
+
+    Published fallback inventories add obligations, review receipts and visual
+    text to the same source.  Those derived fields must not force the original
+    images through the vision model again.  Image identity comes from its saved
+    bytes; authored text remains part of the signature.
+    """
+    objects=[]
+    for obj in source.get('objects',[]):
+        row={key:obj.get(key) for key in ('id','kind','locator','resource_id','target','raw')}
+        if obj.get('kind') not in {'image','page'}:
+            row['text']=obj.get('text','')
+        objects.append(row)
+    originals=[{key:item.get(key) for key in ('name','sha256','size')}
+               for item in source.get('originals',[])]
+    resources=[{key:item.get(key) for key in ('id','name','sha256','size','mime')}
+               for item in source.get('resources',[])]
+    return digest(dict(source_url=source.get('source_url'),originals=originals,
+                       resources=resources,objects=objects))
+
+
 class Queue:
     def __init__(self, store, max_running=2, pipeline='legacy'):
         self.store = store
@@ -231,7 +253,7 @@ class Queue:
                 expected={o['id'] for o in old.get('source',{}).get('objects',[])
                     if o['kind'] in {'image','page'} and o.get('resource_id')
                     and not decorative_resource(o)}
-                if (expected and digest(old.get('source',{}))==job['source_snapshot_digest']
+                if (expected and material_signature(old.get('source',{}))==material_signature(job['source'])
                         and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
                         and {c['source_id'] for c in cards}==expected
                         and not any(c.get('blocking_uncertainty',c.get('uncertainty',[])) for c in cards)
@@ -246,7 +268,7 @@ class Queue:
                 completed=old.get('active_plans',[]);index=old.get('active_partition_index',0)
                 if (job.get('reused_visual_job') and completed and index==len(completed)
                         and index<len(old.get('active_groups',[]))
-                        and digest(old.get('source',{}))==job['source_snapshot_digest']
+                        and material_signature(old.get('source',{}))==material_signature(job['source'])
                         and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
                         and old.get('role_policy_digest')==job.get('role_policy_digest')):
                     job.update(active_groups=copy.deepcopy(old['active_groups']),
