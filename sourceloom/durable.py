@@ -223,8 +223,14 @@ class Queue:
                 writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')}))
             previous=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
             old=json.loads(previous[0]) if previous else {}
-            expected={o['id'] for o in p['inventory']['objects'] if o['kind'] in {'image','page'} and o.get('resource_id')}
             cards=old.get('visual_cards',[])
+            # Reuse exactly the semantic images that reached the visual model
+            # after chrome/layout classification. Raw inventory also contains
+            # avatars and control icons which intentionally have no visual card
+            from .visual_sources import decorative_resource
+            expected={o['id'] for o in old.get('source',{}).get('objects',[])
+                if o['kind'] in {'image','page'} and o.get('resource_id')
+                and not decorative_resource(o)}
             if (expected and old.get('source_snapshot_digest')==job['source_snapshot_digest']
                     and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
                     and {c['source_id'] for c in cards}==expected

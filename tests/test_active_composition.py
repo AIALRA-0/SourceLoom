@@ -221,6 +221,30 @@ def test_active_rewrite_keeps_the_configured_v2_pipeline(tmp_path,skill):
     assert store.job(job['id'])['pipeline']=='active_composition_v2'
 
 
+def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tmp_path,skill):
+    store,_,project,bundle=prepared(tmp_path,skill)
+    def add_images(p):
+        p['inventory']['objects'] += [
+            dict(id='content-image',kind='image',locator='source/figure[1]',text='',
+                 resource_id='a'*64,source_scope='article_media'),
+            dict(id='chrome-image',kind='image',locator='source/header/img[1]',text='',
+                 resource_id='b'*64,source_scope='site_chrome'),
+        ]
+    store.change(project['id'],add_images)
+    queue=Queue(store,pipeline='active_composition_v2')
+    old=queue.enqueue(project['id'],bundle)
+    old.update(status='ready_for_review',source=copy.deepcopy(store.get(project['id'])['inventory']),
+        visual_cards=[dict(source_id='content-image',visible_content='Chart',source_text='',
+                           role='diagram',relationships=[],uncertainty=[],limitations=[],
+                           blocking_uncertainty=[])])
+    store.put_job(old)
+    store.change(project['id'],lambda p:p.update(active_job=None))
+    rewritten=queue.rewrite_active(project['id'],bundle)
+    assert rewritten['stage']=='active_visual'
+    assert rewritten['reused_visual_job']==old['id']
+    assert [card['source_id'] for card in rewritten['visual_cards']]==['content-image']
+
+
 def test_active_call_honors_the_whole_job_deadline_before_dispatch(tmp_path,skill,monkeypatch):
     import time
     from sourceloom import active_contracts as A
