@@ -1666,6 +1666,9 @@ class ActiveComposition:
             return result
         if self.queue.cancelled(job['id'], self.owner):
             raise Conflict('任务已取消')
+        if (self.config.get('job_timeout',0)>0 and job.get('started') and
+                time.time()-job['started']>=self.config['job_timeout']):
+            raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
         if job.get('pending'):
             if job['pending'] != key:
                 raise Conflict('恢复阶段与已提交请求不一致')
