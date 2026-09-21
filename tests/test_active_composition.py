@@ -1281,6 +1281,9 @@ def test_english_source_heading_uses_the_approved_chinese_section_title():
     assert result['blocks'][0]['markdown']=='## 示例\n\nA paragraph'
     assert result['blocks'][1]['markdown']=='## 已经是中文标题\n'
     assert changed[0]['planned_section_id']=='n1'
+    english_plan={'blocks':[dict(id='n3-a',markdown='## 中文改写标题\n')]}
+    assert bind_planned_headings(english_plan,dict(id='n3',title='English Source Title'))==[]
+    assert english_plan['blocks'][0]['markdown']=='## 中文改写标题\n'
 
 
 def test_single_source_span_can_align_a_wrong_model_end_offset():

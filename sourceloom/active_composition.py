@@ -1238,7 +1238,8 @@ def heading_level_skips(draft):
 
 def bind_planned_headings(result,node):
     """Use approved Chinese section titles when a writer copied an English one."""
-    headings={n['id']:n['title'] for n in node.get('section_outline',[]) or [node]}
+    headings={n['id']:n['title'] for n in node.get('section_outline',[]) or [node]
+              if re.search(r'[\u3400-\u9fff]',n.get('title',''))}
     changed=[]
     for block in result['blocks']:
         section=next((sid for sid in headings if block['id'].startswith(sid+'-')),None)
@@ -2163,6 +2164,12 @@ class ActiveComposition:
                         'Keep the existing findings, checked obligations and format decisions; do not rewrite the article'
                         if role=='active_review' and '核对遗漏知识链接' in str(error)
                         else 'Correct only this invalid artifact; preserve all valid content and bindings')
+                if role=='active_write' and '标题照搬了未解释的英文' in str(error):
+                    session['correction']['instruction']=(
+                        'Rewrite every displayed heading as natural Chinese. Preserve necessary official '
+                        'English names in parentheses at first use and explain unfamiliar abbreviations; do '
+                        'not leave any heading as an unexplained copy of the English source title. Preserve '
+                        'all body content, source bindings, images and factual qualifications')
                 session['round'] += 1
         raise ValueError('按需取材仍未收敛，已保存资料与具体缺口，没有生成替代稿')
 
