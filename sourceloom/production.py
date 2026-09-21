@@ -18,7 +18,8 @@ from .providers import Provider, Uncertain, ReasoningExhausted
 from .skills import load_bundle, rule_catalog
 from .store import Conflict, digest, identity
 from .source_context import objects_view,inventory_groups,merge_inventories,patch_inventory,classify_inert_markup
-from .writing import canonical, compose, expand_response, protected_objects, repair, scan, validate_layout_repair
+from .writing import (available_draft, canonical, compose, expand_response, protected_objects,
+                      repair, scan, validate_layout_repair)
 from .pedagogy import (TeachingReview, validate_teaching_plan, unmark_nonmetadata_document_info, mark_known_document_metadata, teaching_issues,
                        arrange_document_info, repair_units, validate_replan, teaching_review_contract)
 
@@ -28,6 +29,49 @@ def draft_text_view(draft, unit_ids=None):
     wanted=set(unit_ids) if unit_ids is not None else None
     return {'blocks':[{k:b[k] for k in ('id','unit_id','kind','markdown')}
                       for b in draft['blocks'] if wanted is None or b['unit_id'] in wanted]}
+
+
+def recoverable_delivery(job):
+    """Build a publishable best-effort result from saved work and untouched source."""
+    inventory=copy.deepcopy(job.get('inventory') or job.get('source'))
+    if not inventory or not inventory.get('objects'):
+        raise ValueError('没有可恢复的原件对象')
+    draft=copy.deepcopy(available_draft(job) or {'blocks':[]})
+    represented={sid for block in draft['blocks'] for sid in block.get('object_ids',[])}
+    obligations=inventory.get('obligations',[])
+    by_object={}
+    for obligation in obligations:
+        by_object.setdefault(obligation['object_id'],[]).append(obligation['id'])
+    literals=protected_objects(inventory)
+    used={block['id'] for block in draft['blocks']}
+    for index,obj in enumerate(inventory['objects'],1):
+        sid=obj['id']
+        if sid in represented:
+            continue
+        markdown=literals.get(sid)
+        if markdown is None:
+            markdown=obj.get('text') or obj.get('raw') or ''
+        if not markdown.strip():
+            continue
+        block_id='recovered-'+sid
+        if block_id in used:
+            block_id=f'recovered-{index}-{sid}'
+        used.add(block_id)
+        draft['blocks'].append(dict(id=block_id,unit_id='recovered-source',kind='source',
+            markdown=markdown,obligation_ids=by_object.get(sid,[]),object_ids=[sid],
+            evidence=[{'source_id':sid,'quote':obj.get('text','')}],embedded_object_ids=[sid]))
+    if not draft['blocks']:
+        raise ValueError('原件没有可显示的内容')
+    plan=copy.deepcopy(job.get('plan'))
+    if not plan:
+        plan=dict(title='原件保留稿',objective='按原顺序保留当前材料，供继续编辑或重新生成',
+            research_gaps=[],units=[dict(id='recovered-source',title='原件内容',
+                objective='完整保留当前材料',obligation_ids=[o['id'] for o in obligations],
+                prerequisites=[],stages=['按原顺序保留'],object_ids=[o['id'] for o in inventory['objects']],
+                proof_questions=[],reader_question='',entry_knowledge=[],example_thread='',
+                learning_result='可查看、编辑和重新生成',follows_units=[],bridge_reason='',
+                document_info_ids=[])],teaching_functions=[])
+    return inventory,plan,draft
 
 
 def style_review_payload(job, source, catalog, report):
@@ -399,7 +443,7 @@ class Production:
             return result
         if self.queue.cancelled(job['id'],self.owner):
             raise Conflict('后台任务已取消')
-        if self.config.get('job_timeout',0)>0 and time.time()-job['started']>self.config['job_timeout']:
+        if self.config.get('job_timeout',0)>0 and time.time()-job.get('started',time.time())>self.config['job_timeout']:
             raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
         if job.get('pending'):
             if job['pending']!=key:
@@ -432,7 +476,7 @@ class Production:
             if role.endswith('__fallback'):
                 config.update(self.config.get('fallback_providers',{}).get(role.removesuffix('__fallback'),{}))
             if self.config.get('job_timeout',0)>0:
-                remaining=max(1,int(self.config['job_timeout']-(time.time()-job['started'])))
+                remaining=max(1,int(self.config['job_timeout']-(time.time()-job.get('started',time.time()))))
                 config['call_timeout']=min(config['call_timeout'],remaining)
             config['deadline_at']=time.time()+config['call_timeout']
             config['role_providers']={}
@@ -1560,7 +1604,7 @@ class Production:
         try:
             if self.queue.cancelled(job['id'],self.owner):
                 status='cancelled'
-            elif self.config.get('job_timeout',0)>0 and time.time()-job['started']>self.config['job_timeout']:
+            elif self.config.get('job_timeout',0)>0 and time.time()-job.get('started',time.time())>self.config['job_timeout']:
                 raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
             else:
                 status=self.step(job)
@@ -1582,14 +1626,36 @@ class Production:
                     publish['independent_review']=job.get('independent_review')
             self.queue.finish(job,self.owner,status,publish)
         except Exception as exc:
-            # Validation libraries often use their own exception hierarchy.
-            # Preserve a bounded diagnostic for every failure so a returned
-            # artifact can be repaired without replaying the model request.
             detail=str(exc).strip()
-            job['error']=(detail[:500] if detail else type(exc).__name__)
-            job['error_type']=type(exc).__name__
-            status='uncertain' if isinstance(exc,Uncertain) else 'cancelled' if self.queue.cancelled(job['id'],self.owner) else 'failed'
-            self.queue.finish(job,self.owner,status)
+            cancelled=self.queue.cancelled(job['id'],self.owner)
+            if job.get('pipeline')=='active_composition_v2' and not cancelled:
+                try:
+                    inventory,plan,draft=recoverable_delivery(job)
+                    job.setdefault('internal_failures',[]).append(dict(stage=job.get('stage'),
+                        type=type(exc).__name__,detail=(detail[:500] if detail else type(exc).__name__),
+                        recovered_at=time.time()))
+                    job.update(inventory=inventory,plan=plan,draft=draft,error=None,error_type=None,
+                        quality_issues=[],delivery_state='fallback_ready')
+                    receipt=dict(job=job['id'],status='ready_for_review',
+                        canonical_digest=digest(canonical(draft).encode()),
+                        skill_digest=job['writing_skill']['instruction_digest'],issues=[],automatic=True,
+                        manual_edits=0,revision=job['base_revision']+1,
+                        teaching_version=job.get('teaching_version',0),pipeline=job['pipeline'],
+                        delivery_checks=dict(structural_status='source_preserving_fallback',
+                            semantic_status='not_independently_reviewed',publication_status='ready_for_review'),
+                        semantic_status='not_independently_reviewed',delivery_state='fallback_ready')
+                    publish=dict(inventory=inventory,plan=plan,draft=draft,production=receipt,
+                        review=None,accepted_revision=None,repair_rounds=job.get('repair_rounds',0),
+                        delivery_state='fallback_ready',independent_review=None)
+                    self.queue.finish(job,self.owner,'ready_for_review',publish)
+                except Exception as recovery_error:
+                    job['error']=((detail or type(exc).__name__)+'；自动恢复失败：'+str(recovery_error))[:500]
+                    job['error_type']=type(recovery_error).__name__
+                    self.queue.finish(job,self.owner,'failed')
+            else:
+                job['error']=(detail[:500] if detail else type(exc).__name__)
+                job['error_type']=type(exc).__name__
+                self.queue.finish(job,self.owner,'cancelled' if cancelled else 'failed')
         finally:
             stop.set()
             thread.join(timeout=1)

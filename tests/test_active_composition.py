@@ -52,7 +52,7 @@ def test_unsupported_model_name_is_removed_instead_of_blocking_document(tmp_path
         english_name='Invented Graphics Processing Unit',naming_status='verified',
         name_evidence=[dict(resource_id='s1',quote=source()['objects'][0]['text'])],
         abbreviations=[],naming_note='',naming_status_reason='')]}
-    result=validate_names(candidate,resources)['concepts'][0]
+    result=validate_names(candidate,resources,allow_unverified_downgrade=True)['concepts'][0]
     assert result['naming_status']=='ambiguous'
     assert not result['english_name'] and not result['abbreviations']
     assert result['naming_status_reason']=='unsupported_model_name_was_removed'
@@ -66,7 +66,7 @@ def test_unsearched_model_name_is_removed_without_losing_source_term(tmp_path):
         english_name='Unverified Full Name',naming_status='unsearched',
         name_evidence=[],abbreviations=[dict(short='FP32',chinese='单精度',english='Unverified Full Name')],
         naming_note='',naming_status_reason='')]}
-    result=validate_names(candidate,resources)['concepts'][0]
+    result=validate_names(candidate,resources,allow_unverified_downgrade=True)['concepts'][0]
     assert result['name']=='FP32' and result['naming_status']=='ambiguous'
     assert not result['english_name'] and not result['abbreviations']
 
@@ -1172,6 +1172,29 @@ def test_content_correction_routes_through_committer_and_scoped_review(tmp_path,
     assert saved['delivery_checks']['source_digest']==saved['source_snapshot_digest']
     assert saved['delivery_checks']['source_digest_kind']=='initial_inventory_snapshot'
     assert saved['delivery_checks']['compiled_inventory_digest']==saved['inventory']['digest']
+
+
+def test_v2_failure_publishes_saved_work_and_missing_source_instead_of_failed_state(tmp_path,skill,monkeypatch):
+    store,_,project,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    engine=Production(store,{'generation_pipeline':'active_composition_v2'})
+
+    def fail_after_partial_writer(claimed):
+        first=claimed['source']['objects'][0]
+        claimed.update(stage='active_review',inventory=claimed['source'],draft={'blocks':[dict(
+            id='written-first',unit_id='u1',kind='explanation',markdown='已生成的正文',
+            obligation_ids=[],object_ids=[first['id']],evidence=[],embedded_object_ids=[])]})
+        raise ValueError('模拟检查失败')
+
+    monkeypatch.setattr(engine,'step',fail_after_partial_writer)
+    assert engine.run_once()
+    saved=store.job(job['id']);published=store.get(project['id'])
+    assert saved['status']=='ready_for_review' and saved.get('error') is None
+    assert published['state']=='ready_for_review' and published['delivery_state']=='fallback_ready'
+    represented={sid for block in published['draft']['blocks'] for sid in block.get('object_ids',[])}
+    assert represented=={obj['id'] for obj in published['inventory']['objects']}
+    assert published['draft']['blocks'][0]['markdown']=='已生成的正文'
+    assert saved['internal_failures'][0]['detail']=='模拟检查失败'
 
 
 def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code():

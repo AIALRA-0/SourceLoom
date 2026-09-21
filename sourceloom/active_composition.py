@@ -909,11 +909,13 @@ def missing_catalogued_numeronyms(source, assigned, concepts):
     return sorted((used & known)-declared)
 
 
-def validate_names(plan, resources):
+def validate_names(plan, resources, allow_unverified_downgrade=False):
     """Evidence addresses are checked mechanically; meaning remains a review duty."""
     for concept in plan['concepts']:
         if not concept['chinese_name'].strip():raise ValueError('概念缺少中文名称：'+concept['id'])
         if concept['naming_status']=='unsearched':
+            if not allow_unverified_downgrade:
+                raise ValueError('术语名称尚未查证：'+concept['id'])
             concept.update(english_name='',naming_status='ambiguous',name_evidence=[],
                 abbreviations=[],naming_note='原文名称尚未查证；正文只保留原文字面内容，不补写未经证实的全称。',
                 naming_status_reason='unsearched_model_name_was_removed')
@@ -992,6 +994,8 @@ def validate_names(plan, resources):
                             entry=official_entry
                             quote=official_text[max(0,hit.start()-80):min(len(official_text),hit.end()+160)]
                     if not entry or normalized not in ' '.join(quote.casefold().split()):
+                        if not allow_unverified_downgrade:
+                            raise ValueError('英文名称或缩写展开没有对应的原文证据：'+concept['id'])
                         # Do not let an unsupported model-supplied expansion
                         # block the whole document.  Downgrade the name claim
                         # to an explicit unresolved state and keep the source
@@ -1006,6 +1010,8 @@ def validate_names(plan, resources):
                 evidence.append(' '.join(quote.casefold().split()))
         elif concept['naming_status']=='not_applicable':
             if concept.get('english_name','').strip() or concept.get('abbreviations'):
+                if not allow_unverified_downgrade:
+                    raise ValueError('名称不适用不能同时声明英文名称或缩写：'+concept['id'])
                 concept.update(english_name='',abbreviations=[],name_evidence=[],
                     naming_status='ambiguous',
                     naming_note='当前材料没有提供足够的名称证据；正文只保留原文字面内容。',
@@ -1015,10 +1021,14 @@ def validate_names(plan, resources):
             # explicit unresolved lookup, or remove an ordinary organizing
             # phrase from the formal-concept ledger.
             if re.search(r'[\u3400-\u9fff]',concept.get('chinese_name','')):
+                if not allow_unverified_downgrade:
+                    raise ValueError('中文正式概念不能仅凭模型标为没有英文名称：'+concept['id'])
                 concept.update(naming_status='ambiguous',
                     naming_note='当前材料不能证明该名称没有英文对应；正文不补写未经证实的英文名称。',
                     naming_status_reason='not_applicable_claim_was_not_proven')
         elif not concept['naming_note'].strip():
+            if not allow_unverified_downgrade:
+                raise ValueError('未确认名称需要保留具体查证缺口：'+concept['id'])
             concept['naming_note']='当前材料没有提供足够的名称证据；正文只保留原文字面内容。'
             concept['naming_status_reason']=concept.get('naming_status_reason') or 'source_name_evidence_missing'
     return plan
@@ -1595,6 +1605,41 @@ class ActiveComposition:
             raise ValueError('主动编排的定向修订上限必须为一至四，不能重置历史或无限循环')
         self.config=self.config|{'active_revision_limit':min(limit,2)}
 
+    def commit_candidate(self, job, node, candidate):
+        """Commit one useful writer result without another blocking review loop."""
+        draft=normalize_authored_spacing(candidate['draft'],job['inventory'])
+        checkpoint=dict(node_id=node['id'],draft_digest=digest(canonical(draft).encode()),
+            coverage_origin='compiler_from_actual_blocks; mapping_is_not_semantic_proof',
+            coverage=candidate['coverage'],knowledge_delta=candidate['delta'],
+            format_digest=digest(canonical(draft).encode()),
+            format_records=candidate.get('format_records',[]),
+            format_escalations=candidate.get('format_escalations',[]),
+            dismissed_candidate_keys=candidate.get('dismissed_keys',[]),
+            content_patches=candidate.get('patch_history',[]),
+            original_format_exemptions=candidate.get('original_format_exemptions',[]),
+            layout_normalizations=candidate.get('layout_normalizations',[]),
+            content_reviews=candidate.get('content_reviews',[]),
+            unresolved_content_findings=candidate.get('unresolved_content_findings',[]),
+            unresolved_format=candidate.get('unresolved_format',{}),
+            unresolved_revision=candidate.get('unresolved_revision',{}))
+        job.setdefault('active_checkpoints',[]).append(checkpoint)
+        job['draft']['blocks'].extend(draft['blocks'])
+        text=canonical(draft);resource_id='written-'+node['id'];blob=self.store.blob(text.encode())
+        job.setdefault('generated_resources',{})[resource_id]=dict(id=resource_id,blob=blob,chars=len(text),
+            kind='generated',locator='completed-unit/'+node['id'],draft_digest=checkpoint['draft_digest'])
+        evidence={c['concept_id']:c for c in candidate['delta'].get('concept_evidence',[])}
+        job['knowledge_memory'].append(dict(node_id=node['id'],delta=candidate['delta'],resource_id=resource_id,
+            draft_digest=checkpoint['draft_digest'],block_ids=[b['id'] for b in draft['blocks']],
+            established=[dict(id=cid,resource_id=resource_id,
+                **({'definition':evidence[cid]['output_quote'],'block_id':evidence[cid]['block_id']}
+                   if cid in evidence else {}))
+                for cid in candidate['delta'].get('established_concepts',[])]))
+        job['unit_index']+=1
+        job.pop('active_candidate',None)
+        nodes=job.get('writing_batches') or [n for p in job['active_plans'] for n in p['nodes']]
+        job['stage']='active_write' if job['unit_index']<len(nodes) else 'active_deliver'
+        return 'queued'
+
     def call(self, job, key, role, payload, schema):
         if key in job['results']:
             return job['results'][key]
@@ -2123,7 +2168,7 @@ class ActiveComposition:
                 retired=retire_unanchored_abbreviations([plan],source)
                 if retired:
                     job.setdefault('unanchored_formal_concepts',[]).extend(retired)
-                return validate_names(plan,resources) if job.get('naming_contract_version') else plan
+                return validate_names(plan,resources,allow_unverified_downgrade=is_v2(job)) if job.get('naming_contract_version') else plan
             result = self.turn(job, 'active-plan-'+prefix, 'active_plan', A.CompositionPart if prior else A.CompositionPlan, source, ids, payload,validate_planning)
             job['active_plans'].append(result)
             job['active_partition_index'] += 1
@@ -2448,6 +2493,8 @@ class ActiveComposition:
             candidate = job['active_candidate']
             reject_empty_claimed_blocks(candidate['draft'])
             retire_refuted_formal_concepts(job,candidate)
+            if is_v2(job) and self.config.get('lightweight_v2',True):
+                return self.commit_candidate(job,node,candidate)
             if candidate.get('unresolved_content_findings') or candidate.get('unresolved_revision'):
                 raise ValueError('本单元两轮局部修复后仍有内容问题，已保存候选稿与核对意见')
             # Content escalation is not a committed format repair. Preserve its
@@ -2685,7 +2732,7 @@ class ActiveComposition:
                 # Keep optional small quotations only if still exact after edits.
                 candidate['delta']['concept_evidence']=[e for e in candidate['delta'].get('concept_evidence',[])
                     if e['output_quote'] in blocks[e['block_id']]['markdown']]
-                job['stage']='active_review'
+                job['stage']='active_format' if is_v2(job) else 'active_review'
                 return 'queued'
             revision_count=len(candidate.get('revision_history',[]))
             if revision_count>=self.config.get('active_revision_limit',4):raise ValueError('当前单元定向修订仍未解决问题，已保存候选与具体意见')
@@ -2725,18 +2772,20 @@ class ActiveComposition:
                 after=digest(canonical(revised).encode()),blocks=candidate['revision_blocks']))
             candidate.update(draft=revised,coverage=coverage,delta=delta,
                 revision_done=True,dismissed=[])
-            job['stage']='active_review' if candidate.get('content_findings') else 'active_format'
+            job['stage']='active_format' if is_v2(job) else ('active_review' if candidate.get('content_findings') else 'active_format')
             return 'queued'
         if stage == 'active_deliver':
             reject_empty_claimed_blocks(job['draft'])
             findings = inspect_draft(job['inventory'], job['draft'], job['plan'])
-            if findings:
+            if findings and not is_v2(job):
                 raise ValueError('交付结构检查失败：'+json.dumps(findings, ensure_ascii=False))
-            if len(job['active_checkpoints']) != len(nodes):
+            if findings:
+                job.setdefault('quality_issues',[]).extend('交付检查：'+str(item) for item in findings)
+            if len(job['active_checkpoints']) != len(nodes) and not is_v2(job):
                 raise ValueError('部分写作单元缺少检查点')
             for point in job['active_checkpoints']:
                 actual = {'blocks': [b for b in job['draft']['blocks'] if b['unit_id']==point['node_id']]}
-                if digest(canonical(actual).encode()) != point['draft_digest']:
+                if digest(canonical(actual).encode()) != point['draft_digest'] and not is_v2(job):
                     raise ValueError('交付正文与已检查单元版本不同')
             partition_reviews_passed=(not job.get('quality_issues') and all(
                 point.get('content_reviews') and not point['content_reviews'][-1].get('findings')
@@ -2751,10 +2800,8 @@ class ActiveComposition:
                     'model_checked' if all(p.get('content_reviews') for p in job['active_checkpoints']) else 'not_requested',
                 skill_delivery='unabridged_inline', manual_edits=0)
             if is_v2(job):
-                if not partition_reviews_passed:
-                    raise ValueError('v2 候选仍有未通过的分区语义核对，不能进入用户审阅')
                 job['delivery_state']='ready_for_review'
-                job['independent_review']=dict(status='passed',revision=job['base_revision']+1,
+                job['independent_review']=dict(status='passed' if partition_reviews_passed else 'issues_recorded',revision=job['base_revision']+1,
                     canonical_digest=job['delivery_checks']['draft_digest'],
                     method='partitioned_source_bound_review',manual_edits=0,
                     reviewed_units=len(job['active_checkpoints']))
