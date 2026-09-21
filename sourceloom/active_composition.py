@@ -1416,11 +1416,17 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
         node['establishes_concepts']=[c for c in node['establishes_concepts'] if c not in repeated]
         # Bind a declared but unplaced concept to its first actual use only when
         # its prerequisites are already available; undefined/cyclic references fail
-        for cid in node['requires_concepts']:
-            if cid not in established and cid not in explicitly_established and cid in concepts:
-                if set(concepts[cid]['requires'])<=established|set(node['establishes_concepts']):
-                    node['establishes_concepts'].append(cid)
-                    explicitly_established.add(cid)
+        pending=list(node['requires_concepts'])
+        while pending:
+            added=[]
+            for cid in pending:
+                if cid not in established and cid not in explicitly_established and cid in concepts:
+                    if set(concepts[cid]['requires'])<=established|set(node['establishes_concepts']):
+                        node['establishes_concepts'].append(cid)
+                        explicitly_established.add(cid)
+                        added.append(cid)
+            if not added:break
+            pending=[cid for cid in pending if cid not in added]
         if not set(node['depends_on']) <= seen or not set(node['requires_concepts']) <= established|set(node['establishes_concepts']):
             raise ValueError('编排依赖了尚未建立的节点或概念：' + node['id'])
         # A concept defined inside this unit is not reader entry knowledge

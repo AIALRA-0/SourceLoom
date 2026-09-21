@@ -44,6 +44,20 @@ def test_internal_english_plan_title_does_not_block_generation():
     assert validate_plan(candidate,source(),['s1','s2'])['nodes'][0]['title']=='Compute Throughput'
 
 
+def test_same_node_concepts_are_established_in_dependency_order():
+    candidate=plan();candidate['obligations']=candidate['obligations'][:1]
+    candidate['nodes'][0].update(source_ids=['s1'],obligation_ids=['f1'],
+        requires_concepts=['advanced','base'],establishes_concepts=[])
+    common=dict(definition='Source concept',source_ids=['s1'],chinese_name='',english_name='',
+        naming_status='unsearched',name_evidence=[],abbreviations=[],naming_note='',
+        naming_status_reason='')
+    candidate['concepts']=[dict(id='base',name='Base',requires=[],**common),
+        dict(id='advanced',name='Advanced',requires=['base'],**common)]
+    validated=validate_plan(candidate,source(),['s1'])
+    assert validated['nodes'][0]['establishes_concepts']==['base','advanced']
+    assert validated['nodes'][0]['requires_concepts']==[]
+
+
 def test_unsupported_model_name_is_removed_instead_of_blocking_document(tmp_path):
     from sourceloom.active_composition import validate_names
     resources=Resources(Store(tmp_path),source());resources.read('s1')
