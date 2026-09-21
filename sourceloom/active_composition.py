@@ -1407,6 +1407,19 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
                 target.hostname==current_page.hostname and
                 current_page.path.startswith(target.path.rstrip('/')+'/') and
                 any(word in label for word in ('home','index','tips','目录','主页')))):
+            resource_id=(resources.state.get('url_index',{}).get(
+                canonical_url(obj.get('target',''))) if resources else None)
+            entry=resources.state.get('entries',{}).get(resource_id,{}) if resource_id else {}
+            if entry.get('kind')=='external':
+                evidence=resources.text(resource_id).strip()
+                if evidence:
+                    quote=evidence[:min(600,len(evidence))]
+                    lines=[line.strip() for line in quote.splitlines() if line.strip()]
+                    brief.update(role='content',topic=obj.get('text','').strip() or lines[0],
+                        connection='原文在当前位置提供该链接，用于补充当前表述所依据的外部内容',
+                        destination='；'.join(lines[:3])[:500],limitation=brief.get('limitation',''),
+                        evidence=[dict(resource_id=resource_id,quote=quote)],unavailable_reason='')
+                    continue
             raise ValueError('正文知识链接不能仅按导航链接跳过目标内容：'+brief['source_id'])
     obligations = {o['id']: o for o in plan['obligations']}
     validate_evidence_plan(plan, obligations, objects, assigned, resources)

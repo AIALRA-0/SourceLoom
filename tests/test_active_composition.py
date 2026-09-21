@@ -762,6 +762,26 @@ def test_empty_figure_image_link_is_archived_without_hiding_the_image():
     assert not decorative_resource(image)
 
 
+def test_prefetched_body_link_cannot_be_dropped_as_navigation(tmp_path):
+    from sourceloom.active_composition import validate_plan
+    from sourceloom.active_resources import Resources
+    src=source();src['source_url']='https://example.org/article'
+    src['objects']=[dict(id='link',kind='link',text='defined in advance',
+                         locator='snapshot.html/article/p/a',target='https://docs.example.org/')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='defined in advance')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    p['link_briefs']=[dict(source_id='link',role='navigation',topic='',connection='',destination='',
+                           limitation='',evidence=[],unavailable_reason='')]
+    resources=Resources(Store(tmp_path),src)
+    resources.add('external-doc','Introduction\nThe option is fixed before execution',kind='external',
+                  locator='https://docs.example.org/',original_url='https://docs.example.org/')
+    resources.read('external-doc')
+    result=validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    brief=result['link_briefs'][0]
+    assert brief['role']=='content' and brief['evidence'][0]['resource_id']=='external-doc'
+
+
 def test_visual_card_archives_a_confirmed_textless_decorative_icon():
     from sourceloom.visual_sources import decorative_resource
     icon=dict(kind='image',text='A chain icon',visual_card=dict(
