@@ -1197,6 +1197,26 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
     merge_adjacent_heading_only_nodes(plan,objects)
     from urllib.parse import urlsplit
     current_page=urlsplit(source.get('source_url',''))
+    # Article bylines often expose the same author profile twice: an empty
+    # avatar anchor and a labelled author-name anchor.  A profile URL in this
+    # exact duplicate shape is source metadata, not a knowledge link whose
+    # destination must be researched and explained.  Resolve it
+    # deterministically so a planner cannot oscillate between navigation and
+    # content across correction rounds.
+    profile_targets={}
+    for sid in assigned:
+        obj=objects.get(sid,{})
+        if obj.get('kind')!='link' or not obj.get('target'):continue
+        profile_targets.setdefault(obj['target'],[]).append(obj)
+    byline_targets=set()
+    for target,items in profile_targets.items():
+        parsed=urlsplit(target)
+        profile_path=bool(re.match(r'^/@[^/]+/?$',parsed.path)
+                          or re.search(r'/(?:author|authors|user|users)/[^/]+/?$',parsed.path,re.I))
+        if (profile_path and len(items)>1 and
+                any(not item.get('text','').strip() for item in items) and
+                any(item.get('text','').strip() for item in items)):
+            byline_targets.add(target)
     for brief in plan['link_briefs']:
         obj=objects.get(brief['source_id'],{})
         target=urlsplit(obj.get('target',''))
@@ -1206,6 +1226,9 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
             target.path.rstrip('/')==current_page.path.rstrip('/') and bool(target.fragment))
         if same_page_anchor:
             brief.update(role='navigation',topic='',connection='',destination='',
+                         limitation='',evidence=[],unavailable_reason='')
+        if obj.get('target') in byline_targets:
+            brief.update(role='administrative',topic='',connection='',destination='',
                          limitation='',evidence=[],unavailable_reason='')
         if (target.hostname and target.hostname==current_page.hostname
             and current_page.path.startswith(target.path.rstrip('/')+'/')

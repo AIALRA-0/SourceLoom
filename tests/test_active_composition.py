@@ -304,6 +304,25 @@ def test_site_chrome_and_author_links_get_structural_roles_without_model_researc
         ('nav','navigation'),('author','administrative')}
 
 
+def test_duplicate_avatar_and_author_profile_links_are_administrative():
+    import copy
+    src=source();src['source_url']='https://example.org/article'
+    src['objects']=[
+        dict(id='avatar',kind='link',text='',locator='input/article/header/a[1]',
+             target='https://profiles.example/@writer'),
+        dict(id='author',kind='link',text='Writer Name',locator='input/article/header/a[2]',
+             target='https://profiles.example/@writer'),
+    ]
+    p=plan();first=p['obligations'][0];first.update(source_id='avatar',quote='')
+    second=copy.deepcopy(first);second.update(id='f2',source_id='author',quote='Writer Name')
+    p['obligations']=[first,second]
+    p['nodes'][0].update(source_ids=['avatar','author'],obligation_ids=['f1','f2'])
+    p['link_briefs']=[dict(source_id=sid,role='navigation') for sid in ('avatar','author')]
+    result=validate_plan(p,src,['avatar','author'],require_link_briefs=True)
+    assert {(b['source_id'],b['role']) for b in result['link_briefs']}=={
+        ('avatar','administrative'),('author','administrative')}
+
+
 def test_article_reference_cannot_be_declared_navigation_to_skip_research():
     src=source();src['source_url']='https://example.org/article'
     src['objects']=[dict(id='link',kind='link',text='Research background',
