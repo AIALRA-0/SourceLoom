@@ -1195,7 +1195,7 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
         for concept in plan['concepts']:
             concept['source_ids']=[sid for sid in concept['source_ids'] if sid not in archived]
     merge_adjacent_heading_only_nodes(plan,objects)
-    from urllib.parse import urlsplit
+    from urllib.parse import unquote,urlsplit
     current_page=urlsplit(source.get('source_url',''))
     # Article bylines often expose the same author profile twice: an empty
     # avatar anchor and a labelled author-name anchor.  A profile URL in this
@@ -1220,6 +1220,10 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
     for brief in plan['link_briefs']:
         obj=objects.get(brief['source_id'],{})
         target=urlsplit(obj.get('target',''))
+        decoded_target=unquote(obj.get('target','')).lower()
+        figure_image_link=(not obj.get('text','').strip()
+            and '/figure[' in obj.get('locator','')
+            and bool(re.search(r'\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)',decoded_target)))
         path=target.path.rstrip('/').rsplit('/',1)[-1].lower()
         label=obj.get('text','').strip().lower()
         same_page_anchor=(target.hostname==current_page.hostname and
@@ -1228,6 +1232,9 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
             brief.update(role='navigation',topic='',connection='',destination='',
                          limitation='',evidence=[],unavailable_reason='')
         if obj.get('target') in byline_targets:
+            brief.update(role='administrative',topic='',connection='',destination='',
+                         limitation='',evidence=[],unavailable_reason='')
+        if figure_image_link:
             brief.update(role='administrative',topic='',connection='',destination='',
                          limitation='',evidence=[],unavailable_reason='')
         if (target.hostname and target.hostname==current_page.hostname
