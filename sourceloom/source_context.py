@@ -58,10 +58,19 @@ def patch_inventory(original,patch):
 
 
 def classify_inert_markup(source):
-    """Preserve complete web script/style elements as inert source metadata."""
+    """Preserve inert markup while excluding proven contentless containers."""
     import copy,re
     result=copy.deepcopy(source);converted=set()
     for obj in result['objects']:
+        if obj.get('kind')=='heading' and not obj.get('text','').strip():
+            from bs4 import BeautifulSoup
+            node=BeautifulSoup(obj.get('raw',''),'html.parser').find(re.compile(r'^h[1-6]$'))
+            if (node and not node.get_text(' ',strip=True)
+                    and not node.find(['img','svg','video','audio','canvas','table','a'])):
+                obj['source_scope']='layout_decorative'
+                obj['visual_classification']=dict(
+                    method='source_dom_empty_heading',source_role='layout_decorative')
+            continue
         if obj['kind']!='unknown':continue
         raw=obj.get('raw','')
         match=re.fullmatch(r'<(script|style)\b[^>]*>[\s\S]*</\1\s*>',raw,re.I)

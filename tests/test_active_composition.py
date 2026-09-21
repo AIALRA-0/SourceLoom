@@ -857,6 +857,18 @@ def test_redirected_login_page_is_not_mistaken_for_image_led_link_content(tmp_pa
     assert not any(entry.get('kind')=='external' for entry in resource.state['entries'].values())
 
 
+def test_empty_heading_is_archived_as_layout_without_discarding_source_markup():
+    from sourceloom.source_context import classify_inert_markup
+    from sourceloom.visual_sources import decorative_resource
+    src={'objects':[dict(id='empty-heading',kind='heading',text='',
+        raw='<h2 class="section-spacer"><!-- placeholder --></h2>',locator='page/h2[3]')]}
+    classified=classify_inert_markup(src)
+    heading=classified['objects'][0]
+    assert decorative_resource(heading)
+    assert heading['raw']==src['objects'][0]['raw']
+    assert heading['visual_classification']['method']=='source_dom_empty_heading'
+
+
 def test_standalone_heading_merges_into_its_following_code_unit():
     from sourceloom.active_composition import merge_adjacent_heading_only_nodes
     heading=dict(id='h',title='简单示例',source_ids=['s1'],obligation_ids=['f1'],
