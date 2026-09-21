@@ -231,7 +231,7 @@ class Queue:
             expected={o['id'] for o in old.get('source',{}).get('objects',[])
                 if o['kind'] in {'image','page'} and o.get('resource_id')
                 and not decorative_resource(o)}
-            if (expected and old.get('source_snapshot_digest')==job['source_snapshot_digest']
+            if (expected and digest(old.get('source',{}))==job['source_snapshot_digest']
                     and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
                     and {c['source_id'] for c in cards}==expected
                     and not any(c.get('blocking_uncertainty',c.get('uncertainty',[])) for c in cards)

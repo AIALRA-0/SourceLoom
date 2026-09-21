@@ -233,12 +233,14 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
     store.change(project['id'],add_images)
     queue=Queue(store,pipeline='active_composition_v2')
     old=queue.enqueue(project['id'],bundle)
-    old.update(status='ready_for_review',source=copy.deepcopy(store.get(project['id'])['inventory']),
+    classified=copy.deepcopy(store.get(project['id'])['inventory'])
+    classified['classification_version']=1
+    old.update(status='ready_for_review',source=classified,
         visual_cards=[dict(source_id='content-image',visible_content='Chart',source_text='',
                            role='diagram',relationships=[],uncertainty=[],limitations=[],
                            blocking_uncertainty=[])])
     store.put_job(old)
-    store.change(project['id'],lambda p:p.update(active_job=None))
+    store.change(project['id'],lambda p:p.update(active_job=None,inventory=copy.deepcopy(classified)))
     rewritten=queue.rewrite_active(project['id'],bundle)
     assert rewritten['stage']=='active_visual'
     assert rewritten['reused_visual_job']==old['id']
