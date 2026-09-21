@@ -1746,7 +1746,7 @@ def test_v2_explicit_gateway_timeout_retries_current_saved_stage_once(tmp_path,s
     assert published['delivery_state']=='recovered_ready_for_review'
 
 
-def test_v2_stateless_transport_uncertainty_retries_once_before_delivery(tmp_path,skill,monkeypatch):
+def test_v2_stateless_transport_uncertainty_retries_twice_before_delivery(tmp_path,skill,monkeypatch):
     from sourceloom.providers import Uncertain
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
@@ -1763,6 +1763,10 @@ def test_v2_stateless_transport_uncertainty_retries_once_before_delivery(tmp_pat
     assert saved['transient_gateway_retries']['active-plan-p1-turn-1']['attempts']==1
     assert saved['internal_recoveries'][0]['type']=='unqueryable_transport'
     assert saved['transport_fallback_steps']['active-plan-p1-turn-1']=='transport-call'
+    assert engine.run_once()
+    saved=store.job(job['id'])
+    assert saved['status']=='queued'
+    assert saved['transient_gateway_retries']['active-plan-p1-turn-1']['attempts']==2
     assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
     assert saved['status']=='ready_for_review'
