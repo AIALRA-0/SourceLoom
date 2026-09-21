@@ -2184,6 +2184,13 @@ class ActiveComposition:
                         'that block to the same source_id and state only what the saved visual card, caption '
                         'and adjacent source text support. Preserve the existing Chinese headings and every '
                         'other already-correct block exactly')
+                elif role=='active_write' and '概念记忆的引文不在实际正文中' in str(error):
+                    session['correction']['instruction']=(
+                        'For every concept_evidence entry, copy output_quote as an exact non-empty substring '
+                        'from the named block in this same WrittenUnit. Rebind block_id if the exact sentence '
+                        'is in another block; remove a concept from established_concepts and concept_evidence '
+                        'when the draft does not actually establish it. Preserve the authored prose and all '
+                        'source bindings exactly')
                 session['round'] += 1
         raise ValueError('按需取材仍未收敛，已保存资料与具体缺口，没有生成替代稿')
 

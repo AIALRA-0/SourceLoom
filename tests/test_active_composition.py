@@ -294,6 +294,36 @@ def test_active_rewrite_reuses_complete_planning_before_first_writer(tmp_path,sk
     assert rewritten.get('writing_batches',[])==[]
 
 
+def test_active_rewrite_resumes_from_last_completed_writing_batch(tmp_path,skill):
+    store,_,project,bundle=prepared(tmp_path,skill)
+    store.change(project['id'],lambda p:p['inventory']['objects'].append(dict(
+        id='content-image',kind='image',locator='source/figure[1]',text='',
+        resource_id='a'*64,source_scope='article_media')))
+    queue=Queue(store,pipeline='active_composition_v2')
+    old=queue.enqueue(project['id'],bundle)
+    classified=copy.deepcopy(store.get(project['id'])['inventory'])
+    block=dict(id='done-b1',unit_id='write-1',kind='explanation',markdown='已完成正文',
+        obligation_ids=[],object_ids=['s1'],evidence=[],embedded_object_ids=[])
+    checkpoint=dict(node_id='write-1',draft_digest='saved',unresolved_content_findings=[],
+        unresolved_revision={},unresolved_format={})
+    old.update(status='ready_for_review',source=classified,stage='active_write',
+        active_groups=[['s1']],active_plans=[{'contract':{'purpose':'kept'}}],
+        active_partition_index=1,writing_batches=[{'id':'write-1'},{'id':'write-2'}],
+        unit_index=1,active_checkpoints=[checkpoint],draft={'blocks':[block]},
+        inventory=copy.deepcopy(classified),plan={'title':'validated'},
+        knowledge_memory=[{'node_id':'write-1'}],generated_resources={'written-write-1':{'id':'saved'}},
+        visual_cards=[dict(source_id='content-image',visible_content='Chart',source_text='',
+            role='diagram',relationships=[],uncertainty=[],limitations=[],blocking_uncertainty=[])])
+    store.put_job(old)
+    published=copy.deepcopy(classified);published.update(digest='derived',frozen=True)
+    store.change(project['id'],lambda p:p.update(active_job=None,inventory=published))
+    rewritten=queue.rewrite_active(project['id'],bundle)
+    assert rewritten['stage']=='active_write' and rewritten['unit_index']==1
+    assert rewritten['reused_writing_checkpoint_job']==old['id']
+    assert rewritten['draft']['blocks']==[block]
+    assert rewritten['active_checkpoints']==[checkpoint]
+
+
 def test_active_call_honors_the_whole_job_deadline_before_dispatch(tmp_path,skill,monkeypatch):
     import time
     from sourceloom import active_contracts as A

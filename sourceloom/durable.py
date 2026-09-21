@@ -273,9 +273,18 @@ class Queue:
                         and material_signature(old.get('source',{}))==material_signature(job['source'])
                         and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
                         and old.get('role_policy_digest')==job.get('role_policy_digest')):
-                    plan_candidates.append((index==len(groups),index,float(old.get('created',0)),old,groups))
+                    checkpoints=old.get('active_checkpoints',[])
+                    reusable_checkpoints=(len(checkpoints)==int(old.get('unit_index',0))
+                        and all(not point.get('unresolved_content_findings')
+                            and not point.get('unresolved_revision')
+                            and not point.get('unresolved_format',{}).get('findings')
+                            and not point.get('unresolved_format',{}).get('candidates')
+                            for point in checkpoints))
+                    plan_candidates.append((index==len(groups),index,
+                        len(checkpoints) if reusable_checkpoints else 0,
+                        float(old.get('created',0)),old,groups))
             if plan_candidates:
-                _,index,_,old,groups=max(plan_candidates,key=lambda item:item[:3])
+                _,index,checkpoint_count,_,old,groups=max(plan_candidates,key=lambda item:item[:4])
                 completed=old['active_plans']
                 job.update(active_groups=copy.deepcopy(groups),
                     active_plans=copy.deepcopy(completed),active_partition_index=index,
@@ -285,6 +294,15 @@ class Queue:
                     reused_plan_job=old['id'])
                 if index==len(groups) and old.get('writing_batches') and old.get('plan') and old.get('inventory'):
                     job['reused_writing_preparation_job']=old['id']
+                    if checkpoint_count and checkpoint_count<int(len(old['writing_batches'])):
+                        job.update(stage='active_write',unit_index=checkpoint_count,
+                            writing_batches=copy.deepcopy(old['writing_batches']),
+                            inventory=copy.deepcopy(old['inventory']),plan=copy.deepcopy(old['plan']),
+                            draft=copy.deepcopy(old['draft']),
+                            active_checkpoints=copy.deepcopy(old['active_checkpoints']),
+                            knowledge_memory=copy.deepcopy(old.get('knowledge_memory',[])),
+                            generated_resources=copy.deepcopy(old.get('generated_resources',{})),
+                            reused_writing_checkpoint_job=old['id'])
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',(jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
             cx.execute('INSERT INTO production_control(id,project,status,created) VALUES(?,?,?,?)',(jid,pid,'queued',now))
             p.update(active_job=jid,state='queued',max_calls=None)
