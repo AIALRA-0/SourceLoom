@@ -128,6 +128,18 @@ def test_incomplete_verified_name_is_downgraded_without_blocking_document(tmp_pa
     assert result['naming_status_reason']=='incomplete_verified_name_was_removed'
 
 
+def test_invalid_name_evidence_is_downgraded_in_lightweight_mode(tmp_path):
+    from sourceloom.active_composition import validate_names
+    resources=Resources(Store(tmp_path),source());resources.read('s1')
+    candidate={'concepts':[dict(id='cache',name='cache',definition='Source term',
+        source_ids=['s1'],requires=[],chinese_name='缓存',english_name='Cache',
+        naming_status='verified',name_evidence=[dict(resource_id='missing',quote='Cache')],
+        abbreviations=[],naming_note='',naming_status_reason='')]}
+    result=validate_names(candidate,resources,allow_unverified_downgrade=True)['concepts'][0]
+    assert result['naming_status']=='ambiguous' and not result['english_name']
+    assert result['naming_status_reason']=='invalid_name_evidence_was_removed'
+
+
 @pytest.mark.parametrize('mutate',[
     lambda p:p['nodes'][0].update(depends_on=['future']),
     lambda p:p['nodes'][0].update(requires_concepts=['unlearned']),

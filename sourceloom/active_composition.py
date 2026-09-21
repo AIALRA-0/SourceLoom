@@ -963,7 +963,7 @@ def validate_names(plan, resources, allow_unverified_downgrade=False):
                     naming_note='当前材料没有提供可核对的英文名称来源；正文只保留原文字面内容。',
                     naming_status_reason='incomplete_verified_name_was_removed')
                 continue
-            evidence=[]
+            evidence=[];invalid_evidence=False
             for item in concept['name_evidence']:
                 key=item['resource_id']
                 exact=exact_source_quote(item['quote'],resources.text(key)) if key in resources.state['entries'] else None
@@ -987,9 +987,17 @@ def validate_names(plan, resources, allow_unverified_downgrade=False):
                     if hit:
                         exact=original[max(0,hit.start()-80):min(len(original),hit.end()+160)]
                 if exact is None:
-                    raise ValueError('术语名称证据不在已保存来源中：'+concept['id'])
+                    if not allow_unverified_downgrade:
+                        raise ValueError('术语名称证据不在已保存来源中：'+concept['id'])
+                    concept.update(english_name='',naming_status='ambiguous',name_evidence=[],
+                        abbreviations=[],
+                        naming_note='术语名称证据无法在已保存来源中核对；正文只保留原文字面内容。',
+                        naming_status_reason='invalid_name_evidence_was_removed')
+                    invalid_evidence=True
+                    break
                 item['quote']=exact
                 evidence.append(' '.join(exact.casefold().split()))
+            if invalid_evidence:continue
             names=[(concept['english_name'],None)]+[(a['english'],a['short']) for a in concept['abbreviations']]
             for name,short in names:
                 normalized=' '.join(name.casefold().split())
