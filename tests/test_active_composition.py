@@ -58,6 +58,19 @@ def test_same_node_concepts_are_established_in_dependency_order():
     assert validated['nodes'][0]['requires_concepts']==[]
 
 
+def test_explicit_same_node_establishment_is_sorted_by_dependency():
+    candidate=plan();candidate['obligations']=candidate['obligations'][:1]
+    candidate['nodes'][0].update(source_ids=['s1'],obligation_ids=['f1'],
+        requires_concepts=[],establishes_concepts=['advanced','base'])
+    common=dict(definition='Source concept',source_ids=['s1'],chinese_name='',english_name='',
+        naming_status='unsearched',name_evidence=[],abbreviations=[],naming_note='',
+        naming_status_reason='')
+    candidate['concepts']=[dict(id='base',name='Base',requires=[],**common),
+        dict(id='advanced',name='Advanced',requires=['base'],**common)]
+    validated=validate_plan(candidate,source(),['s1'])
+    assert validated['nodes'][0]['establishes_concepts']==['base','advanced']
+
+
 def test_repeated_summary_node_does_not_duplicate_source_obligations():
     candidate=plan();summary=copy.deepcopy(candidate['nodes'][0])
     summary.update(id='n2',title='重复汇总',depends_on=['n1'],

@@ -1484,6 +1484,12 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
             raise ValueError('一个写作单元首次解释的概念过多，需要按原有主题拆成连续单元：'+node['id'])
         if not new <= concepts.keys() or new & established:
             raise ValueError('概念首次解释位置重复或不存在')
+        pending=list(node['establishes_concepts']);ordered=[];available=set(established)
+        while pending:
+            ready=next((cid for cid in pending if set(concepts[cid]['requires'])<=available),None)
+            if ready is None:break
+            ordered.append(ready);available.add(ready);pending.remove(ready)
+        node['establishes_concepts']=ordered+pending
         for cid in node['establishes_concepts']:
             concept = concepts[cid]
             if not set(concept['requires']) <= established or not set(concept['source_ids']) <= objects.keys():
