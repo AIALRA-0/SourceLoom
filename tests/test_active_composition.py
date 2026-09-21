@@ -1383,6 +1383,35 @@ def test_v2_failure_publishes_saved_work_and_missing_source_instead_of_failed_st
     assert saved['internal_failures'][0]['detail']=='模拟检查失败'
 
 
+def test_v2_explicit_gateway_timeout_retries_current_saved_stage_once(tmp_path,skill,monkeypatch):
+    from sourceloom.providers import Uncertain
+    store,_,project,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    engine=Production(store,{'generation_pipeline':'active_composition_v2'})
+
+    def gateway_timeout(claimed):
+        key='active-plan-p1'
+        claimed.update(stage='active_plan',pending=key)
+        claimed['calls'].append(dict(id='gateway-call',role='active_plan',status='uncertain',
+            step_key=key,http_status=524,response_blob=store.blob(b'gateway timeout')))
+        raise Uncertain('模型请求返回 524，本次未自动重发')
+
+    monkeypatch.setattr(engine,'step',gateway_timeout)
+    assert engine.run_once()
+    saved=store.job(job['id']);published=store.get(project['id'])
+    assert saved['status']=='queued' and published['active_job']==job['id']
+    assert 'pending' not in saved
+    assert saved['transient_gateway_retries']['active-plan-p1']['attempts']==1
+    assert saved['internal_recoveries'][0]['http_status']==524
+
+    # A second explicit timeout for the same stage reaches the source-preserving
+    # fallback instead of forming an unbounded retry loop
+    assert engine.run_once()
+    saved=store.job(job['id']);published=store.get(project['id'])
+    assert saved['status']=='ready_for_review'
+    assert published['delivery_state']=='fallback_ready'
+
+
 def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code():
     from sourceloom.active_composition import normalize_authored_spacing,respect_original_format
     from sourceloom.writing import canonical

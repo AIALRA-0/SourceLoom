@@ -74,6 +74,33 @@ def recoverable_delivery(job):
     return inventory,plan,draft
 
 
+def retryable_v2_gateway_timeout(job, error, limit=1):
+    """Release one explicit gateway timeout so the saved stage can continue.
+
+    A returned 502/503/504/524 page contains no model artifact to recover.  The
+    completed visual, planning, and writing checkpoints stay in the job; only
+    the current step receives a new call identity.  Unknown socket timeouts are
+    deliberately excluded because their delivery state cannot be established.
+    """
+    call=(job.get('calls') or [{}])[-1]
+    key=job.get('pending')
+    retries=job.setdefault('transient_gateway_retries',{})
+    if (job.get('pipeline')!='active_composition_v2' or not isinstance(error,Uncertain)
+            or not key or call.get('step_key')!=key or call.get('status')!='uncertain'
+            or call.get('http_status') not in {502,503,504,524}
+            or not call.get('response_blob') or int(retries.get(key,{}).get('attempts',0))>=limit):
+        return False
+    retries[key]=dict(attempts=int(retries.get(key,{}).get('attempts',0))+1,
+        previous_call=call.get('id'),http_status=call.get('http_status'),
+        operation='retry_current_saved_stage_after_explicit_gateway_response')
+    job.setdefault('internal_recoveries',[]).append(dict(stage=job.get('stage'),step=key,
+        type='transient_gateway_response',http_status=call.get('http_status'),at=time.time()))
+    job.pop('pending',None)
+    job.pop('error',None)
+    job.pop('error_type',None)
+    return True
+
+
 def style_review_payload(job, source, catalog, report):
     """Give style review the whole draft and every displayed source literal.
 
@@ -1628,7 +1655,9 @@ class Production:
         except Exception as exc:
             detail=str(exc).strip()
             cancelled=self.queue.cancelled(job['id'],self.owner)
-            if job.get('pipeline')=='active_composition_v2' and not cancelled:
+            if retryable_v2_gateway_timeout(job,exc) and not cancelled:
+                self.queue.finish(job,self.owner,'queued')
+            elif job.get('pipeline')=='active_composition_v2' and not cancelled:
                 try:
                     inventory,plan,draft=recoverable_delivery(job)
                     job.setdefault('internal_failures',[]).append(dict(stage=job.get('stage'),
