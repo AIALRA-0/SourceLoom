@@ -143,6 +143,21 @@ def test_active_rewrite_keeps_the_configured_v2_pipeline(tmp_path,skill):
     assert store.job(job['id'])['pipeline']=='active_composition_v2'
 
 
+def test_active_call_honors_the_whole_job_deadline_before_dispatch(tmp_path,skill,monkeypatch):
+    import time
+    from sourceloom import active_contracts as A
+    from sourceloom.store import Conflict
+    store,_,project,bundle=prepared(tmp_path,skill)
+    Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    engine=Production(store,{'generation_pipeline':'active_composition_v2','job_timeout':300})
+    job=engine.queue.claim(engine.owner,project=project['id'])
+    job['started']=time.time()-301
+    monkeypatch.setattr('sourceloom.active_composition.Provider.call',
+        lambda *args,**kwargs:pytest.fail('deadline must stop dispatch'))
+    with pytest.raises(Conflict,match='处理时间上限'):
+        ActiveComposition(engine).call(job,'deadline-test','active_plan',{},A.VisualCards)
+
+
 def test_active_calls_replay_saved_result_without_provider_cost(tmp_path,monkeypatch):
     engine=ActiveComposition(Production(Store(tmp_path),{}))
     monkeypatch.setattr('sourceloom.active_composition.Provider.call',lambda *a:pytest.fail('Repeated paid request'))

@@ -1681,6 +1681,11 @@ class ActiveComposition:
             cfg = self.config | self.config.get('role_providers', {}).get(role, {})
             if role == 'active_visual' and role not in self.config.get('role_providers', {}):
                 cfg |= self.config.get('role_providers', {}).get('visual_extract', {})
+            if self.config.get('job_timeout',0)>0 and job.get('started'):
+                remaining=self.config['job_timeout']-(time.time()-job['started'])
+                if remaining<=0:
+                    raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
+                cfg['call_timeout']=min(float(cfg.get('call_timeout',90)),remaining)
             cfg['role_providers'] = {}
             before = len(job['calls'])
             try:
@@ -1972,7 +1977,8 @@ class ActiveComposition:
                 # several independent source/link/concept constraints in turn.
                 # Contract-shape corrections precede the candidate draft and
                 # do not consume either of its two scoped content patch rounds.
-                correction_limit=5 if role=='active_plan' else 2 if role in {'active_write','active_review'} else 1
+                correction_limit=(max(0,min(1,int(self.config.get('max_plan_repairs',1))))
+                                  if role=='active_plan' else 1)
                 if session['corrections'] >= correction_limit:
                     raise ValueError('当前阶段结构修正后仍不成立：' + str(error)) from error
                 session['corrections'] += 1
