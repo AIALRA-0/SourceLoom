@@ -996,9 +996,10 @@ def test_writer_structure_corrections_edit_the_previous_candidate_incrementally(
     answers=[unit('English Source Title','正文'),unit('中文标题','正文'),unit('中文标题','正文\n\n图片说明')]
     def call(job,key,role,payload,schema):
         requests.append(payload)
+        if schema is A.HeadingRepairs:
+            return {'edits':[{'block_id':'n1-b1','old_heading':'## English Source Title',
+                'new_heading':'## 中文标题'}]}
         assert 'previous_invalid_result' in payload or len(requests)==1
-        if len(requests)==2:
-            assert payload['previous_invalid_result']==answers[0]
         if len(requests)==3:
             assert payload['previous_invalid_result']==answers[1]
             assert 'Preserve the existing Chinese headings' in payload['protocol_correction']['instruction']
@@ -2086,3 +2087,24 @@ def test_authored_spacing_removes_deletion_gap_without_touching_original():
                        dict(id='still-bound',kind='explanation',markdown='',
                             obligation_ids=['f1'],object_ids=[],embedded_object_ids=[])])
     assert [block['id'] for block in normalize_authored_spacing(empty,dict(objects=[]))['blocks']]==['still-bound']
+
+
+def test_scoped_heading_repair_changes_only_named_heading():
+    from sourceloom.active_composition import apply_heading_repairs, heading_repair_context
+    result={
+        'blocks':[
+            {'id':'n1-b1','kind':'explanation','markdown':'## GPU Core IP',
+             'obligation_ids':['o1'],'source_ids':['s1']},
+            {'id':'n1-b2','kind':'explanation','markdown':'正文保持不变',
+             'obligation_ids':['o1'],'source_ids':['s1']}],
+        'coverage':[],
+        'knowledge_delta':{'concept_evidence':[]},
+    }
+    node={'id':'n1','title':'GPU Core IP','purpose':'进入图形处理器核心主题'}
+    expected=heading_repair_context(result,node)
+    changed=apply_heading_repairs(result,expected,{'edits':[
+        {'block_id':'n1-b1','old_heading':'## GPU Core IP',
+         'new_heading':'## 图形处理器核心知识产权（GPU Core IP）'}]})
+    assert changed[0]['block_id']=='n1-b1'
+    assert result['blocks'][0]['markdown']=='## 图形处理器核心知识产权（GPU Core IP）'
+    assert result['blocks'][1]['markdown']=='正文保持不变'

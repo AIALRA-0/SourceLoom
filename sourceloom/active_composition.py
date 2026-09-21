@@ -1256,6 +1256,52 @@ def bind_planned_headings(result,node):
     return changed
 
 
+def heading_repair_context(result,node):
+    """Return only invalid headings and enough nearby meaning to rename them."""
+    sections={n['id']:n for n in node.get('section_outline',[]) or [node]}
+    rows=[]
+    blocks=result.get('blocks',[])
+    for index,block in enumerate(blocks):
+        section=next((sid for sid in sections if block['id'].startswith(sid+'-')),node['id'])
+        following=next((other['markdown'] for other in blocks[index+1:]
+                        if other.get('kind')=='explanation'), '')
+        for heading in re.findall(r'(?m)^#{1,6} [^\n]+',block.get('markdown','')):
+            title=heading.split(' ',1)[1]
+            if re.search(r'[A-Za-z]',title) and not re.search(r'[\u3400-\u9fff]',title):
+                planned=sections.get(section,node)
+                rows.append(dict(block_id=block['id'],old_heading=heading,
+                    planned_title=planned.get('title',''),purpose=planned.get('purpose',''),
+                    nearby_context=following[:1200]))
+    return rows
+
+
+def apply_heading_repairs(result,expected,repairs):
+    """Apply exact one-line heading edits without touching any article prose."""
+    wanted={(row['block_id'],row['old_heading']) for row in expected}
+    edits=repairs.get('edits',[])
+    if {(row['block_id'],row['old_heading']) for row in edits}!=wanted:
+        raise ValueError('标题小块修复没有逐项对应全部违规标题')
+    blocks={block['id']:block for block in result['blocks']}
+    changed=[]
+    for edit in edits:
+        block=blocks.get(edit['block_id'])
+        old=edit['old_heading'];new=edit['new_heading'].strip()
+        old_match=re.fullmatch(r'(#{1,6}) ([^\n]+)',old)
+        new_match=re.fullmatch(r'(#{1,6}) ([^\n]+)',new)
+        if (not block or block['markdown'].count(old)!=1 or not old_match or not new_match
+                or old_match[1]!=new_match[1] or not re.search(r'[\u3400-\u9fff]',new_match[2])):
+            raise ValueError('标题小块修复改变了层级、范围或仍缺少自然中文')
+        block['markdown']=block['markdown'].replace(old,new,1)
+        for binding in result.get('coverage',[]):
+            if binding['block_id']==block['id'] and old in binding['output_quote']:
+                binding['output_quote']=binding['output_quote'].replace(old,new,1)
+        for binding in result.get('knowledge_delta',{}).get('concept_evidence',[]):
+            if binding['block_id']==block['id'] and old in binding['output_quote']:
+                binding['output_quote']=binding['output_quote'].replace(old,new,1)
+        changed.append(dict(block_id=block['id'],old_heading=old,new_heading=new))
+    return changed
+
+
 def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=6500,
                   require_spans=False,resources=None,require_link_briefs=False,archived_ids=(),
                   concept_limit=7):
@@ -1814,7 +1860,7 @@ class ActiveComposition:
                 if remaining<=0:
                     raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
                 cfg['call_timeout']=min(float(cfg.get('call_timeout',90)),remaining)
-            cfg['deadline_at']=time.time()+float(cfg['call_timeout'])
+            cfg['deadline_at']=time.time()+float(cfg.get('call_timeout',90))
             cfg['role_providers'] = {}
             before = len(job['calls'])
             try:
@@ -2126,6 +2172,27 @@ class ActiveComposition:
                 self.store.put_job(job)
                 return value
             except (ValueError, KeyError) as error:
+                if (role=='active_write' and '标题照搬了未解释的英文' in str(error)
+                        and isinstance(raw,dict) and isinstance(raw.get('result'),dict)):
+                    expected=heading_repair_context(raw['result'],payload['node'])
+                    if expected:
+                        repairs=self.call(job,key+'-heading-repair-'+str(session['corrections']),
+                            'active_write',dict(
+                                instruction=('Return one exact replacement for every listed heading. Translate or '
+                                    'explain it as a concise natural Chinese Markdown heading, retain necessary '
+                                    'official names, preserve the heading level, and change no body text'),
+                                invalid_headings=expected),A.HeadingRepairs)
+                        changed=apply_heading_repairs(raw['result'],expected,repairs)
+                        job.setdefault('scoped_heading_repairs',[]).append(dict(step=key,edits=changed))
+                        try:
+                            value=validate(raw['result'],resources)
+                        except (ValueError,KeyError) as repaired_error:
+                            error=repaired_error
+                        else:
+                            session['resources']=resources.state
+                            session['complete']=True
+                            self.store.put_job(job)
+                            return value
                 # Planning is an inexpensive bounded artifact and may expose
                 # several independent source/link/concept constraints in turn.
                 # Contract-shape corrections precede the candidate draft and

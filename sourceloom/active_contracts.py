@@ -202,6 +202,16 @@ class WrittenUnit(Strict):
     knowledge_delta: KnowledgeDelta
 
 
+class HeadingEdit(Strict):
+    block_id: str
+    old_heading: str = Field(min_length=1)
+    new_heading: str = Field(min_length=1)
+
+
+class HeadingRepairs(Strict):
+    edits: list[HeadingEdit] = Field(min_length=1)
+
+
 class VisualCard(Strict):
     source_id: str
     visible_content: str
