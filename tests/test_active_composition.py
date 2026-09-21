@@ -1141,6 +1141,23 @@ def test_html_main_region_excludes_navigation_from_rewrite_but_keeps_original(tm
                if o['text'] in {'All pages','Site footer'})
 
 
+def test_article_header_avatar_is_archived_as_source_metadata(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+    raw=(b'<html><body><main><article><header><h1>Processor report</h1>'
+         b'<a href="/author"><img src="avatar.png" alt="Ada\'s avatar"></a><p>Ada</p></header>'
+         b'<p>Measured result.</p><figure><img src="chart.png" alt="Throughput chart"></figure>'
+         b'</article></main></body></html>')
+    store=Store(tmp_path)
+    src=intake(store,[('snapshot.html',raw)],source_url='https://example.org/report')
+    classified=classify_web_chrome(store,src)
+    avatar=next(o for o in classified['objects'] if o.get('text')=="Ada's avatar")
+    chart=next(o for o in classified['objects'] if o.get('text')=='Throughput chart')
+    assert avatar['source_scope']=='source_metadata'
+    assert avatar['visual_classification']['method']=='source_dom_profile_avatar'
+    assert chart['source_scope']=='article_media'
+
+
 def test_explicit_site_navigation_banner_excluded_without_main_region(tmp_path):
     from sourceloom.ingest import intake
     from sourceloom.source_context import classify_web_chrome

@@ -69,6 +69,39 @@ def test_schema_metadata_removal_never_deletes_named_properties_or_literal_value
     assert impossible_closed_schema({'type':'object','properties':{},'required':['title'],'additionalProperties':False})
 
 
+def test_source_marker_image_wrapper_is_removed_without_changing_marker():
+    from sourceloom.writing import unwrap_source_marker_images
+    marker='{{source:figure-1}}'
+    assert unwrap_source_marker_images('![copied alt]('+marker+')')==marker
+    assert unwrap_source_marker_images('[ordinary](https://example.org/image.png)')=='[ordinary](https://example.org/image.png)'
+
+
+def test_reader_hides_profile_avatar_and_keeps_real_figure_collapsed():
+    from sourceloom.media import image_markup,reading_draft
+    avatar=dict(id='avatar',kind='image',text="Author's avatar",locator='page/article/header/img[1]',
+                resource_id='a'*64,source_scope='source_metadata')
+    figure=dict(id='figure',kind='image',text='Measured chart',locator='page/article/figure[1]/img[1]',
+                resource_id='b'*64,source_scope='article_media')
+    avatar_literal=image_markup(avatar);figure_literal=image_markup(figure)
+    project={'inventory':{'objects':[avatar,figure]},'draft':{'blocks':[
+        dict(id='a',kind='explanation',markdown='<div align="center">\n\n![avatar]('+avatar_literal+')\n\n</div>\n\n作者',embedded_object_ids=['avatar']),
+        dict(id='f',kind='explanation',markdown='图示如下。\n\n![chart]('+figure_literal+')\n\n这张图说明吞吐变化。',embedded_object_ids=['figure'])]}}
+    result=reading_draft(project);text='\n\n'.join(b['markdown'] for b in result['blocks'])
+    assert 'avatar' not in text.lower() and '<div align="center"></div>' not in text
+    assert text.count(figure_literal)==1 and '<details><summary>材料配图 · page/article/figure[1]/img[1]</summary>' in text
+    assert '![chart](' not in text and '。' not in text
+
+
+def test_authored_period_normalization_preserves_protected_source_bytes():
+    from sourceloom.writing import normalize_authored_periods,protected_objects
+    source={'objects':[dict(id='link',kind='link',text='原文链接',target='https://example.org')]}
+    literal=protected_objects(source)['link']
+    draft={'blocks':[dict(id='b',kind='explanation',markdown='第一句。第二句。\n\n'+literal,
+                           embedded_object_ids=['link'])]}
+    result=normalize_authored_periods(draft,source)
+    assert result['blocks'][0]['markdown']=='第一句\n\n第二句\n\n'+literal
+
+
 def flat(nodes):
     return {'encoding':'flat_nodes_v1','blocks':[dict(id='b',unit_id='u',kind='explanation',
         content=nodes,obligation_ids=[],object_ids=[],evidence=[])]}

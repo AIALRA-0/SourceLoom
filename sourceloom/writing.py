@@ -117,6 +117,54 @@ def protected_objects(inventory):
     return result
 
 
+def unwrap_source_marker_images(text):
+    """Keep a source marker standalone when a model wrapped it as an image URL.
+
+    The marker expands to complete protected HTML, so leaving Markdown's
+    ``![alt](...)`` around it creates invalid nested image markup.  Removing
+    only that redundant wrapper preserves the exact source object bytes.
+    """
+    return re.sub(r'!\[[^\]\n]*\]\(\s*(\{\{source:[^{}]+\}\})\s*\)',r'\1',text)
+
+
+def normalize_authored_periods(draft,inventory):
+    """Apply the installed Chinese prose punctuation rule outside source bytes.
+
+    Ordinary prose sentences become separate Markdown paragraphs.  A list or
+    table row stays one structural row and uses a semicolon between clauses.
+    Code fences, protected objects and original quotations remain byte exact.
+    """
+    result=copy.deepcopy(draft);literals=protected_objects(inventory)
+    for block in result.get('blocks',[]):
+        if block.get('kind') in {'object','source'}:continue
+        text=block.get('markdown','');masked={}
+        for sid,literal in literals.items():
+            if not literal or literal not in text:continue
+            token='SOURCELOOMLITERAL'+digest([sid,literal])[:24]
+            while token in text:token+='X'
+            masked[token]=literal;text=text.replace(literal,token)
+        lines=[];fence=None
+        for line in text.splitlines():
+            marker=re.match(r'^\s*(`{3,}|~{3,})',line)
+            if marker:
+                if fence is None:fence=marker[1]
+                elif marker[1][0]==fence[0] and len(marker[1])>=len(fence):fence=None
+                lines.append(line);continue
+            if fence is not None or '。' not in line:
+                lines.append(line);continue
+            stripped=line.lstrip()
+            compact=bool(re.match(r'(?:[-+*]|\d+[.)])\s+',stripped) or stripped.startswith('|')
+                         or stripped.startswith(('<','>')))
+            line=line.rstrip('。')
+            if compact:line=line.replace('。','；')
+            else:line=line.replace('。','\n\n')
+            lines.extend(line.splitlines())
+        text='\n'.join(lines)
+        for token,literal in masked.items():text=text.replace(token,literal)
+        block['markdown']=re.sub(r'\n{3,}','\n\n',text)
+    return result
+
+
 def normalize_definition_encoding(response):
     """Unpack an explicitly delimited 3–5-part definition without changing words."""
     result=copy.deepcopy(response)

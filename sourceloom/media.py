@@ -66,6 +66,23 @@ def reading_draft(project):
             if not obj or obj['kind'] not in {'image','page'} or not obj.get('resource_id'):continue
             current=image_markup(obj)
             old=image_markup(obj,legacy=True)
+            # Profile avatars belong to archived author metadata.  Keep their
+            # original bytes and asset in the package without presenting them
+            # as an article figure that needs a technical explanation.
+            if obj.get('source_scope')=='source_metadata' or re.search(r'\bavatar\b',obj.get('text',''),re.I):
+                for literal in (current,old):
+                    block['markdown']=re.sub(r'!\[[^\]\n]*\]\(\s*'+re.escape(literal)+r'\s*\)',
+                                             '',block['markdown'])
+                    block['markdown']=block['markdown'].replace(literal,'')
+                block['markdown']=re.sub(r'<div\s+align=["\']center["\']>\s*</div>','',block['markdown'],flags=re.I)
+                block['markdown']=re.sub(r'\n{3,}','\n\n',block['markdown']).strip('\n')
+                continue
+            # A model can put the protected image marker in a Markdown image
+            # URL.  Strip only the redundant wrapper before adding our own
+            # disclosure control; the protected image literal stays exact.
+            for literal in (current,old):
+                block['markdown']=re.sub(r'!\[[^\]\n]*\]\(\s*'+re.escape(literal)+r'\s*\)',
+                                         literal,block['markdown'])
             block['markdown']=block['markdown'].replace(old,current)
             label=html.escape(('原件页面' if obj['kind']=='page' else '材料配图')+' · '+obj['locator'])
             replacement='<details><summary>'+label+'</summary>\n\n'+current+'\n\n</details>'
@@ -80,7 +97,8 @@ def reading_draft(project):
         label='查看材料附记' if block.get('kind')=='document_info' else document_info_label(block)
         if label and not block['markdown'].startswith('<details>'):
             block['markdown']='<details><summary>'+html.escape(label)+'</summary>\n\n'+block['markdown']+'\n\n</details>'
-    return result
+    from .writing import normalize_authored_periods
+    return normalize_authored_periods(result,project.get('inventory') or {'objects':[]})
 
 
 def fold_media(raw):

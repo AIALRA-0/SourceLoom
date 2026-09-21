@@ -17,7 +17,8 @@ from .providers import Provider, Uncertain, apply_stream_timeout
 from .skills import load_bundle
 from .source_context import classify_inert_markup, classify_layout_tables, inventory_groups
 from .store import Conflict, digest
-from .writing import canonical, compose, protected_objects, repair, scan, trim_block_edges, tighten_list_spacing
+from .writing import (canonical, compose, normalize_authored_periods, protected_objects, repair, scan,
+                      trim_block_edges, tighten_list_spacing, unwrap_source_marker_images)
 
 PIPELINE = 'active_composition_v1'
 PIPELINE_V2 = 'active_composition_v2'
@@ -1663,7 +1664,8 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
                 raise ValueError('原对象插入标记不存在，或把普通文字当作原文搬移')
             embedded.append(sid)
             return literals[sid]
-        text=re.sub(r'\{\{source:([^{}]+)\}\}',insert,raw['markdown'])
+        authored=unwrap_source_marker_images(raw['markdown'])
+        text=re.sub(r'\{\{source:([^{}]+)\}\}',insert,authored)
         if '{{source:' in text:raise ValueError('原对象插入标记未完整闭合')
         if raw['obligation_ids'] and not text.strip():
             raise ValueError('承担原文义务的段落不能为空：'+raw['id'])
@@ -1716,6 +1718,12 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
     name_alignments=insert_verified_name_at_unique_first_use(
         draft,body['knowledge_delta'],concepts)
     if name_alignments:body['knowledge_delta']['name_alignments']=name_alignments
+    draft=normalize_authored_periods(draft,inventory)
+    normalized_blocks={b['id']:b for b in draft['blocks']}
+    for binding in body['knowledge_delta'].get('concept_evidence',[]):
+        block=normalized_blocks.get(binding['block_id'])
+        if block and binding.get('output_quote') not in block['markdown']:
+            binding['output_quote']=block['markdown']
     allowed = set(node['obligation_ids'])
     if any(not set(b['obligation_ids']) <= allowed for b in draft['blocks']):
         raise ValueError('写作把其他单元的事实声明为已经覆盖')

@@ -89,7 +89,7 @@ def classify_web_chrome(store,source):
     page_url=result.get('source_url','')
     if not page_url:return result
     parsed=urlsplit(page_url)
-    pages=[];chrome_prefixes=[];metadata_prefixes=[];content_roots=[];control_icon_prefixes=[]
+    pages=[];chrome_prefixes=[];metadata_prefixes=[];content_roots=[];control_icon_prefixes=[];profile_images=set()
     def dom_locator(name,root,element):
         parts=[];child=element
         while child is not root and child.parent is not None:
@@ -118,6 +118,10 @@ def classify_web_chrome(store,source):
                 content=articles[0] if len(articles)==1 else main
                 prefix=dom_locator(original['name'],root,content)
                 if prefix:content_roots.append((original['name'],prefix))
+                for image in content.find_all('img'):
+                    if image.find_parent('figure') or not re.search(r'\bavatar\b',image.get('alt',''),re.I):continue
+                    located=dom_locator(original['name'],root,image)
+                    if located:profile_images.add(located)
                 for element in content.find_all(True):
                     classes=' '.join(element.get('class',[])).lower()
                     if (element.name=='header' and 'in-resource' in element.get('class',[])
@@ -200,6 +204,10 @@ def classify_web_chrome(store,source):
                     obj['source_scope']='site_chrome'
                     resolved.append(obj['id'])
     for obj in result['objects']:
+        if obj.get('locator') in profile_images and obj.get('kind')=='image':
+            obj['visual_classification']=dict(method='source_dom_profile_avatar',
+                source_role='source_metadata',resource_available=bool(obj.get('resource_id')))
+            obj['source_scope']='source_metadata';resolved.append(obj['id'])
         if (obj.get('locator','') in control_icon_prefixes and obj.get('kind') in {'unknown','image'}
                 and re.match(r'^\s*<svg\b',obj.get('raw',''),re.I)):
             obj['visual_classification']=dict(method='source_dom_interactive_control_icon',
