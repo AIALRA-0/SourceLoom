@@ -1013,6 +1013,27 @@ def test_writer_structure_corrections_edit_the_previous_candidate_incrementally(
     assert len(requests)==3
 
 
+def test_review_quote_correction_uses_the_previous_review(tmp_path,monkeypatch):
+    from pydantic import BaseModel
+    class Review(BaseModel):
+        quote:str
+    store=Store(tmp_path);engine=ActiveComposition(Production(store,{}));requests=[]
+    src=source();job=dict(id='review-correction',project='project',role='production',status='running',
+        created=1,pipeline='active_composition_v2',results={},calls=[],active_sessions={},
+        external_resources={},generated_resources={},verified_terminology=[])
+    def call(job,key,role,payload,schema):
+        requests.append(payload)
+        if len(requests)==2:
+            assert payload['previous_invalid_result']=={'quote':'wrong'}
+            assert 'exact non-empty substring' in payload['protocol_correction']['instruction']
+        return dict(gaps=[],actions=[],ready_reason='ready',result={'quote':'wrong' if len(requests)==1 else 'exact'})
+    monkeypatch.setattr(engine,'call',call)
+    def validate(value,_):
+        if value['quote']!='exact':raise ValueError('核对意见未准确引用实际正文')
+        return value
+    assert engine.turn(job,'review','active_review',Review,src,['s1'],{},validate)=={'quote':'exact'}
+
+
 def test_v2_prefetches_bounded_direct_link_before_first_planning_call(tmp_path,monkeypatch):
     from pydantic import BaseModel
     import sourceloom.network

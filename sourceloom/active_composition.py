@@ -1939,12 +1939,15 @@ class ActiveComposition:
                                      action_history=session.get('action_history', []))
             if session.get('correction'):
                 request['protocol_correction'] = session['correction']
-                if role=='active_write' and session.get('previous_invalid_result'):
+                if role in {'active_write','active_review'} and session.get('previous_invalid_result'):
                     request['previous_invalid_result']=session['previous_invalid_result']
                     request['correction_scope']=(
                         'Return the complete corrected WrittenUnit. Change only what protocol_correction '
                         'requires, preserve every already-correct paragraph, heading, source binding, image '
-                        'marker, factual qualification and prior correction')
+                        'marker, factual qualification and prior correction'
+                        if role=='active_write' else
+                        'Return the complete corrected review. Change only invalid quotations or bindings, '
+                        'preserve every valid finding and checked obligation, and do not rewrite the draft')
             raw = self.call(job, key + '-turn-' + str(session['round']), role, request, A.Turn[schema])
             try:
                 if is_v2(job) and role=='active_plan':
@@ -2131,7 +2134,7 @@ class ActiveComposition:
                 if session['corrections'] >= correction_limit:
                     raise ValueError('当前阶段结构修正后仍不成立：' + str(error)) from error
                 session['corrections'] += 1
-                if role=='active_write' and isinstance(raw,dict) and isinstance(raw.get('result'),dict):
+                if role in {'active_write','active_review'} and isinstance(raw,dict) and isinstance(raw.get('result'),dict):
                     session['previous_invalid_result']=raw['result']
                 # The exact rejected response already lives in the provider
                 # call receipt. Replaying a full invalid plan can push a
@@ -2191,6 +2194,13 @@ class ActiveComposition:
                         'is in another block; remove a concept from established_concepts and concept_evidence '
                         'when the draft does not actually establish it. Preserve the authored prose and all '
                         'source bindings exactly')
+                elif role=='active_review' and ('核对意见未准确引用实际正文' in str(error)
+                                                or '核对意见未准确引用当前原文' in str(error)):
+                    session['correction']['instruction']=(
+                        'For every finding and link assessment, copy output_quote as an exact non-empty '
+                        'substring from the named block in actual_draft. Rebind block_id when that exact '
+                        'text is in another block. Preserve all valid findings and checked obligations; '
+                        'remove only a claim that cannot be bound to exact existing text')
                 session['round'] += 1
         raise ValueError('按需取材仍未收敛，已保存资料与具体缺口，没有生成替代稿')
 
