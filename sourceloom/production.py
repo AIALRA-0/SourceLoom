@@ -102,26 +102,33 @@ def recoverable_delivery(job):
 
 
 def retryable_v2_gateway_timeout(job, error, limit=1):
-    """Release one explicit gateway timeout so the saved stage can continue.
+    """Release one transient request identity so the saved stage can continue.
 
     A returned 502/503/504/524 page contains no model artifact to recover.  The
     completed visual, planning, and writing checkpoints stay in the job; only
-    the current step receives a new call identity.  Unknown socket timeouts are
-    deliberately excluded because their delivery state cannot be established.
+    current step receives a new call identity.  Stateless OpenAI-compatible
+    requests also have no queryable upstream job; one transport retry is safer
+    than publishing untranslated source as the finished rewrite.  Both attempts
+    remain in the spending ledger and no retry loop is possible.
     """
     call=(job.get('calls') or [{}])[-1]
     key=job.get('pending')
     retries=job.setdefault('transient_gateway_retries',{})
+    explicit_gateway=(call.get('http_status') in {502,503,504,524} and call.get('response_blob'))
+    unqueryable_transport=(call.get('channel')=='openai-compatible'
+        and not call.get('upstream_id') and not call.get('response_blob'))
     if (job.get('pipeline')!='active_composition_v2' or not isinstance(error,Uncertain)
             or not key or call.get('step_key')!=key or call.get('status')!='uncertain'
-            or call.get('http_status') not in {502,503,504,524}
-            or not call.get('response_blob') or int(retries.get(key,{}).get('attempts',0))>=limit):
+            or not (explicit_gateway or unqueryable_transport)
+            or int(retries.get(key,{}).get('attempts',0))>=limit):
         return False
     retries[key]=dict(attempts=int(retries.get(key,{}).get('attempts',0))+1,
         previous_call=call.get('id'),http_status=call.get('http_status'),
-        operation='retry_current_saved_stage_after_explicit_gateway_response')
+        operation=('retry_current_saved_stage_after_explicit_gateway_response' if explicit_gateway
+                   else 'retry_stateless_stage_after_unqueryable_transport'))
     job.setdefault('internal_recoveries',[]).append(dict(stage=job.get('stage'),step=key,
-        type='transient_gateway_response',http_status=call.get('http_status'),at=time.time()))
+        type='transient_gateway_response' if explicit_gateway else 'unqueryable_transport',
+        http_status=call.get('http_status'),at=time.time()))
     job.pop('pending',None)
     job.pop('error',None)
     job.pop('error_type',None)
