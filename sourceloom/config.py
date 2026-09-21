@@ -41,7 +41,6 @@ def load_config():
             "active_content_patch_limit":2,"active_format_patch_limit":2,
             "default_heading_numbering":"preserve","media_collapsed_default":True,"fx_rate":7.2,
             "active_resource_rounds":8,
-            "active_revision_limit":2,
             "external_worker":True,
             "writing_skill_dir":os.environ.get("HUMAN_READABLE_SKILL_DIR", ""),
             "auth_mode":"local", "allowed_subject":"", "public_origin":"",
