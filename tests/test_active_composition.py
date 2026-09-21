@@ -254,6 +254,8 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
                  source_scope='article_media'),
             dict(id='chrome-image',kind='image',locator='source/header/img[1]',text='',
                  resource_id='b'*64,source_scope='site_chrome'),
+            dict(id='empty-heading',kind='heading',locator='source/h2[2]',text='',
+                 raw='<h2 class="spacer"></h2>'),
         ]
     store.change(project['id'],add_images)
     queue=Queue(store,pipeline='active_composition_v2')
@@ -287,6 +289,8 @@ def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tm
     assert rewritten['reused_visual_job']==old['id']
     assert [card['source_id'] for card in rewritten['visual_cards']]==[
         'content-image','content-media','chrome-image']
+    assert next(o for o in rewritten['source']['objects'] if o['id']=='empty-heading')[
+        'source_scope']=='layout_decorative'
     assert rewritten['stage']=='active_plan' and rewritten['reused_plan_job']==old['id']
     assert rewritten['active_partition_index']==1
 

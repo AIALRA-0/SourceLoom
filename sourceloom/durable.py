@@ -261,7 +261,8 @@ class Queue:
                         and expected<=card_ids<=visual_ids
                         and not any(c.get('blocking_uncertainty',c.get('uncertainty',[])) for c in cards)
                         and not old.get('source',{}).get('unknown')):
-                    job.update(source=copy.deepcopy(old['source']),visual_cards=copy.deepcopy(cards),
+                    from .source_context import classify_inert_markup
+                    job.update(source=classify_inert_markup(old['source']),visual_cards=copy.deepcopy(cards),
                         visual_index=len(cards),visual_count=len(cards),stage='active_visual',reused_visual_job=old['id'])
                     break
             # Reuse only plans that already passed the full validator. Failed
