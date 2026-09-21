@@ -913,7 +913,10 @@ def validate_names(plan, resources):
     """Evidence addresses are checked mechanically; meaning remains a review duty."""
     for concept in plan['concepts']:
         if not concept['chinese_name'].strip():raise ValueError('概念缺少中文名称：'+concept['id'])
-        if concept['naming_status']=='unsearched':raise ValueError('术语名称尚未查证：'+concept['id'])
+        if concept['naming_status']=='unsearched':
+            concept.update(english_name='',naming_status='ambiguous',name_evidence=[],
+                abbreviations=[],naming_note='原文名称尚未查证；正文只保留原文字面内容，不补写未经证实的全称。',
+                naming_status_reason='unsearched_model_name_was_removed')
         if concept['naming_status']=='verified':
             if not concept['english_name'].strip() or not concept['name_evidence']:
                 raise ValueError('已核实术语缺少英文或来源：'+concept['id'])
@@ -1001,17 +1004,23 @@ def validate_names(plan, resources):
                 item=dict(resource_id=entry['id'],quote=quote)
                 if item not in concept['name_evidence']:concept['name_evidence'].append(item)
                 evidence.append(' '.join(quote.casefold().split()))
-        elif not concept['naming_note'].strip():
-            raise ValueError('未确认名称需要保留具体查证缺口：'+concept['id'])
         elif concept['naming_status']=='not_applicable':
             if concept.get('english_name','').strip() or concept.get('abbreviations'):
-                raise ValueError('名称不适用不能同时声明英文名称或缩写：'+concept['id'])
+                concept.update(english_name='',abbreviations=[],name_evidence=[],
+                    naming_status='ambiguous',
+                    naming_note='当前材料没有提供足够的名称证据；正文只保留原文字面内容。',
+                    naming_status_reason='unsupported_not_applicable_name_was_removed')
             # A Chinese formal concept is not proved to lack an English name
             # merely because a planner says so.  Either verify it, retain an
             # explicit unresolved lookup, or remove an ordinary organizing
             # phrase from the formal-concept ledger.
             if re.search(r'[\u3400-\u9fff]',concept.get('chinese_name','')):
-                raise ValueError('中文正式概念不能仅凭模型标为没有英文名称：'+concept['id'])
+                concept.update(naming_status='ambiguous',
+                    naming_note='当前材料不能证明该名称没有英文对应；正文不补写未经证实的英文名称。',
+                    naming_status_reason='not_applicable_claim_was_not_proven')
+        elif not concept['naming_note'].strip():
+            concept['naming_note']='当前材料没有提供足够的名称证据；正文只保留原文字面内容。'
+            concept['naming_status_reason']=concept.get('naming_status_reason') or 'source_name_evidence_missing'
     return plan
 
 

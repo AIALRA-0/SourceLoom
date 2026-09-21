@@ -58,6 +58,19 @@ def test_unsupported_model_name_is_removed_instead_of_blocking_document(tmp_path
     assert result['naming_status_reason']=='unsupported_model_name_was_removed'
 
 
+def test_unsearched_model_name_is_removed_without_losing_source_term(tmp_path):
+    from sourceloom.active_composition import validate_names
+    resources=Resources(Store(tmp_path),source());resources.read('s1')
+    candidate={'concepts':[dict(id='fp32',name='FP32',definition='Source term',
+        source_ids=['s1'],requires=[],chinese_name='FP32 运算',
+        english_name='Unverified Full Name',naming_status='unsearched',
+        name_evidence=[],abbreviations=[dict(short='FP32',chinese='单精度',english='Unverified Full Name')],
+        naming_note='',naming_status_reason='')]}
+    result=validate_names(candidate,resources)['concepts'][0]
+    assert result['name']=='FP32' and result['naming_status']=='ambiguous'
+    assert not result['english_name'] and not result['abbreviations']
+
+
 @pytest.mark.parametrize('mutate',[
     lambda p:p['nodes'][0].update(depends_on=['future']),
     lambda p:p['nodes'][0].update(requires_concepts=['unlearned']),
