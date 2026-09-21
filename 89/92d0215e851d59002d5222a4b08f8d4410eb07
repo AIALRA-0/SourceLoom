@@ -1,0 +1,22 @@
+sourceloom/production.py
+  s_36a381ab4bccf9::t_d97d08642624a9 105,109-112,117-119,122-123,127-128,130-131
+tests/test_active_composition.py
+  s_36a381ab4bccf9::t_d97d08642624a9 1749-1768
+  s_36a381ab4bccf9::t_eb1d63951de459 1747-1748
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8992d0215e851d59002d5222a4b08f8d4410eb07",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
