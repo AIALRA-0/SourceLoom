@@ -989,7 +989,15 @@ def validate_names(plan, resources):
                             entry=official_entry
                             quote=official_text[max(0,hit.start()-80):min(len(official_text),hit.end()+160)]
                     if not entry or normalized not in ' '.join(quote.casefold().split()):
-                        raise ValueError('英文名称或缩写展开没有对应的原文证据：'+concept['id'])
+                        # Do not let an unsupported model-supplied expansion
+                        # block the whole document.  Downgrade the name claim
+                        # to an explicit unresolved state and keep the source
+                        # abbreviation in its ordinary source obligation.
+                        concept.update(english_name='',naming_status='ambiguous',
+                            name_evidence=[],abbreviations=[],
+                            naming_note='原文没有提供可核对的英文名称或缩写展开；正文不得补写未经证实的展开。',
+                            naming_status_reason='unsupported_model_name_was_removed')
+                        break
                 item=dict(resource_id=entry['id'],quote=quote)
                 if item not in concept['name_evidence']:concept['name_evidence'].append(item)
                 evidence.append(' '.join(quote.casefold().split()))

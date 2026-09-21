@@ -44,6 +44,20 @@ def test_internal_english_plan_title_does_not_block_generation():
     assert validate_plan(candidate,source(),['s1','s2'])['nodes'][0]['title']=='Compute Throughput'
 
 
+def test_unsupported_model_name_is_removed_instead_of_blocking_document(tmp_path):
+    from sourceloom.active_composition import validate_names
+    resources=Resources(Store(tmp_path),source());resources.read('s1')
+    candidate={'concepts':[dict(id='igpu',name='iGPU',definition='Source term',
+        source_ids=['s1'],requires=[],chinese_name='集成图形处理器',
+        english_name='Invented Graphics Processing Unit',naming_status='verified',
+        name_evidence=[dict(resource_id='s1',quote=source()['objects'][0]['text'])],
+        abbreviations=[],naming_note='',naming_status_reason='')]}
+    result=validate_names(candidate,resources)['concepts'][0]
+    assert result['naming_status']=='ambiguous'
+    assert not result['english_name'] and not result['abbreviations']
+    assert result['naming_status_reason']=='unsupported_model_name_was_removed'
+
+
 @pytest.mark.parametrize('mutate',[
     lambda p:p['nodes'][0].update(depends_on=['future']),
     lambda p:p['nodes'][0].update(requires_concepts=['unlearned']),
