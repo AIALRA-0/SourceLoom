@@ -126,6 +126,8 @@ def retryable_v2_gateway_timeout(job, error, limit=1):
         previous_call=call.get('id'),http_status=call.get('http_status'),
         operation=('retry_current_saved_stage_after_explicit_gateway_response' if explicit_gateway
                    else 'retry_stateless_stage_after_unqueryable_transport'))
+    if unqueryable_transport:
+        job.setdefault('transport_fallback_steps',{})[key]=call.get('id')
     job.setdefault('internal_recoveries',[]).append(dict(stage=job.get('stage'),step=key,
         type='transient_gateway_response' if explicit_gateway else 'unqueryable_transport',
         http_status=call.get('http_status'),at=time.time()))

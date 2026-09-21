@@ -1762,10 +1762,31 @@ def test_v2_stateless_transport_uncertainty_retries_once_before_delivery(tmp_pat
     assert saved['status']=='queued' and 'pending' not in saved
     assert saved['transient_gateway_retries']['active-plan-p1-turn-1']['attempts']==1
     assert saved['internal_recoveries'][0]['type']=='unqueryable_transport'
+    assert saved['transport_fallback_steps']['active-plan-p1-turn-1']=='transport-call'
     assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
     assert saved['status']=='ready_for_review'
     assert published['delivery_state']=='recovered_ready_for_review'
+
+
+def test_active_retry_uses_the_configured_transport_fallback(tmp_path,skill,monkeypatch):
+    from pydantic import BaseModel
+    class Shape(BaseModel):
+        answer:str
+    store,_,project,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    job['transport_fallback_steps']={'step-1':'uncertain-call'}
+    observed={}
+    def call(provider,pid,role,payload,schema,claimed,cancelled):
+        observed.update(role=role,model=provider.config.get('model'))
+        return {'answer':'ok'}
+    monkeypatch.setattr('sourceloom.active_composition.Provider.call',call)
+    engine=ActiveComposition(Production(store,{
+        'role_providers':{'active_plan':{'model':'primary'}},
+        'fallback_providers':{'active_plan':{'model':'fallback'}}}))
+    monkeypatch.setattr(engine.queue,'cancelled',lambda *args:False)
+    assert engine.call(job,'step-1','active_plan',{},Shape)=={'answer':'ok'}
+    assert observed=={'role':'active_plan__fallback','model':'fallback'}
 
 
 def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code():

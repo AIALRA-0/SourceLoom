@@ -1907,6 +1907,12 @@ class ActiveComposition:
             job['pending'] = job['current_step_key'] = key
             self.store.put_job(job)
             cfg = self.config | self.config.get('role_providers', {}).get(role, {})
+            call_role=role
+            if key in job.get('transport_fallback_steps',{}):
+                fallback=self.config.get('fallback_providers',{}).get(role,{})
+                if fallback:
+                    cfg |= fallback
+                    call_role=role+'__fallback'
             if role == 'active_visual' and role not in self.config.get('role_providers', {}):
                 cfg |= self.config.get('role_providers', {}).get('visual_extract', {})
             cfg=apply_stream_timeout(cfg)
@@ -1919,7 +1925,7 @@ class ActiveComposition:
             cfg['role_providers'] = {}
             before = len(job['calls'])
             try:
-                value = Provider(self.store, cfg).call(job['project'], role, payload,
+                value = Provider(self.store, cfg).call(job['project'], call_role, payload,
                     schema.model_json_schema(), job, lambda: self.queue.cancelled(job['id'], self.owner))
             except json.JSONDecodeError:
                 return self.repair_json(job,key,role,payload,schema)
