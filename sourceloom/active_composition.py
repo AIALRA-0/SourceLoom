@@ -1920,8 +1920,12 @@ class ActiveComposition:
                     session['round'] += 1
                     session.pop('correction', None)
                     continue
-                if response['result'] is None or response['gaps'] or not response['ready_reason'].strip():
+                if (response['result'] is None or response['gaps'] or
+                        (not response['ready_reason'].strip() and not is_v2(job))):
                     raise ValueError('资料未齐全，不能提交结果')
+                if is_v2(job) and not response['ready_reason'].strip():
+                    job.setdefault('nonblocking_protocol_notes',[]).append(dict(
+                        step=key,reason='complete structured result returned without a ready_reason'))
                 if is_v2(job) and role=='active_plan':
                     returned_gap_ids={gap['id'] for gap in response['result'].get('evidence_gaps',[])}
                     declared_gap_ids=set(session.get('declared_gap_ids',[]))
