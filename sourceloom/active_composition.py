@@ -547,6 +547,10 @@ def discard_known_plan_protocol_extras(raw):
         if 'naming_status_effective' in concept and 'naming_status' in concept:
             removed.append(concept.get('id',''))
             concept.pop('naming_status_effective',None)
+    for node in result.get('nodes',[]) if isinstance(result,dict) else []:
+        if node.get('explanation_placeholder')=='':
+            removed.append(node.get('id',''))
+            node.pop('explanation_placeholder',None)
     return cleaned,removed
 
 

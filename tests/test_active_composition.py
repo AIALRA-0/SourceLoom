@@ -83,10 +83,13 @@ def test_repeated_summary_node_does_not_duplicate_source_obligations():
 def test_redundant_effective_name_status_is_removed_only_from_validation_copy():
     from sourceloom.active_composition import discard_known_plan_protocol_extras
     raw={'result':{'concepts':[{'id':'cache','naming_status':'ambiguous',
-        'naming_status_effective':'ambiguous'}]}}
+        'naming_status_effective':'ambiguous'}],
+        'nodes':[{'id':'node-1','explanation_placeholder':''}]}}
     cleaned,removed=discard_known_plan_protocol_extras(raw)
-    assert removed==['cache'] and 'naming_status_effective' not in cleaned['result']['concepts'][0]
+    assert removed==['cache','node-1'] and 'naming_status_effective' not in cleaned['result']['concepts'][0]
+    assert 'explanation_placeholder' not in cleaned['result']['nodes'][0]
     assert raw['result']['concepts'][0]['naming_status_effective']=='ambiguous'
+    assert raw['result']['nodes'][0]['explanation_placeholder']==''
 
 
 def test_empty_review_reason_note_is_removed_only_from_validation_copy():
