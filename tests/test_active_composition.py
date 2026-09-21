@@ -287,11 +287,11 @@ def test_active_rewrite_reuses_complete_planning_before_first_writer(tmp_path,sk
         obligations=[dict(id='derived',object_id='s1',statement='same source')],digest='derived')
     store.change(project['id'],lambda p:p.update(active_job=None,inventory=published))
     rewritten=queue.rewrite_active(project['id'],bundle)
-    assert rewritten['stage']=='active_write' and rewritten['unit_index']==0
+    assert rewritten['stage']=='active_plan' and rewritten['unit_index']==0
     assert rewritten['reused_visual_job']==newer['id']
     assert rewritten['reused_plan_job']==old['id']
     assert rewritten['reused_writing_preparation_job']==old['id']
-    assert rewritten['writing_batches']==[{'id':'write-1'}]
+    assert rewritten.get('writing_batches',[])==[]
 
 
 def test_active_call_honors_the_whole_job_deadline_before_dispatch(tmp_path,skill,monkeypatch):

@@ -2280,7 +2280,7 @@ class ActiveComposition:
             return 'queued'
         if stage == 'active_plan':
             from .visual_sources import decorative_resource
-            node_chars=(self.config.get('active_v2_node_source_chars',12000) if is_v2(job)
+            node_chars=(self.config.get('active_v2_node_source_chars',6500) if is_v2(job)
                         else self.config.get('active_node_source_chars',6500))
             node_objects=(self.config.get('active_v2_node_source_objects',24) if is_v2(job)
                           else self.config.get('active_node_source_objects',20))
@@ -2295,6 +2295,21 @@ class ActiveComposition:
                 job['active_partition_count']=len(job['active_groups'])
                 job['web_chrome_scope_version']=2
             index = job['active_partition_index']
+            if index==len(job['active_groups']):
+                retired=retire_unanchored_abbreviations(job['active_plans'],source)
+                if retired:job.setdefault('unanchored_formal_concepts',[]).extend(retired)
+                job['unanchored_abbreviations_checked']=True
+                job['writing_batches']=writing_batches(job['active_plans'],source,
+                    node_chars,self.config.get('active_node_concept_limit',10),node_objects)
+                if is_v2(job):
+                    job['cross_batch_review_required']=any(
+                        bool(node.get('cross_batch_risks'))
+                        for part in job['active_plans'] for node in part.get('nodes',[]))
+                job['inventory'],job['plan']=legacy_artifacts(
+                    job['active_plans'],source,job['writing_batches'])
+                job['draft']={'blocks':[]}
+                job['stage']='active_write'
+                return 'queued'
             ids = job['active_groups'][index]
             prefix = 'p' + str(index+1)
             prior = job['active_plans']

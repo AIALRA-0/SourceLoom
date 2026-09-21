@@ -284,10 +284,7 @@ class Queue:
                     web_chrome_scope_version=old.get('web_chrome_scope_version',2),
                     reused_plan_job=old['id'])
                 if index==len(groups) and old.get('writing_batches') and old.get('plan') and old.get('inventory'):
-                    job.update(stage='active_write',unit_index=0,
-                        writing_batches=copy.deepcopy(old['writing_batches']),
-                        inventory=copy.deepcopy(old['inventory']),plan=copy.deepcopy(old['plan']),
-                        draft={'blocks':[]},reused_writing_preparation_job=old['id'])
+                    job['reused_writing_preparation_job']=old['id']
             cx.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?)',(jid,pid,'production','queued',now,json.dumps(job,ensure_ascii=False)))
             cx.execute('INSERT INTO production_control(id,project,status,created) VALUES(?,?,?,?)',(jid,pid,'queued',now))
             p.update(active_job=jid,state='queued',max_calls=None)
