@@ -2119,7 +2119,8 @@ class ActiveComposition:
                 # Contract-shape corrections precede the candidate draft and
                 # do not consume either of its two scoped content patch rounds.
                 correction_limit=(max(0,min(1,int(self.config.get('max_plan_repairs',1))))
-                                  if role=='active_plan' else 1)
+                                  if role=='active_plan' else
+                                  max(1,min(2,int(self.config.get('active_structure_correction_limit',2)))))
                 if session['corrections'] >= correction_limit:
                     raise ValueError('当前阶段结构修正后仍不成立：' + str(error)) from error
                 session['corrections'] += 1
@@ -2139,6 +2140,11 @@ class ActiveComposition:
                         'metadata, write concise natural Chinese in its place, retaining exact dates, names '
                         'and qualifications. Do not paste large English source passages or remove coverage'
                         if role=='active_write' and '原对象插入标记' in str(error)
+                        else 'Rewrite the displayed heading as natural Chinese. Preserve necessary official '
+                        'English names in parentheses at first use and explain unfamiliar abbreviations; do '
+                        'not leave the heading as an unexplained copy of the English source title. Preserve '
+                        'all body content, source bindings, images and factual qualifications'
+                        if role=='active_write' and '标题照搬了未解释的英文' in str(error)
                         else 'Use only the saved direct-link prefetch entries for target-page evidence; '
                         'the source page and link label are not target evidence. For each inaccessible '
                         'direct target use its exact recorded failure in unavailable_reason and no invented destination')
