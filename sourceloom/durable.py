@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .store import Conflict, identity, digest
+from .writing import canonical
 
 
 def planning_policy_digest():
@@ -274,7 +275,16 @@ class Queue:
                         and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
                         and old.get('role_policy_digest')==job.get('role_policy_digest')):
                     checkpoints=old.get('active_checkpoints',[])
+                    checkpoint_nodes={point.get('node_id') for point in checkpoints}
+                    checkpoint_draft={'blocks':[copy.deepcopy(block)
+                        for block in old.get('draft',{}).get('blocks',[])
+                        if block.get('unit_id') in checkpoint_nodes]}
+                    checkpoint_bytes_valid=all(
+                        digest(canonical({'blocks':[block for block in checkpoint_draft['blocks']
+                            if block.get('unit_id')==point.get('node_id')]}).encode())==point.get('draft_digest')
+                        for point in checkpoints)
                     reusable_checkpoints=(len(checkpoints)==int(old.get('unit_index',0))
+                        and checkpoint_bytes_valid
                         and all(not point.get('unresolved_content_findings')
                             and not point.get('unresolved_revision')
                             and not point.get('unresolved_format',{}).get('findings')
@@ -294,11 +304,16 @@ class Queue:
                     reused_plan_job=old['id'])
                 if index==len(groups) and old.get('writing_batches') and old.get('plan') and old.get('inventory'):
                     job['reused_writing_preparation_job']=old['id']
-                    if checkpoint_count and checkpoint_count<int(len(old['writing_batches'])):
-                        job.update(stage='active_write',unit_index=checkpoint_count,
+                    if checkpoint_count and checkpoint_count<=int(len(old['writing_batches'])):
+                        checkpoint_nodes={point['node_id'] for point in old['active_checkpoints']}
+                        checkpoint_draft={'blocks':[copy.deepcopy(block)
+                            for block in old.get('draft',{}).get('blocks',[])
+                            if block.get('unit_id') in checkpoint_nodes]}
+                        job.update(stage=('active_deliver' if checkpoint_count==len(old['writing_batches'])
+                                         else 'active_write'),unit_index=checkpoint_count,
                             writing_batches=copy.deepcopy(old['writing_batches']),
                             inventory=copy.deepcopy(old['inventory']),plan=copy.deepcopy(old['plan']),
-                            draft=copy.deepcopy(old['draft']),
+                            draft=checkpoint_draft,
                             active_checkpoints=copy.deepcopy(old['active_checkpoints']),
                             knowledge_memory=copy.deepcopy(old.get('knowledge_memory',[])),
                             generated_resources=copy.deepcopy(old.get('generated_resources',{})),
