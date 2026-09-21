@@ -117,20 +117,24 @@ def retryable_v2_gateway_timeout(job, error, limit=1):
     explicit_gateway=(call.get('http_status') in {502,503,504,524} and call.get('response_blob'))
     unqueryable_transport=(call.get('channel')=='openai-compatible'
         and not call.get('upstream_id') and not call.get('response_blob'))
-    retry_limit=limit if explicit_gateway else max(2,limit)
-    if (job.get('pipeline')!='active_composition_v2' or not isinstance(error,Uncertain)
-            or not key or call.get('step_key')!=key or call.get('status')!='uncertain'
-            or not (explicit_gateway or unqueryable_transport)
+    incomplete_output=call.get('status') in {'truncated','incomplete','reasoning_exhausted'}
+    retry_limit=limit if explicit_gateway or incomplete_output else max(2,limit)
+    valid_failure=(isinstance(error,Uncertain) and call.get('status')=='uncertain') or incomplete_output
+    if (job.get('pipeline')!='active_composition_v2'
+            or not valid_failure or not key or call.get('step_key')!=key
+            or not (explicit_gateway or unqueryable_transport or incomplete_output)
             or int(retries.get(key,{}).get('attempts',0))>=retry_limit):
         return False
     retries[key]=dict(attempts=int(retries.get(key,{}).get('attempts',0))+1,
         previous_call=call.get('id'),http_status=call.get('http_status'),
-        operation=('retry_current_saved_stage_after_explicit_gateway_response' if explicit_gateway
-                   else 'retry_stateless_stage_after_unqueryable_transport'))
-    if unqueryable_transport:
+        operation=('retry_current_saved_stage_after_explicit_gateway_response' if explicit_gateway else
+                   'retry_stage_after_incomplete_model_output' if incomplete_output else
+                   'retry_stateless_stage_after_unqueryable_transport'))
+    if unqueryable_transport or incomplete_output:
         job.setdefault('transport_fallback_steps',{})[key]=call.get('id')
     job.setdefault('internal_recoveries',[]).append(dict(stage=job.get('stage'),step=key,
-        type='transient_gateway_response' if explicit_gateway else 'unqueryable_transport',
+        type=('transient_gateway_response' if explicit_gateway else
+              'incomplete_model_output' if incomplete_output else 'unqueryable_transport'),
         http_status=call.get('http_status'),at=time.time()))
     job.pop('pending',None)
     job.pop('error',None)

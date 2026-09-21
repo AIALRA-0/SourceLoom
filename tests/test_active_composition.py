@@ -1809,6 +1809,25 @@ def test_active_retry_uses_the_configured_transport_fallback(tmp_path,skill,monk
     assert observed=={'role':'active_plan__fallback','model':'fallback'}
 
 
+def test_v2_truncated_output_retries_once_with_the_saved_stage(tmp_path,skill,monkeypatch):
+    store,_,project,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    engine=Production(store,{'generation_pipeline':'active_composition_v2'})
+    def truncated(claimed):
+        key='active-plan-p1-turn-0';claimed.update(stage='active_plan',pending=key)
+        claimed['calls'].append(dict(id='truncated-call',role='active_plan',status='truncated',
+            step_key=key,channel='openai-compatible',finish_reason='length'))
+        raise ValueError('模型输出未正常结束，已保存用量，不接受截断候选')
+    monkeypatch.setattr(engine,'step',truncated)
+    assert engine.run_once()
+    saved=store.job(job['id'])
+    assert saved['status']=='queued' and 'pending' not in saved
+    assert saved['internal_recoveries'][0]['type']=='incomplete_model_output'
+    assert saved['transport_fallback_steps']['active-plan-p1-turn-0']=='truncated-call'
+    assert engine.run_once()
+    assert store.job(job['id'])['status']=='ready_for_review'
+
+
 def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code():
     from sourceloom.active_composition import normalize_authored_spacing,respect_original_format
     from sourceloom.writing import canonical
