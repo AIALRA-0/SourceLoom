@@ -76,9 +76,9 @@ Copy [the example configuration](config.example.json) to a private location. Set
 
 Point `writing_skill_dir` at the complete [Chinese technical writing skill](https://github.com/AIALRA-0/agent-human-readable-technical-writing). Every role receives the unabridged effective instruction files, while the entire package is frozen alongside the job. See [delivery details](docs/SKILL_RUNTIME.md)
 
-Receiving instructions does not prove compliance. Source and structure checks, per-batch model review, independent whole-document semantic review, and user acceptance are recorded separately. A successful save is not a proof of perfect fidelity.
+Receiving instructions does not prove compliance. Source and structure checks, per-batch model review, risk-triggered cross-batch semantic review, and user acceptance are recorded separately. A successful save is not a proof of perfect fidelity.
 
-Subscription and metered requests are accounted for separately. Subscription requests do not consume the metered request allowance. New jobs allow up to four exact content-patch rounds and two format-patch rounds per batch. Existing jobs retain their original pipeline and configuration. These bounds prevent accidental loops; they are not subscription limits. There is no default document or project elapsed-time limit, while each network request remains bounded
+Subscription and metered requests are accounted for separately. Subscription requests do not consume the metered request allowance. New jobs allow up to two combined local patch rounds per batch; content and format findings are merged when possible. Existing jobs retain their original pipeline and configuration. These bounds prevent accidental loops; they are not subscription limits. There is no default document or project elapsed-time limit, while each network request remains bounded
 
 Cumulative subscription calls have no default limit. Generation and repair prioritize DeepSeek. Native yuan protection requires the provider's yuan rates for input, cached input, and output; historical dollar records keep their original currency. About ¥0.10 per 1,000 source characters is a long-term comparison target, not a hard reason to truncate information or stop a complex document. Trial limits and unknown subscription costs are recorded in [the trial report](reports/AUTOMATIC_TRIAL.md)
 

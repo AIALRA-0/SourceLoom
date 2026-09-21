@@ -151,6 +151,16 @@ def test_v2_initialization_preserves_pipeline_and_review_limits():
     assert job['format_patch_hard_limit']==2
 
 
+def test_queue_records_v2_pipeline_before_initialization(tmp_path):
+    from sourceloom.durable import Queue
+    store=Store(tmp_path)
+    project=store.create('v2')
+    store.change(project['id'],lambda value:value.update(inventory=_source()))
+    job=Queue(store,pipeline=PIPELINE_V2).enqueue(project['id'],{
+        'root':'skill','package_digest':'package','instruction_digest':'instruction'})
+    assert job['pipeline']==PIPELINE_V2
+
+
 def test_v2_estimate_batches_visuals_instead_of_counting_every_page_as_a_call():
     from sourceloom.durable import Queue
     inventory={'objects':[{'kind':'page','resource_id':f'r{i}','text':'page'} for i in range(13)]}

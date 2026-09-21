@@ -466,6 +466,17 @@ def markup_property_pair_in_quote(name,quote):
                           re.escape(match[2])+r'>',quote.casefold()))
 
 
+def documented_code_name_in_quote(name,quote):
+    """Treat explicit documentation roles as evidence for code-object names."""
+    match=re.fullmatch(r'([a-z_][a-z0-9_.]*) (module|function|method|parameter)',
+                       name.casefold())
+    if not match:return False
+    symbol,kind=match.groups(); text=quote.casefold()
+    role={'module':'mod','function':'func','method':'meth'}.get(kind)
+    if role and re.search(r':'+role+r':`!?~?'+re.escape(symbol)+r'`',text):return True
+    return kind=='parameter' and bool(re.search(r'\b'+re.escape(symbol)+r'\s*=',text))
+
+
 def expand_exact_grouped_findings(result,draft):
     """Split grouped IDs only when every quoted line maps exactly and uniquely."""
     result=copy.deepcopy(result);blocks={b['id']:b['markdown'] for b in draft['blocks']};expanded=[]
@@ -716,6 +727,13 @@ def located_format_issues(report,draft):
     return result
 
 
+def review_format_context(issues):
+    """Send review-relevant scanner evidence without duplicated repair data."""
+    keys={'id','rule_id','severity','reason','block_id','output_quote'}
+    return {category:[{k:v for k,v in row.items() if k in keys} for row in rows]
+            for category,rows in issues.items()}
+
+
 def confirmed_format_issues(issues,review,required=False):
     candidates={c['id']:c for c in issues['candidates']}
     definite_ids={f['id'] for f in issues['findings']}
@@ -776,6 +794,46 @@ def source_spans(source,ids):
                               preview=text[start:min(end,start+140)]))
             start=end
     return spans
+
+
+def prompt_source_spans(source,ids):
+    """Expose stable span addresses without repeating already opened text."""
+    return [{k:v for k,v in span.items() if k!='preview'} for span in source_spans(source,ids)]
+
+
+def prompt_resource_catalog(entries):
+    """Remove storage-only hashes while retaining every model-useful address."""
+    storage_only={'blob','snapshot_blob','resource_id'}
+    return [{k:v for k,v in entry.items() if k not in storage_only} for entry in entries]
+
+
+def preceding_plan_context(plans):
+    """Carry cross-partition identities without replaying completed plans."""
+    concept_keys={'id','name','chinese_name','english_name','abbreviations','requires'}
+    node_keys={'id','title','requires_concepts','establishes_concepts','depends_on','prepares_for'}
+    return [dict(
+        concepts=[{k:v for k,v in concept.items() if k in concept_keys}
+                  for concept in plan.get('concepts',[])],
+        nodes=[{k:v for k,v in node.items() if k in node_keys}
+               for node in plan.get('nodes',[])],
+    ) for plan in plans]
+
+
+def writer_node_context(node):
+    """Keep writer decisions while removing repeated batch-planning prose."""
+    result=copy.deepcopy(node)
+    section_keys={'id','title','heading_level','purpose','source_ids','obligation_ids',
+                  'requires_concepts','establishes_concepts','explanation'}
+    result['section_outline']=[{k:v for k,v in section.items() if k in section_keys}
+                               for section in result.get('section_outline',[])]
+    for key in ('depends_on','cross_batch_risks'):
+        if not result.get(key):result.pop(key,None)
+    return result
+
+
+def prompt_obligations(obligations):
+    """Use opened source text once; keep every planned semantic obligation."""
+    return [{k:v for k,v in obligation.items() if k!='quote'} for obligation in obligations]
 
 
 def rebind_single_source_spans(value,source,assigned):
@@ -894,6 +952,7 @@ def validate_names(plan, resources):
                        or markup_element_name_in_quote(name,q)
                        or coordinated_color_components_in_quote(name,q)
                        or markup_property_pair_in_quote(name,q)
+                       or documented_code_name_in_quote(name,q)
                        for q in evidence):continue
                 # A planner can cite a plural occurrence while the exact named
                 # form is already present in another source it assigned to this
@@ -936,6 +995,15 @@ def validate_names(plan, resources):
                 evidence.append(' '.join(quote.casefold().split()))
         elif not concept['naming_note'].strip():
             raise ValueError('未确认名称需要保留具体查证缺口：'+concept['id'])
+        elif concept['naming_status']=='not_applicable':
+            if concept.get('english_name','').strip() or concept.get('abbreviations'):
+                raise ValueError('名称不适用不能同时声明英文名称或缩写：'+concept['id'])
+            # A Chinese formal concept is not proved to lack an English name
+            # merely because a planner says so.  Either verify it, retain an
+            # explicit unresolved lookup, or remove an ordinary organizing
+            # phrase from the formal-concept ledger.
+            if re.search(r'[\u3400-\u9fff]',concept.get('chinese_name','')):
+                raise ValueError('中文正式概念不能仅凭模型标为没有英文名称：'+concept['id'])
     return plan
 
 
@@ -948,7 +1016,8 @@ def missing_concept_names(concepts, draft):
         # Chinese wording is reviewed semantically; a planner's awkward label
         # must not become an immutable phrase the writer is forced to copy.
         names=[concept['english_name']]
-        names += [v for a in concept['abbreviations'] for v in (a['chinese'],a['english'])]
+        names += [v for a in concept['abbreviations']
+                  for v in (a['short'],a['chinese'],a['english'])]
         absent=[name for name in names if name.casefold() not in text]
         if absent:missing.append(dict(concept_id=concept['id'],names=absent,
                                        chinese_name=concept['chinese_name'],
@@ -1583,8 +1652,8 @@ class ActiveComposition:
                           snapshot_blob=term['snapshot_blob'],scope='name_evidence_excerpt',
                           abbreviation=term.get('abbr'),english_name=term['en'],note=term['note'])
             resources.read(rid)
-        if (role=='active_plan' and job.get('pipeline') != PIPELINE_V2 and
-                job.get('link_contract_version') and not session.get('direct_link_prefetch_complete')):
+        if (role=='active_plan' and job.get('link_contract_version')
+                and not session.get('direct_link_prefetch_complete')):
             from urllib.parse import urlsplit
             current=urlsplit(source.get('source_url',''))
             seen=set()
@@ -1603,7 +1672,9 @@ class ActiveComposition:
                 if (parsed.hostname==current.hostname and current.path.startswith(parsed.path.rstrip('/')+'/')
                     and any(word in label for word in ('home','index','tips','目录','主页'))):
                     continue
-                if len(session.get('direct_link_prefetch',[]))>=8:break
+                prefetch_limit=(int(self.config.get('evidence_open_limit',4))
+                                if is_v2(job) else 8)
+                if len(session.get('direct_link_prefetch',[]))>=max(0,prefetch_limit):break
                 action=dict(kind='page',resource_id='',url=target)
                 receipt=resources.execute(action)
                 session.setdefault('direct_link_prefetch',[]).append(dict(source_id=obj['id'],
@@ -1614,7 +1685,7 @@ class ActiveComposition:
             session['action_results']=[x['result'] for x in session.get('direct_link_prefetch',[])]
             session['resources']=resources.state
             self.store.put_job(job)
-        if role=='active_plan' and job.get('pipeline') != PIPELINE_V2 and session.get('direct_link_prefetch_complete'):
+        if role=='active_plan' and session.get('direct_link_prefetch_complete'):
             # Existing checkpoints may have recorded an HTTP-only rejection
             # before same-address HTTPS retrieval was supported. Recheck once
             # without revisiting any already fetched target or model output.
@@ -1638,7 +1709,7 @@ class ActiveComposition:
             if role=='active_plan':
                 catalog=[entry for entry in catalog if entry['id'] in ids
                          or entry.get('kind')=='external' or entry['id'].startswith('term-')]
-            request = payload | dict(catalog=catalog, opened_resources=resources.context(),
+            request = payload | dict(catalog=prompt_resource_catalog(catalog), opened_resources=resources.context(),
                                      previous_action_results=session.get('action_results', []),
                                      action_history=session.get('action_history', []))
             if session.get('correction'):
@@ -1812,7 +1883,13 @@ class ActiveComposition:
                 if session['corrections'] >= correction_limit:
                     raise ValueError('当前阶段结构修正后仍不成立：' + str(error)) from error
                 session['corrections'] += 1
-                session['correction'] = dict(error=str(error), received=raw,
+                # The exact rejected response already lives in the provider
+                # call receipt. Replaying a full invalid plan can push a
+                # correction over relay limits; the deterministic validation
+                # error is sufficient for the planner to regenerate it.
+                job.setdefault('active_correction_receipts',[]).append(dict(
+                    step=key,role=role,error=str(error),received_digest=digest(raw)))
+                session['correction'] = dict(error=str(error),
                     instruction=('Every finding and link assessment must quote an exact substring of the '
                         'named block after compilation. Recheck block IDs and copy the existing characters; '
                         'do not paraphrase a quotation or drop a valid defect'
@@ -1968,15 +2045,12 @@ class ActiveComposition:
             prior = job['active_plans']
             payload = dict(goal=job['goal'], task_mode=job['transformation_mode'], assigned_source_ids=ids,
                 **plan_document_preview(source,ids,job['active_groups'][:index]),
-                source_spans=source_spans(source,ids),
+                source_spans=prompt_source_spans(source,ids),
                 partition_prefix=prefix, node_source_char_limit=node_chars,
                 node_concept_limit=self.config.get('active_node_concept_limit',10),
                 immutable_contract=prior[0]['contract'] if prior else None,
-                preceding_plans=[dict(contract=p['contract'], concepts=p['concepts'], nodes=p['nodes']) for p in prior],
-                visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in ids],
-                **({'evidence_gap_policy':
-                    'Only declare an EvidenceGap when one named source obligation cannot be safely rewritten without a specific external fact. Direct URLs use page first; search snippets are discovery only. Stop when one opened primary source binds an exact quote. Every external action must carry gap_id.'}
-                   if is_v2(job) else {}))
+                preceding_plans=preceding_plan_context(prior),
+                visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in ids])
             def validate_planning(value,resources):
                 links={obj['id'] for obj in source['objects']
                        if obj['id'] in ids and obj['kind']=='link'}
@@ -2043,7 +2117,8 @@ class ActiveComposition:
             obligations = [o for p in job['active_plans'] for o in p['obligations'] if o['id'] in node['obligation_ids']]
             risk_context=(bounded_prior_context(job['draft']['blocks'])
                           if is_v2(job) and node.get('cross_batch_risks') else [])
-            payload = dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')), node=node, obligations=obligations,
+            payload = dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')), node=writer_node_context(node), obligations=prompt_obligations(obligations),
+                obligation_source_rule='Resolve each obligation through source_id and source_span_ids in opened_resources.',
                 link_guides=link_guides(job,node['source_ids']),
                 protected_object_catalog=[dict(source_id=sid,kind=next(o['kind'] for o in source['objects'] if o['id']==sid),
                     insert_marker='{{source:'+sid+'}}') for sid in protected_objects(job['inventory']) if sid in node['source_ids']],
@@ -2198,6 +2273,25 @@ class ActiveComposition:
                                 result.setdefault('source_quote_alignments',[]).append(dict(
                                     submitted_source_id=sid,actual_source_id=finding['source_id'],
                                     operation='exact_original_object_rebind'))
+                        if exact is None and original:
+                            # Reviewers occasionally replace one RST role with
+                            # inline-code marks while otherwise quoting the
+                            # complete source object. Rebind only a uniquely
+                            # near-identical whole object, then retain its exact
+                            # stored bytes as the evidence.
+                            from difflib import SequenceMatcher
+                            submitted=' '.join(finding['source_quote'].split())
+                            ranked=sorted(((SequenceMatcher(None,submitted,
+                                ' '.join(objects[other_id]['text'].split())).ratio(),other_id)
+                                for other_id in node['source_ids'] if other_id in objects),reverse=True)
+                            if (ranked and ranked[0][0]>=.80 and
+                                    (len(ranked)==1 or ranked[0][0]-ranked[1][0]>=.08)):
+                                finding['source_id']=ranked[0][1]
+                                exact=objects[finding['source_id']]['text']
+                                result.setdefault('source_quote_alignments',[]).append(dict(
+                                    submitted_source_id=sid,actual_source_id=finding['source_id'],
+                                    operation='unique_near_exact_original_object_rebind',
+                                    reviewer_quote_was_not_verbatim=True))
                         if exact is None:raise ValueError('核对意见未准确引用当前原文')
                         if exact!=finding['source_quote']:
                             result.setdefault('source_quote_alignments',[]).append(dict(source_id=sid,
@@ -2270,7 +2364,7 @@ class ActiveComposition:
                     missing_concept_names=missing_concept_names(
                         [c for part in job['active_plans'] for c in part['concepts']
                          if c['id'] in node['establishes_concepts']],draft),
-                    format_preflight=format_issues,
+                    format_preflight=review_format_context(format_issues),
                     format_decisions_required=bool(job.get('joint_review_contract_version')),
                     visual_cards=visual_cards,
                     review_obligation_ids=sorted(review_ids),

@@ -222,10 +222,11 @@ def normalize_usage(usage: Mapping[str, Any] | None) -> NormalizedUsage:
     """Normalize Responses and Chat Completions usage without guessing absence."""
 
     usage = usage if isinstance(usage, Mapping) else {}
-    input_tokens = _first_number(usage, "input_tokens", "prompt_tokens")
-    output_tokens = _first_number(usage, "output_tokens", "completion_tokens")
+    input_tokens = _first_number(usage, "input_tokens", "prompt_tokens", "inputTokens")
+    output_tokens = _first_number(usage, "output_tokens", "completion_tokens", "outputTokens")
     cache_hit = _first_number(
-        usage, "cache_hit_input_tokens", "prompt_cache_hit_tokens", "cache_read_input_tokens", "cached_tokens"
+        usage, "cache_hit_input_tokens", "prompt_cache_hit_tokens", "cache_read_input_tokens", "cached_tokens",
+        "cacheHitInputTokens",
     )
     nested_cache = _nested_number(
         usage,
@@ -407,6 +408,19 @@ def stage_imported_routes(
     return next_config
 
 
+def _apply_role_provider_overrides(config: Mapping[str, Any]) -> dict[str, Any]:
+    next_config = deepcopy(dict(config))
+    overrides = config.get("role_provider_overrides")
+    if not isinstance(overrides, Mapping):
+        return next_config
+    role_providers = dict(next_config.get("role_providers") or {})
+    for role, route in overrides.items():
+        if isinstance(route, Mapping):
+            role_providers[str(role)] = deepcopy(dict(route))
+    next_config["role_providers"] = role_providers
+    return next_config
+
+
 def activate_staged_route(config: Mapping[str, Any], provider_id: str) -> dict[str, Any]:
     """Promote a reviewed local snapshot without copying credentials to metadata."""
 
@@ -460,10 +474,19 @@ def activate_staged_route(config: Mapping[str, Any], provider_id: str) -> dict[s
         "active_patch", "active_protocol", "active_format",
     }
     role_providers = dict(next_config.get("role_providers") or {})
+    route_identity_keys = {
+        "provider", "provider_id", "model", "protocol", "endpoint", "base_url",
+        "api_key", "token", "credential_ref", "billing_mode", "structured_output",
+        "execution_channel", "responses_profile", "quota_fallback",
+    }
     for role in content_roles:
-        role_providers[role] = dict(role_providers.get(role) or {}) | frozen_route
+        # Preserve role-local limits and effort, but never carry another
+        # provider's credential or transport identity into the activated route.
+        local = {key:value for key,value in dict(role_providers.get(role) or {}).items()
+                 if key not in route_identity_keys}
+        role_providers[role] = local | frozen_route
     next_config["role_providers"] = role_providers
-    return next_config
+    return _apply_role_provider_overrides(next_config)
 
 
 def provider_settings_path(data_dir: str | Path) -> Path:
@@ -557,7 +580,11 @@ def apply_private_settings(config: Mapping[str, Any], settings: Mapping[str, Any
         next_config = activate_staged_route(next_config, active_id)
         next_config["active_route_id"] = active_id
         next_config["provider_settings_state"] = str(settings.get("state") or "active")
-    return next_config
+    # A deployment may pin a small number of roles to a subscription router
+    # while the settings window continues to manage the ordinary primary route.
+    # Apply those explicit overrides last so restarting the detached worker does
+    # not silently replace them with the active settings-window route.
+    return _apply_role_provider_overrides(next_config)
 
 
 def stage_route(config: Mapping[str, Any], route: Mapping[str, Any], api_key: str | None = None) -> dict[str, Any]:

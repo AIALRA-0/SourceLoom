@@ -12,10 +12,14 @@ from sourceloom.provider_settings import (
     activate_staged_route,
     import_readweave_registry,
     normalize_usage,
+    probe_staged_route,
     public_provider_metadata,
+    save_private_settings,
+    stage_route,
     stage_imported_routes,
 )
 from sourceloom.providers import Provider
+from sourceloom.providers import apply_route_override
 from sourceloom.app import create_app
 from tests.test_production import prepared
 
@@ -49,6 +53,103 @@ def test_usage_contract_separates_cached_and_uncached_input():
     rates = {"input": 1.62, "cached_input": .054, "output": 4.86}
     assert usage_cost(usage.as_dict(), rates) == pytest.approx(.00017145)
     assert no_cache_upper_bound(usage.as_dict(), rates) == pytest.approx(.0002106)
+
+
+def test_usage_contract_accepts_model_router_camel_case_counts():
+    usage = normalize_usage({"inputTokens": 80, "cacheHitInputTokens": 20, "outputTokens": 12})
+    assert usage.as_dict() == {
+        "input_tokens": 80,
+        "cache_hit_input_tokens": 20,
+        "cache_miss_input_tokens": 60,
+        "output_tokens": 12,
+        "complete": True,
+    }
+
+
+def test_role_route_does_not_inherit_another_provider_protocol_or_identity():
+    active={"provider_id":"kuafu","protocol":"responses","endpoint":"/responses",
+            "base_url":"https://api.kuafushe.cc/v1","model":"deepseek-v4.1-flash"}
+    visual={"provider":"openai-compatible","base_url":"https://opencode.ai/zen/go/v1",
+            "model":"deepseek-v4-flash-vision-exp","api_key":"synthetic-key"}
+    route=apply_route_override(active,visual)
+    assert route["provider_id"]=="opencode-go"
+    assert route["protocol"]=="chat_completions"
+    assert "endpoint" not in route
+
+
+def test_load_config_restores_activated_route_for_detached_worker(tmp_path, monkeypatch):
+    config_file=tmp_path/'config.json'
+    config_file.write_text('{}',encoding='utf-8')
+    data=tmp_path/'data'
+    monkeypatch.setenv('SOURCELOOM_CONFIG',str(config_file))
+    monkeypatch.setenv('SOURCELOOM_DATA',str(data))
+    config=load_config()
+    config=stage_route(config,{
+        'provider_id':'kuafu','provider':'openai-compatible','model':'deepseek-test',
+        'protocol':'responses','base_url':'https://api.example/v1','endpoint':'/responses',
+        'pricing_currency':'CNY','pricing_cny':{'cached_input':.1,'input':1,'output':2},
+    },'synthetic-key')
+    config=probe_staged_route(config,'kuafu')
+    config=activate_staged_route(config,'kuafu')
+    save_private_settings(data,config)
+    reloaded=load_config()
+    assert reloaded['provider_id']=='kuafu'
+    assert reloaded['protocol']=='responses'
+    assert reloaded['role_providers']['active_plan']['provider_id']=='kuafu'
+    assert reloaded['api_key']=='synthetic-key'
+
+
+def test_activated_route_drops_stale_role_credential_and_transport():
+    config=load_config()|{
+        'provider_routes':{'kuafu':{
+            'provider_id':'kuafu','provider':'openai-compatible','model':'deepseek-test',
+            'protocol':'chat_completions','base_url':'https://api.kuafushe.cc/v1',
+        }},
+        'provider_credentials':{'kuafu':'kuafu-key'},
+        'role_providers':{'active_plan':{
+            'provider_id':'old-router','model':'old-model','protocol':'responses',
+            'base_url':'http://127.0.0.1:13210/v1','api_key':'old-router-key',
+            'billing_mode':'subscription','max_output_tokens':4321,
+        }},
+    }
+    activated=activate_staged_route(config,'kuafu')
+    role=activated['role_providers']['active_plan']
+    assert role['provider_id']=='kuafu' and role['protocol']=='chat_completions'
+    assert role['max_output_tokens']==4321
+    assert 'api_key' not in role and 'billing_mode' not in role
+    effective=activated|role
+    assert effective['api_key']=='kuafu-key'
+
+
+def test_explicit_role_overrides_survive_activated_settings_route(tmp_path, monkeypatch):
+    config_file=tmp_path/'config.json'
+    config_file.write_text(json.dumps({
+        'role_provider_overrides': {
+            'active_plan': {
+                'provider':'openai-compatible','provider_id':'subscription-router',
+                'model':'chatgpt-web.auto','protocol':'responses',
+                'base_url':'http://127.0.0.1:13210/v1','endpoint':'/responses',
+                'billing_mode':'subscription',
+            }
+        }
+    }),encoding='utf-8')
+    data=tmp_path/'data'
+    monkeypatch.setenv('SOURCELOOM_CONFIG',str(config_file))
+    monkeypatch.setenv('SOURCELOOM_DATA',str(data))
+    config=load_config()
+    config=stage_route(config,{
+        'provider_id':'kuafu','provider':'openai-compatible','model':'deepseek-test',
+        'protocol':'responses','base_url':'https://api.example/v1','endpoint':'/responses',
+    },'synthetic-key')
+    config=activate_staged_route(config,'kuafu')
+    assert config['role_providers']['active_plan']['provider_id']=='subscription-router'
+    assert config['role_providers']['active_write']['provider_id']=='kuafu'
+    save_private_settings(data,config)
+    reloaded=load_config()
+    assert reloaded['provider_id']=='kuafu'
+    assert reloaded['role_providers']['active_write']['provider_id']=='kuafu'
+    assert reloaded['role_providers']['active_plan']['provider_id']=='subscription-router'
+    assert reloaded['role_providers']['active_plan']['billing_mode']=='subscription'
 
 
 def test_display_multiplier_is_not_used_by_cost_calculation():
@@ -262,6 +363,160 @@ def test_responses_transport_normalizes_usage_and_keeps_wire_protocol(tmp_path, 
     assert row["body"]["cache_hit_input_tokens"] == 25
     assert row["body"]["cache_miss_input_tokens"] == 75
     assert row["body"]["actual_cny"] == pytest.approx(.00017145)
+
+
+def test_kuafu_transient_401_replays_once_only_after_catalog_revalidation(tmp_path, skill, monkeypatch):
+    store, queue, project, bundle = prepared(tmp_path, skill)
+    job = queue.enqueue(project["id"], bundle)
+
+    class Response:
+        def __init__(self, status, body):
+            self.status_code=status
+            self.content=json.dumps(body).encode()
+            self._body=body
+        def json(self):return self._body
+
+    returned=[Response(401,{"code":"INVALID_API_KEY"}),Response(200,{
+        "status":"completed","output_text":'{"ok":true}',
+        "usage":{"input_tokens":10,"output_tokens":2}})]
+    calls=[]
+    monkeypatch.setattr("sourceloom.providers.post_before_deadline",
+                        lambda *args:(calls.append(args) or returned.pop(0)))
+    monkeypatch.setattr("sourceloom.providers.httpx.get",
+                        lambda *args,**kwargs:Response(200,{"data":[]}))
+    config=load_config()|{
+        "provider":"openai-compatible","provider_id":"kuafu","protocol":"responses",
+        "endpoint":"/responses","base_url":"https://api.kuafushe.cc/v1",
+        "api_key":"synthetic-key","writing_skill_dir":str(skill),"max_input_bytes":100000,
+    }
+    assert Provider(store,config).call(project["id"],"writer",{"source":"text"},{"type":"object"},job)=={"ok":True}
+    assert len(calls)==2
+    assert job["calls"][0]["auth_revalidated"] is True
+    assert job["calls"][0]["dispatch_attempts"]==2
+
+
+def test_large_kuafu_request_uses_configured_official_route_before_dispatch(tmp_path, skill, monkeypatch):
+    store, queue, project, bundle = prepared(tmp_path, skill)
+    job = queue.enqueue(project["id"], bundle)
+    calls=[]
+
+    class Response:
+        status_code=200
+        content=b'{}'
+        def json(self):
+            return {"status":"completed","output_text":'{"ok":true}',
+                    "usage":{"input_tokens":10,"output_tokens":2}}
+
+    monkeypatch.setattr("sourceloom.providers.post_before_deadline",
+                        lambda url,*args:(calls.append(url) or Response()))
+    config=load_config()|{
+        "provider":"openai-compatible","provider_id":"kuafu","protocol":"responses",
+        "endpoint":"/responses","base_url":"https://api.kuafushe.cc/v1",
+        "api_key":"kuafu-key","writing_skill_dir":str(skill),"max_input_bytes":100000,
+        "kuafu_safe_input_bytes":1,
+        "quota_fallback":{"provider":"openai-compatible","provider_id":"deepseek-official",
+            "protocol":"responses","endpoint":"/responses","base_url":"https://api.deepseek.com/v1",
+            "api_key":"official-key"},
+    }
+    result=Provider(store,config).call(project["id"],"writer",{"source":"text"},{"type":"object"},job)
+    assert result=={"ok":True}
+    assert calls==["https://api.deepseek.com/v1/responses"]
+    assert len(job["calls"])==1 and job["calls"][0]["provider_id"]=="deepseek-official"
+    assert job["route_switches"][0]["reason"]=="kuafu_verified_request_size_boundary"
+
+
+def test_active_plan_uses_official_compatibility_route_without_kuafu_attempt(tmp_path, skill, monkeypatch):
+    store, queue, project, bundle = prepared(tmp_path, skill)
+    job = queue.enqueue(project["id"], bundle)
+    calls=[]
+
+    class Response:
+        status_code=200
+        content=b'{}'
+        def json(self):
+            return {"status":"completed","output_text":'{"ok":true}',
+                    "usage":{"input_tokens":10,"output_tokens":2}}
+
+    monkeypatch.setattr("sourceloom.providers.post_before_deadline",
+                        lambda url,*args:(calls.append(url) or Response()))
+    config=load_config()|{
+        "provider":"openai-compatible","provider_id":"kuafu","protocol":"responses",
+        "endpoint":"/responses","base_url":"https://api.kuafushe.cc/v1",
+        "api_key":"kuafu-key","writing_skill_dir":str(skill),"max_input_bytes":100000,
+        "kuafu_safe_input_bytes":999999,"kuafu_fallback_roles":["active_plan"],
+        "quota_fallback":{"provider":"openai-compatible","provider_id":"deepseek-official",
+            "protocol":"responses","endpoint":"/responses","base_url":"https://api.deepseek.com/v1",
+            "api_key":"official-key"},
+    }
+    result=Provider(store,config).call(project["id"],"active_plan",{"source":"text"},{"type":"object"},job)
+    assert result=={"ok":True}
+    assert calls==["https://api.deepseek.com/v1/responses"]
+    assert job["calls"][0]["provider_id"]=="deepseek-official"
+    assert job["route_switches"][0]["reason"]=="kuafu_role_protocol_compatibility"
+
+
+def test_model_router_responses_keeps_schema_out_of_prompt_and_parses_object(tmp_path, skill, monkeypatch):
+    store, queue, project, bundle = prepared(tmp_path, skill)
+    job = queue.enqueue(project["id"], bundle)
+    captured=[]
+
+    class Response:
+        status_code=200
+        content=b'{}'
+        def json(self):
+            return {"status":"succeeded","output":{"ok":True},
+                    "usage":{"inputTokens":10,"outputTokens":2,"measurementStatus":"measured"}}
+
+    def post(url,headers,body,deadline):
+        captured.append((url,headers,body))
+        return Response()
+    monkeypatch.setattr("sourceloom.providers.post_before_deadline",post)
+    schema={"type":"object","properties":{"ok":{"type":"boolean","description":"SCHEMA_ONLY_MARKER"}},
+            "required":["ok"],"additionalProperties":False}
+    config=load_config()|{
+        "provider":"openai-compatible","provider_id":"model-router-chatgpt",
+        "protocol":"responses","endpoint":"/responses","structured_output":"deepseek_strict_tool",
+        "base_url":"http://127.0.0.1:13210/v1","model":"chatgpt-web.auto",
+        "api_key":"router-key","writing_skill_dir":str(skill),"max_input_bytes":100000,
+        "billing_mode":"subscription","max_output_tokens":1000,
+    }
+    result=Provider(store,config).call(project["id"],"active_plan",{"source":"text"},schema,job)
+    assert result=={"ok":True}
+    url,headers,wire=captured[0]
+    assert url=="http://127.0.0.1:13210/v1/responses"
+    assert headers["Idempotency-Key"]==job["calls"][0]["id"]
+    assert "SCHEMA_ONLY_MARKER" not in wire["instructions"]
+    assert wire["text"]["format"]["schema"]["properties"]["ok"]["description"]=="SCHEMA_ONLY_MARKER"
+    assert "reasoning" not in wire and "temperature" not in wire
+
+
+def test_model_router_codex_responses_uses_supported_effort_and_idempotency(tmp_path, skill, monkeypatch):
+    store, queue, project, bundle = prepared(tmp_path, skill)
+    job = queue.enqueue(project["id"], bundle)
+    captured=[]
+
+    class Response:
+        status_code=200
+        content=b'{}'
+        def json(self):
+            return {"status":"succeeded","output":{"ok":True},
+                    "usage":{"inputTokens":10,"outputTokens":2}}
+
+    monkeypatch.setattr("sourceloom.providers.post_before_deadline",
+                        lambda url,headers,body,deadline:(captured.append((headers,body)) or Response()))
+    config=load_config()|{
+        "provider":"openai-compatible","provider_id":"model-router-subscription",
+        "protocol":"responses","endpoint":"/responses","structured_output":"deepseek_strict_tool",
+        "base_url":"http://127.0.0.1:13210/v1","model":"gpt-5.6-luna","effort":"medium",
+        "api_key":"router-key","writing_skill_dir":str(skill),"max_input_bytes":100000,
+        "billing_mode":"subscription","max_output_tokens":1000,
+    }
+    assert Provider(store,config).call(project["id"],"active_plan",{"source":"text"},
+                                      {"type":"object"},job)=={"ok":True}
+    headers,wire=captured[0]
+    assert headers["Idempotency-Key"]==job["calls"][0]["id"]
+    assert wire["reasoning"]=={"effort":"medium"}
+    assert "temperature" not in wire
 
 
 def test_responses_unknown_usage_remains_unsettled(tmp_path, skill, monkeypatch):

@@ -140,14 +140,17 @@ def _matches_text(text: str, item: Mapping[str, Any]) -> bool:
     return bool(summary and len(summary) >= 12 and summary in normalize_text(text))
 
 
-def scan_history_reports(paths: Iterable[Path], item: Mapping[str, Any]) -> list[dict[str, str]]:
+def scan_history_reports(paths: Iterable[Path], item: Mapping[str, Any], *, exclude: Iterable[Path] = ()) -> list[dict[str, str]]:
     """Search configured reports by identity only; never return matching正文."""
 
     matches: list[dict[str, str]] = []
+    excluded = {path.resolve() for path in exclude}
     for configured in paths:
         files = [configured] if configured.is_file() else list(configured.rglob("*")) if configured.is_dir() else []
         for path in files:
             if not path.is_file() or path.suffix.lower() not in {".json", ".jsonl", ".md", ".txt", ".csv"}:
+                continue
+            if path.resolve() in excluded:
                 continue
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
@@ -192,8 +195,8 @@ def scan_production_db(paths: Iterable[Path], item: Mapping[str, Any]) -> list[d
     return matches
 
 
-def duplicate_matches(item: Mapping[str, Any], reports: Iterable[Path], databases: Iterable[Path]) -> list[dict[str, str]]:
-    return scan_history_reports(reports, item) + scan_production_db(databases, item)
+def duplicate_matches(item: Mapping[str, Any], reports: Iterable[Path], databases: Iterable[Path], *, exclude: Iterable[Path] = ()) -> list[dict[str, str]]:
+    return scan_history_reports(reports, item, exclude=exclude) + scan_production_db(databases, item)
 
 
 def timestamped_path(directory: Path, stem: str, suffix: str) -> Path:
@@ -364,7 +367,8 @@ class Evaluator:
         if record.get("create_attempted") and not pid:
             return self.checkpoint.update(key, status="manual_review", manual_review="create request may have been delivered; inspect server before retrying")
         if not pid:
-            self.checkpoint.update(key, create_attempted=True, status="creating", request_id=uuid4().hex)
+            self.checkpoint.update(key, name=item["name"], kind=item["kind"], create_attempted=True,
+                                   status="creating", request_id=uuid4().hex)
             project = self.client.create_project(item, self.args.goal, self.args.budget_cny)
             pid = str(project["id"])
             self.checkpoint.update(key, project_id=pid, status="created")
@@ -382,6 +386,12 @@ class Evaluator:
                 intake_id = str(response.get("id") or response.get("job_id") or "")
                 self.checkpoint.update(key, intake_run_id=intake_id or None)
             state = self.poll(pid, intake_id or None)
+            if state.get("status") == "not_started" and intake_id:
+                detail = self.client.detail(pid)
+                completed = next((job for job in detail.get("jobs", [])
+                                  if str(job.get("id")) == intake_id and job.get("role") == "intake"), None)
+                if completed:
+                    state = completed
             if state.get("status") != "completed":
                 return self.checkpoint.update(key, status=str(state.get("status") or "intake_failed"), intake_status=state)
             self.checkpoint.update(key, intake_done=True, status="intake_completed")
@@ -466,14 +476,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     manifest = args.manifest.resolve()
     items = load_manifest(manifest)
+    checkpoint = Checkpoint.load(args.checkpoint)
     duplicate_report: dict[str, list[dict[str, str]]] = {}
     for item in items:
-        matches = duplicate_matches(item, args.history_report, args.production_db)
+        # A checkpoint with a concrete project identity belongs to this run.
+        # It may already be present in the production database after a safe
+        # restart, so exclude it from the historical duplicate gate.
+        if checkpoint.data["materials"].get(item["source_key"], {}).get("project_id"):
+            continue
+        matches = duplicate_matches(item, args.history_report, args.production_db,
+                                    exclude=(manifest, args.checkpoint))
         if matches:
             duplicate_report[item["source_key"]] = matches
     if duplicate_report:
         raise EvalError("发现历史重复材料，已拒绝创建项目：" + ", ".join(duplicate_report))
-    checkpoint = Checkpoint.load(args.checkpoint)
     evaluator = Evaluator(args, manifest, items, checkpoint)
     try:
         report = evaluator.run()

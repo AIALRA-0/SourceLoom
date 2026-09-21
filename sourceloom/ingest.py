@@ -21,6 +21,33 @@ MAX_EXPANDED = 100 * 1024 * 1024
 MAX_OBJECTS = 5000
 SAFE_IMAGE = {"image/png", "image/jpeg", "image/gif", "image/webp"}
 
+SPHINX_TEXT_DIRECTIVES = {
+    'module','currentmodule','function','method','classmethod','staticmethod',
+    'class','attribute','data','exception','availability','versionchanged',
+    'versionadded','deprecated','seealso','impl-detail',
+}
+
+
+def sphinx_directive_blocks(text):
+    """Return top-level Sphinx directives that docutils otherwise discards."""
+    lines=text.splitlines(keepends=True);result=[];index=0
+    pattern=re.compile(r'^\.\.\s+([A-Za-z][\w:-]*)::\s*(.*?)\s*(?:\r?\n)?$')
+    while index<len(lines):
+        match=pattern.match(lines[index])
+        if not match or match[1].casefold() not in SPHINX_TEXT_DIRECTIVES:
+            index+=1;continue
+        start=index;index+=1
+        while index<len(lines) and (not lines[index].strip() or lines[index][:1].isspace()):
+            index+=1
+        raw=''.join(lines[start:index])
+        body_lines=lines[start+1:index]
+        indents=[len(line)-len(line.lstrip()) for line in body_lines if line.strip()]
+        indent=min(indents) if indents else 0
+        body=''.join(line[indent:] if line.strip() else '\n' for line in body_lines).strip()
+        result.append(dict(name=match[1].casefold(),argument=match[2].strip(),
+                           body=body,raw=raw,line=start+1))
+    return result
+
 
 def safe_member(name):
     if not name or "\\" in name or name.startswith("/") or ":" in name or "\x00" in name:
@@ -162,7 +189,23 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 return
             if not isinstance(node, Tag):
                 return
-            if node.name in {"script", "style", "iframe", "object", "embed", "svg", "canvas"}:
+            if node.name == 'svg':
+                raw=str(node)
+                try:
+                    from .network import rasterize_svg
+                    image=rasterize_svg(raw.encode('utf-8'))
+                    key=store.blob(image)
+                    resources.append(dict(id=key,name=f'inline-svg-{key[:12]}.png',sha256=key,
+                                          size=len(image),mime='image/png'))
+                    label=node.get('aria-label') or (node.find('title').get_text(' ',strip=True)
+                        if node.find('title') else '')
+                    add('image',label,locator,resource_id=key,target='',raw=raw,
+                        source_format='inline-svg')
+                except (ValueError,TypeError):
+                    obj=add('unknown',node.get_text() or '原始 svg 对象',locator,raw=raw)
+                    gap('svg 未执行，需要独立解释或安全转换',locator,obj['id'])
+                return
+            if node.name in {"script", "style", "iframe", "object", "embed", "canvas"}:
                 obj = add("unknown", node.get_text() or f"原始 {node.name} 对象", locator, raw=str(node))
                 gap(f"{node.name} 未执行，需要独立解释或安全转换", locator, obj["id"])
                 return
@@ -197,13 +240,15 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                     walk(pic, f"{locator}/img[{n+1}]")
                 for n,math in enumerate(node.find_all('math')):
                     walk(math,f'{locator}/math[{n+1}]')
+                for n,svg in enumerate(node.find_all('svg')):
+                    walk(svg,f'{locator}/svg[{n+1}]')
                 if kind not in {'code','table'}:
                     for n,pre in enumerate(node.find_all('pre')):
                         before=len(objects)
                         walk(pre,f'{locator}/pre[{n+1}]')
                         if len(objects)>before:
                             objects[before]['parent_id']=obj['id']
-                if node.find(["math", "iframe", "svg"]) or node.find(attrs={"hidden":True}) or node.has_attr("hidden"):
+                if node.find(["math", "iframe"]) or node.find(attrs={"hidden":True}) or node.has_attr("hidden"):
                     gap("混合数学、嵌入或隐藏对象需要补充核对", locator, obj["id"])
                 return
             if node.name == "a":
@@ -244,6 +289,25 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                     html = markdown.render(text) if markdown else text
                 first_object=len(objects)
                 html_objects(html, name)
+                if ext in {'rst','rest'}:
+                    represented='\n'.join(obj.get('text','') for obj in objects[first_object:])
+                    for directive in sphinx_directive_blocks(text):
+                        signature=' '.join(part for part in
+                            (directive['name'],directive['argument']) if part)
+                        # A known Sphinx directive may be absent from docutils'
+                        # HTML entirely. Preserve its signature, options and
+                        # indented body as one source obligation without
+                        # duplicating a directive a configured parser retained.
+                        if (directive['argument'] and directive['argument'] in represented
+                                and directive['body'] and directive['body'] in represented):
+                            continue
+                        rendered='\n'.join(part for part in (signature,directive['body']) if part)
+                        if not rendered:continue
+                        kind=('metadata' if directive['name'] in
+                              {'module','currentmodule','availability','versionchanged',
+                               'versionadded','deprecated'} else 'text')
+                        add(kind,rendered,f"{name}/directive[{directive['line']}]",
+                            raw=directive['raw'],directive=directive['name'])
                 if markdown:
                     attach_markdown_fences(objects[first_object:],text,tokens)
                 if ext in {"md", "markdown"} and re.search(r"\[\^[^\]]+\]", text):

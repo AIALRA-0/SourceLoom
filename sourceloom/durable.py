@@ -80,7 +80,7 @@ class Queue:
             if cx.execute("SELECT 1 FROM production_control WHERE project=?",(pid,)).fetchone():
                 raise Conflict('本篇已有处理记录，请继续原任务或明确建立新的材料副本，不能重置本篇限制')
             jid = identity()
-            job = dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],
+            job = dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],pipeline=self.pipeline,
                        joint_review_before_repair=True,fidelity_review_version=2,source_snapshot_digest=digest(p['inventory']),
                        stage='visual_extract' if any(o['kind'] in {'page','image'} and o.get('resource_id') for o in p['inventory']['objects']) else 'inventory',
                        results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,writing_contract_version=7,review_order='style_first',transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],

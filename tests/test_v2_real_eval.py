@@ -64,6 +64,16 @@ def test_duplicate_checks_search_report_and_sqlite_without_returning正文(tmp_p
     assert "private正文" not in json.dumps(report_matches + db_matches, ensure_ascii=False)
 
 
+def test_history_scan_excludes_current_manifest_and_checkpoint(tmp_path):
+    manifest, _, _ = write_manifest(tmp_path, url="https://example.test/current")
+    item = load_manifest(manifest)[0]
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps({"source": item["canonical_url"]}), encoding="utf-8")
+    old_report = tmp_path / "old-report.json"
+    old_report.write_text(json.dumps({"status": "different material"}), encoding="utf-8")
+    assert scan_history_reports([tmp_path], item, exclude=(manifest, checkpoint)) == []
+
+
 def test_dry_run_never_constructs_http_client_and_writes_timestamped_report(tmp_path, monkeypatch):
     manifest, _, _ = write_manifest(tmp_path)
     import scripts.v2_real_eval as module
@@ -149,7 +159,7 @@ class FakeClient:
         return {"id": "run-1"}
 
     def detail(self, pid):
-        return {"id": pid, "costs": [{"actual": None, "body": {"local_estimate_cny": 0.12, "reservation_cny": 0.15, "billing_status": "unsettled"}}]}
+        return {"id": pid, "jobs": [], "costs": [{"actual": None, "body": {"local_estimate_cny": 0.12, "reservation_cny": 0.15, "billing_status": "unsettled"}}]}
 
     def output_markdown(self, pid):
         return b"# candidate\n"
@@ -203,3 +213,42 @@ def test_ready_for_review_is_terminal_and_exports_candidate(tmp_path):
     assert result["exported"] is True
     assert Path(result["artifacts"], "output.md").read_bytes() == b"# candidate\n"
     evaluator.close()
+
+
+def test_fast_completed_intake_can_be_recovered_from_project_jobs(tmp_path):
+    manifest, _, _ = write_manifest(tmp_path)
+    item = load_manifest(manifest)[0]
+    args = Namespace(mode="live", workers=1, output=tmp_path / "out", base_url="http://unused", timeout=1,
+                     poll_interval=0, max_poll_seconds=10, budget_cny=0, goal="goal")
+    evaluator = Evaluator(args, manifest, [item], Checkpoint.load(tmp_path / "checkpoint.json"))
+
+    class FastIntake(FakeClient):
+        def production(self, pid):
+            self.polls += 1
+            if self.polls == 1:
+                return {"status": "not_started"}
+            return {"id": "run-1", "status": "ready_for_review", "call_count": 2}
+
+        def detail(self, pid):
+            return {"id": pid, "jobs": [{"id": "intake-1", "role": "intake", "status": "completed"}], "costs": []}
+
+    fake = FastIntake()
+    evaluator.client = fake
+    result = evaluator.one(item)
+    assert result["status"] == "ready_for_review"
+    assert fake.produced == 1
+    evaluator.close()
+
+
+def test_checkpoint_project_is_not_rejected_as_historical_duplicate(tmp_path):
+    manifest, _, item = write_manifest(tmp_path)
+    database = tmp_path / "production.sqlite"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE projects (body TEXT)")
+    connection.execute("INSERT INTO projects VALUES (?)", (item["sha256"],))
+    connection.commit(); connection.close()
+    checkpoint = tmp_path / "checkpoint.json"
+    key = load_manifest(manifest)[0]["source_key"]
+    checkpoint.write_text(json.dumps({"version": 1, "materials": {key: {"project_id": "existing"}}}), encoding="utf-8")
+    assert main([str(manifest), "--mode", "offline", "--production-db", str(database),
+                 "--checkpoint", str(checkpoint), "--output", str(tmp_path / "out")]) == 0

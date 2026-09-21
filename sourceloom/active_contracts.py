@@ -32,9 +32,9 @@ class NameEvidence(Strict):
 
 
 class Abbreviation(Strict):
-    short: str
-    chinese: str
-    english: str
+    short: str = Field(min_length=1)
+    chinese: str = Field(min_length=1)
+    english: str = Field(min_length=1)
 
 
 class Concept(Strict):

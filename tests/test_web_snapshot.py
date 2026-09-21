@@ -116,6 +116,43 @@ def test_svg_stylesheet_import_is_rejected_before_rasterization(monkeypatch):
     assert failures[0]['reason']=='ValueError'
 
 
+def test_svg_foreign_object_uses_local_text_fallback(monkeypatch):
+    raw=b'<p><img src="diagram.svg"></p>'
+    svg=(b'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40">'
+         b'<switch><foreignObject width="80" height="40"><div xmlns="http://www.w3.org/1999/xhtml">Label</div></foreignObject>'
+         b'<text x="2" y="20">Label</text></switch></svg>')
+    def fetch(url,*args):
+        return (svg,'image/svg+xml',url) if url.endswith('.svg') else (raw,'text/html',url)
+    monkeypatch.setattr('sourceloom.network.fetch',fetch)
+    uploads,_,aliases,failures=__import__('sourceloom.network',fromlist=['fetch_bundle']).fetch_bundle('https://example.invalid/page')
+    assert not failures
+    assert aliases['https://example.invalid/diagram.svg'].startswith('web-assets/')
+    assert uploads[1][1].startswith(b'\x89PNG')
+
+
+def test_inline_svg_is_preserved_and_safely_rasterized(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.store import Store
+    raw=(b'<main><p>Diagram follows.</p><svg width="40" height="20" '
+         b'aria-label="Blue bar"><rect width="40" height="20" fill="blue"/></svg></main>')
+    store=Store(tmp_path)
+    source=intake(store,[('snapshot.html',raw)],source_url='https://example.invalid/article')
+    picture=next(o for o in source['objects'] if o.get('source_format')=='inline-svg')
+    assert picture['kind']=='image' and picture['text']=='Blue bar'
+    assert picture['raw'].startswith('<svg')
+    assert store.read_blob(picture['resource_id']).startswith(b'\x89PNG')
+    assert not source['unknown']
+
+
+def test_unsafe_inline_svg_remains_an_explicit_gap(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.store import Store
+    raw=b'<main><svg width="40" height="20"><script>alert(1)</script></svg></main>'
+    source=intake(Store(tmp_path),[('snapshot.html',raw)],source_url='https://example.invalid/article')
+    assert any(o['kind']=='unknown' and '<svg' in o['raw'] for o in source['objects'])
+    assert any(g['reason'].startswith('svg 未执行') for g in source['unknown'])
+
+
 def test_markdown_snapshot_fetches_literal_html_images(tmp_path,monkeypatch):
     raw=b'# Project\n\n<img src="docs/diagram.png" alt="Diagram">\n'
     picture=BytesIO();Image.new('RGB',(3,3),'white').save(picture,'PNG')

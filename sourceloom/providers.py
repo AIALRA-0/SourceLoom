@@ -278,6 +278,41 @@ def post_before_deadline(url,headers,body,deadline):
     return asyncio.run(request())
 
 
+def kuafu_auth_is_current(config, headers, deadline):
+    """Confirm a surprising Kuafu 401 before one safe replay.
+
+    The catalog request is free and cannot start inference. A successful
+    catalog read proves that the same credential is still current, so the
+    rejected generation request was not accepted or billed upstream.
+    """
+    from urllib.parse import urlsplit
+    if urlsplit(config.get('base_url','')).hostname!='api.kuafushe.cc':return False
+    remaining=deadline-time.time()
+    if remaining<=1:return False
+    try:
+        response=httpx.get(config['base_url'].rstrip('/')+'/models',headers={
+            'Authorization':headers['Authorization']},timeout=min(10,remaining),follow_redirects=False)
+        return response.status_code==200
+    except (httpx.HTTPError,ValueError):
+        return False
+
+
+def apply_route_override(base, override):
+    """Apply a complete route identity without inheriting another transport."""
+    if not isinstance(override,dict) or not override:return dict(base)
+    result=dict(base)|dict(override)
+    route_changed=any(key in override for key in ('provider','base_url','api_key','provider_id'))
+    if not route_changed:return result
+    from urllib.parse import urlsplit
+    host=(urlsplit(str(result.get('base_url',''))).hostname or 'configured').casefold()
+    known={'opencode.ai':'opencode-go','api.deepseek.com':'deepseek-official',
+           'api.kuafushe.cc':'kuafu'}
+    if 'provider_id' not in override:result['provider_id']=known.get(host,host.replace('.','-'))
+    if 'protocol' not in override:result['protocol']='chat_completions'
+    if 'endpoint' not in override:result.pop('endpoint',None)
+    return result
+
+
 def _responses_input(messages):
     """Project the existing chat shape into ReadWeave's instructions+input."""
 
@@ -296,6 +331,10 @@ def _responses_input(messages):
 def _responses_text(body):
     if isinstance(body.get("output_text"), str):
         return body["output_text"]
+    if isinstance(body.get("output"), str):
+        return body["output"]
+    if isinstance(body.get("output"), dict):
+        return json.dumps(body["output"],ensure_ascii=False,separators=(',',':'))
     chunks = []
     for item in body.get("output", []) if isinstance(body.get("output"), list) else []:
         if not isinstance(item, dict):
@@ -472,17 +511,26 @@ class Provider:
         import copy
         original_payload=copy.deepcopy(payload)
         original_schema=copy.deepcopy(schema)
-        c = self.config | self.config.get('role_providers', {}).get(role, {})
+        c = apply_route_override(self.config,self.config.get('role_providers', {}).get(role, {}))
         route = route_from_config(c)
         protocol = route.protocol
         # A definitive quota rejection is task-wide evidence. Preserve its
         # receipt, then skip the same exhausted subscription on later stages.
         fallback=c.get('quota_fallback')
+        from urllib.parse import urlsplit
+        fallback_roles=set(c.get('kuafu_fallback_roles') or [])
+        if (fallback and role.removesuffix('__fallback') in fallback_roles
+                and urlsplit(c.get('base_url','')).hostname=='api.kuafushe.cc'):
+            job.setdefault('route_switches',[]).append({
+                'role':role,'reason':'kuafu_role_protocol_compatibility'})
+            c=apply_route_override(c,fallback)|{'role_providers':{},'quota_fallback':None}
+            route=route_from_config(c)
+            protocol=route.protocol
         if fallback and any(call.get('status')=='rejected'
                             and call.get('error_code')=='subscription_limit_exceeded'
                             and call.get('upstream_base')==c.get('base_url')
                             for call in job.get('calls',[])):
-            c=c|fallback|{'role_providers':{},'quota_fallback':None}
+            c=apply_route_override(c,fallback)|{'role_providers':{},'quota_fallback':None}
         from .trials import check
         check(self.store,c)
         deadline=c.get('deadline_at',time.time()+c['call_timeout'])
@@ -598,16 +646,36 @@ class Provider:
         if c['provider']=='router' and c.get('execution_channel')=='chatgpt_web':
             payload=compact_style_context(payload,instruction)
             payload=compact_review_tables(reference_repeated_text(payload))
-        prompt = json.dumps(payload, ensure_ascii=False,separators=(',',':'))
-        input_bytes = len((instruction+prompt+json.dumps(schema)).encode())
+        # Keep the delivery receipt in the immutable audit request, while the
+        # model receives the complete skill text itself.  Sending the receipt
+        # as well only duplicates hashes, paths and file names.
+        audit_payload=copy.deepcopy(payload)
+        model_payload=copy.deepcopy(payload)
+        model_payload.pop('writing_skill_receipt',None)
+        prompt = json.dumps(model_payload, ensure_ascii=False,separators=(',',':'))
+        compact_schema=json.dumps(transport_schema(schema),ensure_ascii=False,separators=(',',':'))
+        input_bytes = len((instruction+prompt+compact_schema).encode())
         if input_bytes > c["max_input_bytes"]:
             raise Conflict("当前角色输入超过范围上限，请按教学单元拆分；没有截断原文")
+        safe_bytes=int(c.get('kuafu_safe_input_bytes') or 0)
+        if (safe_bytes and urlsplit(c.get('base_url','')).hostname=='api.kuafushe.cc'
+                and input_bytes>safe_bytes):
+            fallback=c.get('quota_fallback')
+            if not fallback:
+                raise Conflict('当前完整请求超过夸父社已验证的稳定尺寸，且没有配置备用通道；没有截断原文')
+            job.setdefault('route_switches',[]).append({
+                'role':role,'reason':'kuafu_verified_request_size_boundary',
+                'input_bytes':input_bytes,'safe_input_bytes':safe_bytes})
+            self.store.put_job(job)
+            return Provider(self.store,apply_route_override(c,fallback)|{
+                'role_providers':{},'quota_fallback':None}).call(
+                    pid,role,original_payload,original_schema,job,cancelled)
         if cancelled():
             raise Conflict("任务已取消")
         if time.time()>=deadline:
             raise Conflict('输入准备后已达到等待上限，尚未发送模型请求')
         call_id = identity()
-        request_blob = self.store.blob(json.dumps(dict(system=instruction,payload=payload,schema=schema),ensure_ascii=False).encode())
+        request_blob = self.store.blob(json.dumps(dict(system=instruction,payload=audit_payload,schema=schema),ensure_ascii=False).encode())
         from .money import usage_cost
         subscription=c.get('billing_mode')=='subscription'
         billing_channel='subscription' if subscription else c['provider']
@@ -629,7 +697,6 @@ class Provider:
                                  skill_delivery='unabridged_inline',file_read_verified=False))
         self.store.put_job(job)
         headers = {"Authorization":"Bearer "+c["api_key"], "Content-Type":"application/json"}
-        from urllib.parse import urlsplit
         if urlsplit(c['base_url']).hostname=='opencode.ai':
             headers.update({'User-Agent':'SourceLoom/0.1','x-opencode-session':'sourceloom-'+job['id']})
         try:
@@ -701,7 +768,16 @@ class Provider:
                     raise ValueError('搜索 route 不能作为模型生成通道')
                 options=c.get('provider_options',{})|c.get('role_options',{}).get(role,{})
                 if set(options)-{'thinking','reasoning_effort'}:raise ValueError('通道选项只能配置思考模式与程度')
-                messages = [{"role":"system","content":instruction+"\nReturn only JSON matching this schema:\n"+json.dumps(schema)},
+                # The DeepSeek beta tool contract is an official-endpoint
+                # feature.  A compatible relay may inherit the global setting
+                # while supporting ordinary JSON output only; use that native
+                # compatible path instead of rejecting the request locally.
+                strict_output=(c.get('structured_output')=='deepseek_strict_tool' and
+                    (protocol=='responses' or
+                     urlsplit(c.get('base_url','')).hostname=='api.deepseek.com'))
+                schema_instruction=("" if protocol=='responses' and strict_output else
+                    "\nReturn only JSON matching this schema:\n"+compact_schema)
+                messages = [{"role":"system","content":instruction+schema_instruction},
                             {"role":"user","content":prompt}]
                 if image_resources:
                     import base64
@@ -720,15 +796,24 @@ class Provider:
                         content.append({'type':'text','text':label})
                         content.append({'type':'image_url','image_url':{'url':'data:'+mime+';base64,'+base64.b64encode(raw).decode(),'detail':'original'}})
                     messages[1]['content']=content
-                strict_output=c.get('structured_output')=='deepseek_strict_tool'
                 endpoint=c['base_url'].rstrip('/')
                 request=dict(model=c['model'],max_output_tokens=c['max_output_tokens'])|options
                 if protocol == 'responses':
                     # ReadWeave's Responses route uses deterministic JSON
                     # generation.  Do not leak the old compatible-provider
                     # ``thinking`` option into this wire protocol.
-                    request = dict(model=c['model'], max_output_tokens=c['max_output_tokens'],
-                                   reasoning={"effort": "none"}, temperature=0, stream=False)
+                    request = dict(model=c['model'], max_output_tokens=c['max_output_tokens'],stream=False)
+                    chatgpt_web = str(c['model']).startswith('chatgpt-web.')
+                    model_router = (str(c.get('provider_id') or '').startswith('model-router')
+                                    or c.get('responses_profile') == 'model_router')
+                    if not chatgpt_web:
+                        if model_router:
+                            effort = str(c.get('effort') or 'low')
+                            if effort not in {'minimal','low','medium','high','xhigh','max'}:
+                                effort = 'low'
+                            request['reasoning'] = {"effort": effort}
+                        else:
+                            request.update(reasoning={"effort": "none"},temperature=0)
                     request['instructions'] = messages[0].get('content', '')
                     request['input'] = _responses_input(messages)
                     if strict_output:
@@ -741,9 +826,6 @@ class Provider:
                     request['messages'] = messages
                     request['max_tokens'] = request.pop('max_output_tokens')
                 if strict_output and protocol != 'responses':
-                    from urllib.parse import urlsplit
-                    if urlsplit(endpoint).hostname!='api.deepseek.com':
-                        raise ValueError('DeepSeek 严格输出只适用于已配置的官方通道')
                     endpoint='https://api.deepseek.com/beta'
                     request.update(tools=[dict(type='function',function=dict(name='emit_artifact',strict=True,
                         description='Return the requested artifact as typed data. No action is executed.',
@@ -755,9 +837,22 @@ class Provider:
                     request['response_format']={'type':'json_object'}
                 job['calls'][-1]['wire_request_blob']=self.store.blob(json.dumps(request,ensure_ascii=False,separators=(',',':')).encode())
                 job['calls'][-1].update(dispatch_started=True,deadline_at=deadline);self.store.put_job(job)
+                if protocol=='responses' and (str(c['model']).startswith('chatgpt-web.')
+                                              or str(c.get('provider_id') or '').startswith('model-router')
+                                              or c.get('responses_profile') == 'model_router'):
+                    headers['Idempotency-Key']=call_id
                 response=post_before_deadline(
                     request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
                     headers,request,deadline)
+                if response.status_code==401 and kuafu_auth_is_current(c,headers,deadline):
+                    # The first request was rejected before inference. Replay
+                    # once only after the same key succeeds against the free
+                    # model catalog.
+                    job['calls'][-1].update(auth_revalidated=True,dispatch_attempts=2)
+                    self.store.put_job(job)
+                    response=post_before_deadline(
+                        request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
+                        headers,request,deadline)
                 if response.status_code >= 400:
                     from urllib.parse import urlsplit
                     job['calls'][-1].update(http_status=response.status_code,response_blob=self.store.blob(response.content))
@@ -770,7 +865,9 @@ class Provider:
                         if not fallback:raise ValueError('订阅通道明确返回用量耗尽，未配置官方备用通道，已有结果保留')
                         job.setdefault('quota_switches',[]).append({'from_call':call_id,'role':role,'reason':'explicit_subscription_exhaustion'})
                         self.store.put_job(job)
-                        return Provider(self.store,c|fallback|{'role_providers':{},'quota_fallback':None}).call(pid,role,original_payload,original_schema,job,cancelled)
+                        return Provider(self.store,apply_route_override(c,fallback)|{
+                            'role_providers':{},'quota_fallback':None}).call(
+                                pid,role,original_payload,original_schema,job,cancelled)
                     balance_rejected=response.status_code==402 and urlsplit(endpoint).hostname=='api.deepseek.com'
                     if response.status_code in {400,401,403,422} or balance_rejected:
                         self.store.settle(call_id,0,dict(channel=billing_channel,status='rejected',http_status=response.status_code,actual_cny=0))

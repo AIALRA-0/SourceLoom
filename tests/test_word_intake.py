@@ -6,6 +6,9 @@ from sourceloom.ingest import intake
 
 W='http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 R='http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+MC='http://schemas.openxmlformats.org/markup-compatibility/2006'
+WP='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+A='http://schemas.openxmlformats.org/drawingml/2006/main'
 
 
 def document(body,extra=None):
@@ -53,3 +56,48 @@ def test_footnote_reference_and_story_are_bound_without_duplicate_text(tmp_path)
     assert reference['parent_id']==inv['objects'][0]['id']
     assert note['story']['id']=='7' and note['text']=='还有这一项例外'
     assert sum(o['text']=='还有这一项例外' for o in inv['objects'])==1
+
+
+def test_alternate_content_prefers_modern_branch_without_duplicate_fallback_or_detached_media(tmp_path):
+    from PIL import Image
+    modern=BytesIO();Image.new('RGB',(2,2),'white').save(modern,'PNG')
+    fallback=BytesIO();Image.new('RGB',(2,2),'white').save(fallback,'GIF')
+    body=(f'<w:p xmlns:mc="{MC}" xmlns:wp="{WP}" xmlns:a="{A}"><w:r><w:t>唯一正文</w:t></w:r>'
+          f'<mc:AlternateContent><mc:Choice Requires="wps"><w:r><wp:anchor><a:blip r:embed="rModern"/></wp:anchor></w:r></mc:Choice>'
+          f'<mc:Fallback><w:r><w:pict><v:fill xmlns:v="urn:schemas-microsoft-com:vml" r:id="rFallback"/></w:pict></w:r></mc:Fallback>'
+          f'</mc:AlternateContent></w:p>')
+    raw=document(body,{
+        'word/_rels/document.xml.rels':'<Relationships><Relationship Id="rModern" Target="media/modern.png"/><Relationship Id="rFallback" Target="media/fallback.gif"/></Relationships>',
+        'word/media/modern.png':modern.getvalue(),'word/media/fallback.gif':fallback.getvalue()})
+    inv=intake(Store(tmp_path),[('source.docx',raw)])
+    assert sum(o.get('text')=='唯一正文' for o in inv['objects'])==1
+    assert len([o for o in inv['objects'] if o['kind']=='image'])==1
+    assert not any('anchor' in gap['reason'] or 'pict' in gap['reason'] or '归属' in gap['reason'] for gap in inv['unknown'])
+
+
+def test_valid_vertical_merge_becomes_rowspan_without_gap(tmp_path):
+    raw=document('<w:tbl>'
+        '<w:tr><w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc>'
+        '<w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr>'
+        '<w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p/></w:tc>'
+        '<w:tc><w:p><w:r><w:t>B2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>')
+    inv=intake(Store(tmp_path),[('source.docx',raw)])
+    table=next(o for o in inv['objects'] if o['kind']=='table')
+    assert table['cells'][0][0]['rowspan']=='2'
+    assert table['cells'][1]==[dict(text='B2',rowspan='1',colspan='1')]
+    assert not any('纵向合并' in gap['reason'] for gap in inv['unknown'])
+
+
+def test_header_image_is_preserved_as_document_metadata_without_visual_generation(tmp_path):
+    from PIL import Image
+    picture=BytesIO();Image.new('RGB',(40,20),'white').save(picture,'JPEG')
+    header=(f'<w:hdr xmlns:w="{W}" xmlns:r="{R}" xmlns:a="{A}">'
+            '<w:p><w:r><w:drawing><a:blip r:embed="rLogo"/></w:drawing></w:r></w:p></w:hdr>')
+    raw=document('<w:p><w:r><w:t>正文</w:t></w:r></w:p>',{
+        'word/header1.xml':header,
+        'word/_rels/header1.xml.rels':'<Relationships><Relationship Id="rLogo" Target="media/logo.jpg"/></Relationships>',
+        'word/media/logo.jpg':picture.getvalue()})
+    inv=intake(Store(tmp_path),[('source.docx',raw)])
+    image=next(o for o in inv['objects'] if o['kind']=='image')
+    assert image['source_scope']=='source_metadata'
+    assert image['visual_classification']=={'method':'word_story_part','source_role':'source_metadata'}

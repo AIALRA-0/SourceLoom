@@ -19,6 +19,59 @@ DOCUMENT_TYPES={'text/html':'html','text/plain':'txt','text/markdown':'md','appl
                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx'}
 
 
+def rasterize_svg(image):
+    """Convert one self-contained SVG into a bounded PNG.
+
+    The original SVG remains in the source object.  HTML, scripts, external
+    references and unbounded page geometry are rejected before CairoSVG sees
+    the document.
+    """
+    from defusedxml import ElementTree
+    import cairosvg
+    if len(image)>2_000_000:
+        raise ValueError('SVG 源文件超过安全处理上限')
+    root=ElementTree.fromstring(image)
+    if root.tag.rsplit('}',1)[-1].lower()!='svg':
+        raise ValueError('SVG 根元素无效')
+    for parent in list(root.iter()):
+        children=list(parent)
+        if not any(child.tag.rsplit('}',1)[-1].lower()=='foreignobject' for child in children):
+            continue
+        if parent.tag.rsplit('}',1)[-1].lower()!='switch' or not any(
+                child.tag.rsplit('}',1)[-1].lower()=='text' for child in children):
+            raise ValueError('SVG 包含无法安全替代的 HTML 内容')
+        for child in children:
+            if child.tag.rsplit('}',1)[-1].lower()=='foreignobject':parent.remove(child)
+    if any(
+        element.tag.rsplit('}',1)[-1].lower() in {'script','foreignobject','use'} or
+        (element.tag.rsplit('}',1)[-1].lower()=='style' and
+         re.search(r'url\s*\(|@import\b',element.text or '',re.I)) or
+        any((key.rsplit('}',1)[-1].lower()=='href' and value and
+             not (element.tag.rsplit('}',1)[-1].lower()=='image' and
+                  value.startswith(('data:image/png;base64,','data:image/jpeg;base64,')))) or
+            (key.rsplit('}',1)[-1].lower()=='style' and 'url(' in value.lower())
+            for key,value in element.attrib.items())
+        for element in root.iter()):
+        raise ValueError('SVG 包含不可安全栅格化的外部或脚本内容')
+    def length(value):
+        match=re.fullmatch(r'\s*(\d+(?:\.\d+)?)(?:px)?\s*',value or '')
+        return float(match[1]) if match else None
+    width=length(root.get('width'));height=length(root.get('height'))
+    viewbox_value=root.get('viewBox') or root.get('viewbox') or ''
+    viewbox=[float(part) for part in re.split(r'[\s,]+',viewbox_value.strip()) if part] if viewbox_value else []
+    if len(viewbox)==4 and viewbox[2]>0 and viewbox[3]>0:
+        width=width or viewbox[2];height=height or viewbox[3]
+    width=width or 512;height=height or 512
+    if width<=0 or height<=0 or width/height>32 or height/width>32:
+        raise ValueError('SVG 页面比例超出安全范围')
+    scale=min(1600/max(width,height),max(1,512/max(width,height)))
+    try:
+        return cairosvg.svg2png(bytestring=ElementTree.tostring(root),
+            output_width=max(1,round(width*scale)),output_height=max(1,round(height*scale)))
+    except Exception as exc:
+        raise ValueError('SVG 无法安全栅格化') from exc
+
+
 def public_addresses(host):
     result=[]
     for entry in socket.getaddrinfo(host,443,type=socket.SOCK_STREAM):
@@ -170,39 +223,7 @@ def fetch_bundle(url):
         try:
             image,kind,resolved=fetch(target,set(types),min(12,deadline-time.monotonic()))
             if kind=='image/svg+xml':
-                from defusedxml import ElementTree
-                import cairosvg
-                if len(image)>2_000_000:
-                    raise ValueError('SVG 源文件超过安全处理上限')
-                root=ElementTree.fromstring(image)
-                if root.tag.rsplit('}',1)[-1].lower()!='svg' or any(
-                    element.tag.rsplit('}',1)[-1].lower() in {'script','foreignobject','use'} or
-                    (element.tag.rsplit('}',1)[-1].lower()=='style' and
-                     re.search(r'url\s*\(|@import\b',element.text or '',re.I)) or
-                    any((key.rsplit('}',1)[-1].lower()=='href' and value and
-                         not (element.tag.rsplit('}',1)[-1].lower()=='image' and
-                              value.startswith(('data:image/png;base64,','data:image/jpeg;base64,')))) or
-                        (key.rsplit('}',1)[-1].lower()=='style' and 'url(' in value.lower())
-                        for key,value in element.attrib.items())
-                    for element in root.iter()):
-                    raise ValueError('SVG 包含不可安全栅格化的外部或脚本内容')
-                def length(value):
-                    match=re.fullmatch(r'\s*(\d+(?:\.\d+)?)(?:px)?\s*',value or '')
-                    return float(match[1]) if match else None
-                width=length(root.get('width'));height=length(root.get('height'))
-                viewbox=[float(part) for part in re.split(r'[\s,]+',root.get('viewBox','').strip())
-                         if part] if root.get('viewBox') else []
-                if len(viewbox)==4 and viewbox[2]>0 and viewbox[3]>0:
-                    width=width or viewbox[2];height=height or viewbox[3]
-                width=width or 512;height=height or 512
-                if width<=0 or height<=0 or width/height>32 or height/width>32:
-                    raise ValueError('SVG 页面比例超出安全范围')
-                scale=min(1600/max(width,height),max(1,512/max(width,height)))
-                try:
-                    image=cairosvg.svg2png(bytestring=image,
-                        output_width=max(1,round(width*scale)),output_height=max(1,round(height*scale)))
-                except Exception as exc:
-                    raise ValueError('SVG 无法安全栅格化') from exc
+                image=rasterize_svg(image)
             if total+len(image)>MAX_FILE*4:raise ValueError('网页与资源超过 100 MB 总量')
             name='web-assets/'+hashlib.sha256(target.encode()).hexdigest()+'.'+types[kind]
             uploads.append((name,image));aliases[target]=name;total+=len(image)

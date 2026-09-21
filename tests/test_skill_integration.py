@@ -82,7 +82,20 @@ def test_abbreviations_must_reach_actual_body():
     with pytest.raises(ValueError, match='正文中遗漏'):
         concept_presence([concept], draft)
     draft['blocks'][0]['markdown'] += '\n非确定性多项式时间（Nondeterministic Polynomial Time）'
+    with pytest.raises(ValueError, match='正文中遗漏'):
+        concept_presence([concept], draft)
+    draft['blocks'][0]['markdown'] += '，缩写为 NP'
     concept_presence([concept], draft)
+
+
+def test_chinese_formal_concept_cannot_self_certify_no_english_name(tmp_path):
+    resources = Resources(Store(tmp_path), {'objects': []})
+    concept = term() | {
+        'english_name': '', 'naming_status': 'not_applicable',
+        'name_evidence': [], 'naming_note': '模型认为没有英文名称',
+    }
+    with pytest.raises(ValueError, match='不能仅凭模型'):
+        validate_names({'concepts': [concept]}, resources)
 
 
 def test_name_evidence_reuses_exact_form_from_same_concept_sources(tmp_path):

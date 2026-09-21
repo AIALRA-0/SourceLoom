@@ -660,6 +660,35 @@ def test_linked_page_image_is_read_once_and_reused_in_planning(tmp_path,monkeypa
     assert len(job['external_resources'])==2
 
 
+def test_v2_prefetches_bounded_direct_link_before_first_planning_call(tmp_path,monkeypatch):
+    from pydantic import BaseModel
+    import sourceloom.network
+    class Answer(BaseModel):
+        value:int
+    monkeypatch.setattr(sourceloom.network,'fetch',lambda url,*args,**kwargs:
+        (b'<main><h1>Direct topic</h1><p>Verified target detail.</p></main>','text/html',url))
+    store=Store(tmp_path)
+    engine=ActiveComposition(Production(store,{'evidence_open_limit':1}))
+    src=source()|{'source_url':'https://example.org/article'}
+    src['objects']=[dict(id='link',kind='link',text='Direct topic',locator='input/a',
+        target='https://reference.example/topic')]
+    job=dict(id='v2-prefetch-test',project='project',role='active_plan',status='running',created=1,
+             pipeline='active_composition_v2',link_contract_version=1,
+             results={},calls=[],active_sessions={},external_resources={},
+             generated_resources={},verified_terminology=[])
+    calls=[]
+    def fake_call(job,key,role,payload,schema):
+        calls.append(payload)
+        assert payload['previous_action_results'][0]['id'].startswith('external-')
+        assert any('Verified target detail.' in entry['text'] for entry in payload['opened_resources'])
+        return dict(gaps=[],actions=[],ready_reason='Direct target already available',result={'value':1})
+    monkeypatch.setattr(engine,'call',fake_call)
+    assert engine.turn(job,'prefetched','active_plan',Answer,src,['link'],{},lambda value,_:value)=={'value':1}
+    assert len(calls)==1
+    history=job['active_sessions']['prefetched']['action_history']
+    assert history[0]['operation']=='direct_link_prefetch_before_planning'
+
+
 def test_missing_header_brand_asset_does_not_block_article_image(tmp_path):
     from sourceloom.source_context import classify_web_chrome
     from sourceloom.visual_sources import decorative_resource
@@ -712,6 +741,27 @@ def test_explicit_site_navigation_banner_excluded_without_main_region(tmp_path):
     classified=classify_web_chrome(store,src)
     assert {o['text'] for o in classified['objects'] if o.get('source_scope')!='site_chrome'}=={
         'CSS and XSL','Article body.'}
+    assert store.read_blob(src['originals'][0]['sha256'])==raw
+
+
+def test_inline_svg_button_icon_is_chrome_but_article_svg_remains_unresolved(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+
+    raw=(b'<html><body><main><h1>Shapes</h1>'
+         b'<button><span>Open menu</span><svg><path d="M0 0"/></svg></button>'
+         b'<p>Article diagram follows.</p><svg><circle cx="5" cy="5" r="4"/></svg>'
+         b'</main></body></html>')
+    store=Store(tmp_path)
+    src=intake(store,[('snapshot.html',raw)],source_url='https://example.org/shapes')
+    classified=classify_web_chrome(store,src)
+    svgs=[o for o in classified['objects'] if '<svg' in o.get('raw','')]
+    assert len(svgs)==2
+    assert svgs[0]['source_scope']=='site_chrome'
+    assert svgs[0]['visual_classification']['method']=='source_dom_interactive_control_icon'
+    assert svgs[1]['kind']=='image' and svgs[1]['resource_id']
+    assert not svgs[1].get('source_scope')
+    assert not classified['unknown']
     assert store.read_blob(src['originals'][0]['sha256'])==raw
 
 

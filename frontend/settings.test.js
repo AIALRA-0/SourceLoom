@@ -5,7 +5,7 @@ import {buildSettingsPayload,maskSecret,nextLifecycleState,normalizeSettings} fr
 
 test('masks provider secrets without retaining the raw value in normalized state',()=>{
  const state=normalizeSettings({providers:[{provider_id:'kuafu',api_key:'example-key',protocol:'responses',model:'deepseek-v4.1-flash'}]});
- assert.equal(state.providers[0].keyMasked,'sk••••le');
+ assert.equal(state.providers[0].keyMasked,'ex••••ey');
  assert.equal(state.providers[0].secretDraft,'');
  assert.equal(maskSecret('••••••••'),'••••••••');
 });

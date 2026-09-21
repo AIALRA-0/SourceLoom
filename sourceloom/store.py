@@ -175,7 +175,7 @@ class Store:
             global_total,global_calls=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0),SUM(CASE WHEN '+paid+' THEN 1 ELSE 0 END) FROM spending WHERE created>=?',(day,)).fetchone()
             if not subscription and daily_budget is not None and global_total+amount>daily_budget+1e-9:
                 raise Conflict('今日接口费用保护暂停，已知费用与预留合计将超过当前设置，已有结果保留；不是订阅账户额度耗尽')
-            if not subscription and (global_calls or 0)>=daily_calls:
+            if not subscription and daily_calls is not None and (global_calls or 0)>=daily_calls:
                 raise Conflict('今日接口请求次数达到当前保护设置，已有结果保留；订阅请求不计入这个次数')
             all_spending=cx.execute('SELECT COALESCE(SUM(COALESCE(actual,reserved)),0) FROM spending').fetchone()[0]
             if not subscription and total_budget is not None and all_spending+amount>total_budget+1e-9:

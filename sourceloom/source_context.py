@@ -89,7 +89,7 @@ def classify_web_chrome(store,source):
     page_url=result.get('source_url','')
     if not page_url:return result
     parsed=urlsplit(page_url)
-    pages=[];chrome_prefixes=[];metadata_prefixes=[];content_roots=[]
+    pages=[];chrome_prefixes=[];metadata_prefixes=[];content_roots=[];control_icon_prefixes=[]
     def dom_locator(name,root,element):
         parts=[];child=element
         while child is not root and child.parent is not None:
@@ -103,6 +103,13 @@ def classify_web_chrome(store,source):
             page=BeautifulSoup(store.read_blob(original['sha256']),'html.parser')
             pages.append(page)
             root=page.body or page
+            # An inline SVG nested in an actual button/summary is interface chrome.
+            # Classify only the icon itself: article diagrams and the control's
+            # visible label stay available to the normal source rules.
+            for control in root.find_all(['button','summary']):
+                for icon in control.find_all('svg'):
+                    prefix=dom_locator(original['name'],root,icon)
+                    if prefix:control_icon_prefixes.append(prefix)
             main=(root.find('main') or root.find(id='main') or root.find(attrs={'role':'main'}))
             has_main=bool(main)
             if main:
@@ -193,6 +200,12 @@ def classify_web_chrome(store,source):
                     obj['source_scope']='site_chrome'
                     resolved.append(obj['id'])
     for obj in result['objects']:
+        if (obj.get('locator','') in control_icon_prefixes and obj.get('kind') in {'unknown','image'}
+                and re.match(r'^\s*<svg\b',obj.get('raw',''),re.I)):
+            obj['visual_classification']=dict(method='source_dom_interactive_control_icon',
+                source_role='site_chrome',resource_available=True)
+            obj['source_scope']='site_chrome'
+            resolved.append(obj['id'])
         for name,prefix in content_roots:
             locator=obj.get('locator','')
             if locator.startswith(name+'/node[') and not (locator==prefix or locator.startswith(prefix+'/')):
