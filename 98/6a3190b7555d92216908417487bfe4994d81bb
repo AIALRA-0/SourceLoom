@@ -1,0 +1,38 @@
+tests/test_v2_real_eval.py
+  s_36a381ab4bccf9::t_1d3b1472aeabaa 21,312-355
+  s_36a381ab4bccf9::t_d6aab876562ff3 373-374
+  s_36a381ab4bccf9::t_c556efa45bd1da 8,137,164-167,169,225-311
+  s_e8850ef125fb32::t_b6628f8ca25275 356-357
+scripts/V2_REAL_EVAL.md
+  s_36a381ab4bccf9::t_22c5670ed4d90c 52-54
+scripts/v2_real_eval.py
+  s_36a381ab4bccf9::t_22c5670ed4d90c 462-469
+  s_36a381ab4bccf9::t_58ec58d689de38 35-37,255,259,271-276,278,307-309,353-354,401-403,408-425,444,447-456,472-489,492,495-497,500-505,508-515,537-539,562-565,578-579
+  s_36a381ab4bccf9::t_2c0c5389bfdea0 541,544-545
+  s_36a381ab4bccf9::t_ccefce9bb3133d 46-49,277,391-397
+  s_36a381ab4bccf9::t_8bae7afcf253f5 493,522-528
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "986a3190b7555d92216908417487bfe4994d81bb",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_e8850ef125fb32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0457f-8774-7b32-a516-a974107d6ab1",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
