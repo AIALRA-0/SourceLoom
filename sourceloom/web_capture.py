@@ -19,7 +19,11 @@ def capture(url: str, timeout_ms: int = 30000):
         browser = runtime.chromium.launch(
             executable_path='/usr/bin/google-chrome' if __import__('os').path.exists('/usr/bin/google-chrome') else None,
             headless=True,
-            args=['--disable-dev-shm-usage'])
+            # Production already runs as an unprivileged account inside a
+            # NoNewPrivileges/systemd filesystem sandbox.  Chrome's nested
+            # setuid sandbox cannot initialize there; request routing below
+            # still rejects credentials, non-HTTPS and non-public addresses
+            args=['--disable-dev-shm-usage','--no-sandbox'])
         page = browser.new_page(viewport={'width':1440,'height':1000}, device_scale_factor=1)
         @lru_cache(maxsize=256)
         def allowed_host(host):
