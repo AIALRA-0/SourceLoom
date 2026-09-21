@@ -307,6 +307,20 @@ def test_source_spans_preserve_every_character_and_reject_an_unassigned_tail():
     with pytest.raises(ValueError,match='未分配的原文片段'):validate_plan(p,src,['s1'],require_spans=True)
 
 
+def test_plan_expands_a_contiguous_model_composed_span_range():
+    from sourceloom.active_composition import source_spans
+    src=source();src['objects'][0]['text']='A long sentence. '*100+'Final exception is mandatory.'
+    spans=source_spans(src,['s1'])
+    assert len(spans)>1
+    p=plan();p['nodes'][0]['obligation_ids']=['f1'];p['nodes'][0]['source_ids']=['s1']
+    p['obligations']=p['obligations'][:1]
+    composed=f"s1:{spans[0]['start']}:{spans[-1]['end']}"
+    p['obligations'][0].update(quote='',source_span_ids=[composed])
+    validated=validate_plan(p,src,['s1'],require_spans=True)
+    assert validated['obligations'][0]['source_span_ids']==[s['id'] for s in spans]
+    assert validated['obligations'][0]['quote']==src['objects'][0]['text']
+
+
 def test_resource_search_is_discovery_not_verified_source(tmp_path,monkeypatch):
     import sourceloom.network
     xml=b'<rss><channel><item><title>Source</title><link>https://example.org/reference</link><description>Untrusted summary</description></item></channel></rss>'

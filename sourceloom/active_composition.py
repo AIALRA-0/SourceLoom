@@ -796,6 +796,30 @@ def source_spans(source,ids):
     return spans
 
 
+def normalize_source_span_ids(selected, source_id, spans):
+    """Expand a model-composed contiguous range back to canonical span IDs."""
+    normalized=[]
+    for span_id in selected:
+        if span_id in spans and spans[span_id]['source_id']==source_id:
+            normalized.append(span_id)
+            continue
+        try:
+            claimed_source,start,end=span_id.rsplit(':',2)
+            start,end=int(start),int(end)
+        except (AttributeError,ValueError):
+            return selected
+        if claimed_source!=source_id or start>=end:
+            return selected
+        candidates=sorted((span for span in spans.values()
+            if span['source_id']==source_id and span['start']>=start and span['end']<=end),
+            key=lambda span:span['start'])
+        if (not candidates or candidates[0]['start']!=start or candidates[-1]['end']!=end
+                or any(left['end']!=right['start'] for left,right in zip(candidates,candidates[1:]))):
+            return selected
+        normalized.extend(span['id'] for span in candidates)
+    return list(dict.fromkeys(normalized))
+
+
 def prompt_source_spans(source,ids):
     """Expose stable span addresses without repeating already opened text."""
     return [{k:v for k,v in span.items() if k!='preview'} for span in source_spans(source,ids)]
@@ -1295,6 +1319,8 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
         selected=obligation.get('source_span_ids',[])
         if require_spans and not selected:raise ValueError('请用给定的原文片段编号，不要重新抄写引文：'+obligation['id'])
         if selected:
+            selected=normalize_source_span_ids(selected,obligation['source_id'],spans)
+            obligation['source_span_ids']=selected
             if any(s not in spans or spans[s]['source_id']!=obligation['source_id'] for s in selected):
                 raise ValueError('义务片段编号不存在或属于另一原对象')
             ordered=sorted((spans[s] for s in set(selected)),key=lambda s:s['start'])

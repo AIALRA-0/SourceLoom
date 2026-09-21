@@ -14,7 +14,7 @@ def load_config():
             "protocol":"chat_completions", "endpoint":"/responses",
             "codex_executable":"codex", "codex_ignore_user_config":True,
             "input_price":0.30, "output_price":1.20, "max_output_tokens":6000,
-            "call_timeout":90, "job_timeout":300, "max_input_bytes":450000,
+            "call_timeout":90, "job_timeout":900, "max_input_bytes":450000,
             "kuafu_safe_input_bytes":180000,
             "kuafu_fallback_roles":[],
             "router_max_objective_chars":300000,

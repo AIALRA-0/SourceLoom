@@ -12,7 +12,7 @@
   "kuafu_fallback_roles": [],
   "router_max_objective_chars": 300000,
   "call_timeout": 90,
-  "job_timeout": 300,
+  "job_timeout": 900,
   "total_budget_usd": null,
   "subscription_call_limit": null,
   "max_repair_rounds": 32,
