@@ -550,6 +550,17 @@ def discard_known_plan_protocol_extras(raw):
     return cleaned,removed
 
 
+def discard_known_review_protocol_extras(raw):
+    """Remove an empty duplicate explanation field from a validation copy."""
+    cleaned=copy.deepcopy(raw);removed=[]
+    result=cleaned.get('result') if isinstance(cleaned,dict) else None
+    for decision in result.get('format_decisions',[]) if isinstance(result,dict) else []:
+        if decision.get('reason_note')=='' and decision.get('reason','').strip():
+            removed.append(decision.get('candidate_id',''))
+            decision.pop('reason_note',None)
+    return cleaned,removed
+
+
 def unique(values, label):
     if len(values) != len(set(values)) or '' in values:
         raise ValueError(label + '身份为空或重复')
@@ -1911,12 +1922,17 @@ class ActiveComposition:
                 request['protocol_correction'] = session['correction']
             raw = self.call(job, key + '-turn-' + str(session['round']), role, request, A.Turn[schema])
             try:
-                checked_raw,removed_extras=(discard_known_plan_protocol_extras(raw)
-                    if is_v2(job) and role=='active_plan' else (raw,[]))
+                if is_v2(job) and role=='active_plan':
+                    checked_raw,removed_extras=discard_known_plan_protocol_extras(raw)
+                elif is_v2(job) and role=='active_review':
+                    checked_raw,removed_extras=discard_known_review_protocol_extras(raw)
+                else:
+                    checked_raw,removed_extras=raw,[]
                 if removed_extras:
                     job.setdefault('nonblocking_protocol_notes',[]).append(dict(
-                        step=key,reason='redundant naming_status_effective removed from validation copy',
-                        concept_ids=removed_extras))
+                        step=key,reason=('redundant naming_status_effective removed from validation copy'
+                            if role=='active_plan' else 'empty reason_note removed from validation copy'),
+                        object_ids=removed_extras))
                 response = A.Turn[schema].model_validate(checked_raw).model_dump()
                 response,reused=discard_redundant_reads_with_result(response,resources)
                 if reused:

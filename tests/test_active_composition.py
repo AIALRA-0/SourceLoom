@@ -89,6 +89,15 @@ def test_redundant_effective_name_status_is_removed_only_from_validation_copy():
     assert raw['result']['concepts'][0]['naming_status_effective']=='ambiguous'
 
 
+def test_empty_review_reason_note_is_removed_only_from_validation_copy():
+    from sourceloom.active_composition import discard_known_review_protocol_extras
+    raw={'result':{'format_decisions':[{'candidate_id':'candidate-1',
+        'decision':'dismiss','reason':'The same sentence continues','reason_note':''}]}}
+    cleaned,removed=discard_known_review_protocol_extras(raw)
+    assert removed==['candidate-1'] and 'reason_note' not in cleaned['result']['format_decisions'][0]
+    assert raw['result']['format_decisions'][0]['reason_note']==''
+
+
 def test_unsupported_model_name_is_removed_instead_of_blocking_document(tmp_path):
     from sourceloom.active_composition import validate_names
     resources=Resources(Store(tmp_path),source());resources.read('s1')
