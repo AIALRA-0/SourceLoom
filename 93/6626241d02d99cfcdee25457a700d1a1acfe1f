@@ -1,0 +1,23 @@
+tests/test_transport_rendering.py
+  s_36a381ab4bccf9::t_c21b0983125100 298-307
+  s_36a381ab4bccf9::t_d0d3c5b0ef40c1 297
+  s_36a381ab4bccf9::t_ad026cbc1a1e53 308-309
+sourceloom/checks.py
+  s_36a381ab4bccf9::t_c21b0983125100 149-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "936626241d02d99cfcdee25457a700d1a1acfe1f",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
