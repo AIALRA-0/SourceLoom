@@ -1,0 +1,54 @@
+sourceloom/static/workspace.css
+  s_36a381ab4bccf9::t_1e43cadde538a9 104
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_bde8f3919fb03d 2146-2164,2170,2190-2193,2195-2199,2204-2213
+tests/test_core.py
+  s_36a381ab4bccf9::t_47023783571144 178-187
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_c4d8618748d95a 621-630
+sourceloom/static/production-progress.js
+  s_36a381ab4bccf9::t_4d2b395c8167ba 15
+sourceloom/app.py
+  s_36a381ab4bccf9::t_5b5260aa4f52ed 475-476,488-489
+sourceloom/providers.py
+  s_36a381ab4bccf9::t_904596e244cc18 667-669
+  s_36a381ab4bccf9::t_df2deac1a5b13d 679
+  s_36a381ab4bccf9::t_456471e70bdeee 671-678,680-688
+  s_36a381ab4bccf9::t_5995d465312ec2 627,649,652-656,661-666,670,689-693
+tests/test_provider_settings.py
+  s_36a381ab4bccf9::t_a3cb9e44419252 277-336
+sourceloom/production.py
+  s_36a381ab4bccf9::t_7a377747c1d886 145
+  s_36a381ab4bccf9::t_3edd9a67a71815 118-120,133
+  s_36a381ab4bccf9::t_cdaeba48049480 47-51,86-117,121-123,127-132,134-144,146-150
+  s_36a381ab4bccf9::t_58a74eff85eb95 124-126
+  s_36a381ab4bccf9::t_588c27e3a4280c 1712-1714
+  s_5acd167c2115aa::t_cb21534764ee8e 151-156
+tests/test_kuafu_recovery.py
+  s_36a381ab4bccf9::t_90a709c9646b8f 6
+  s_36a381ab4bccf9::t_853378b39113f6 1-5,7-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "058851356813aa36d0561a784a6a87beb42e1122",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_5acd167c2115aa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03a21-3e91-7be2-8cf4-5616c2bcfc48",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
