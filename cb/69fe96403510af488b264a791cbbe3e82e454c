@@ -1,0 +1,43 @@
+tests/test_readweave_format_compat.py
+  s_36a381ab4bccf9::t_2718d233ccda52 85
+  s_36a381ab4bccf9::t_3e954bfeca58d0 15-16,27,29,50,52,56
+  s_36a381ab4bccf9::t_edd811c02e46cc 42
+  s_36a381ab4bccf9::t_1ac43873107550 75-76,105,107-116
+  s_36a381ab4bccf9::t_2d1b47df26c29d 1-6,8-10,58-67,69-74,77-84,86-104
+  s_36a381ab4bccf9::t_52b50cd937d46f 11-14,17-26,28,46-49,51,53-55,57
+  s_36a381ab4bccf9::t_60b0b222ec7092 7,30-41,43-45
+  s_36a381ab4bccf9::t_86774a153f4652 68,106
+sourceloom/writing.py
+  s_36a381ab4bccf9::t_53965c782b140e 698-707
+  s_36a381ab4bccf9::t_242a05faab8f53 159
+  s_36a381ab4bccf9::t_7e4015078627a7 161
+  s_36a381ab4bccf9::t_7c1622289ab9fc 158
+  s_36a381ab4bccf9::t_a79546d7f87e8a 145-148,160
+sourceloom/readweave_format_compat.py
+  s_36a381ab4bccf9::t_d2d19fb29b5438 1-19,21-64,130-155
+  s_36a381ab4bccf9::t_101091e32cff2c 20
+  s_36a381ab4bccf9::t_a79546d7f87e8a 65-80,87-129
+  s_36a381ab4bccf9::t_2f9d48b0b8053f 156-158,160,162,164,166,168,170,172,174-177,183-191,194-203,205,209,216-224,229-244
+  s_36a381ab4bccf9::t_86609e08770be3 159,161,163
+  s_36a381ab4bccf9::t_17838af177973c 169,171,173,206,208,210
+  s_36a381ab4bccf9::t_53965c782b140e 178-182,192-193
+  s_36a381ab4bccf9::t_ffd97734d9d2df 165,167
+  s_36a381ab4bccf9::t_315ab0b3e83086 204,207,211-215,225-228
+  s_36a381ab4bccf9::t_653b03495364cc 81-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cb69fe96403510af488b264a791cbbe3e82e454c",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
