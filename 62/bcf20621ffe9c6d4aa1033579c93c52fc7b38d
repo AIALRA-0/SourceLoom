@@ -1,0 +1,31 @@
+sourceloom/static/production-progress.js
+  s_36a381ab4bccf9::t_cb53dce5d448a0 4-10,13
+sourceloom/static/document-toolbar.js
+  s_36a381ab4bccf9::t_3b2e9bf9bed488 65-66,68
+  s_36a381ab4bccf9::t_30a83605555b09 46-64,67
+sourceloom/static/library.js
+  s_36a381ab4bccf9::t_5ca046300c4247 62
+sourceloom/static/workspace.css
+  s_36a381ab4bccf9::t_108e47e222d823 82
+  s_36a381ab4bccf9::t_0f0dff3e1f3105 84,120,123-124
+  s_36a381ab4bccf9::t_08d58a06f2de5e 75-81,83,85-119,121
+frontend/progress.test.js
+  s_36a381ab4bccf9::t_dc9c2b01f34286 43-45
+  s_36a381ab4bccf9::t_87a517263f6452 1-42,46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "62bcf20621ffe9c6d4aa1033579c93c52fc7b38d",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
