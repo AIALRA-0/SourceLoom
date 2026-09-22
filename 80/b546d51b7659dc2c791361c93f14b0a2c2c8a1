@@ -1,0 +1,39 @@
+sourceloom/progress.py
+  s_36a381ab4bccf9::t_5e7ca462212180 77
+tests/test_active_composition.py
+  s_36a381ab4bccf9::t_ccf28b4ead68da 1877,1879,1885-1905,1907-1908,1910-1912
+  s_36a381ab4bccf9::t_41a5317bfbced9 1833,1848-1851,1944-1945,1975-1976
+  s_36a381ab4bccf9::t_c318ea47b2e97d 1906,1909
+  s_36a381ab4bccf9::t_4662e4f9b3fbc5 2015-2016
+  s_36a381ab4bccf9::t_4efacb0da2dcea 1855-1858,1861-1876,1878,1880-1884
+sourceloom/reading.py
+  s_36a381ab4bccf9::t_539197c221cd35 58
+sourceloom/app.py
+  s_36a381ab4bccf9::t_fa038c287f6018 448-451,468-471,478-481
+sourceloom/production.py
+  s_36a381ab4bccf9::t_9fd24d42b70942 1639-1647
+sourceloom/library_api.py
+  s_36a381ab4bccf9::t_81e1234b9cb0ca 160
+  s_36a381ab4bccf9::t_cb146ddf6babe0 157,163,170-171,180,182,199-200,247-248,250
+  s_36a381ab4bccf9::t_086193486babe6 223-224,236-237
+  s_36a381ab4bccf9::t_05486fb5ab098b 158,165-166,169
+  s_36a381ab4bccf9::t_0d6a126c10c47f 146-147
+tests/test_iteration8.py
+  s_36a381ab4bccf9::t_fdd8a298984aac 515-516
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "80b546d51b7659dc2c791361c93f14b0a2c2c8a1",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
