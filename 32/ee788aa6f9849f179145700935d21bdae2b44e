@@ -1,0 +1,35 @@
+tests/test_glossary_writer_repair.py
+  s_36a381ab4bccf9::t_e9a013763b48f2 47,85-88
+  s_36a381ab4bccf9::t_f8657b28e2250a 31,55-56
+  s_36a381ab4bccf9::t_022a2cae8d0b09 1-30,32-46,48-54,57-84,89-135
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_54dc9bacaf26c2 2593-2595,2602-2604,2606-2608,2610,2663-2673
+  s_36a381ab4bccf9::t_7eb1b35452d904 2605,2609,2658-2660
+  s_36a381ab4bccf9::t_61b87db120e365 2654-2657,2661-2662
+  s_36a381ab4bccf9::t_6b79ea6344bd68 43-69
+  s_f4bc084e1b5e1b::t_52d6b94d0127f4 2592,2596-2599,2601,2653
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "32ee788aa6f9849f179145700935d21bdae2b44e",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_f4bc084e1b5e1b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a05e85-d752-7582-abf7-4d4f5901369e",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
