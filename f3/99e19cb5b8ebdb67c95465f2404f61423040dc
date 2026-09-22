@@ -1,0 +1,26 @@
+sourceloom/static/document-toolbar.js
+  s_36a381ab4bccf9::t_a0cf9e488a851e 10,21
+sourceloom/static/workspace.css
+  s_36a381ab4bccf9::t_beb0de5e3c42fd 123
+sourceloom/static/library.js
+  s_36a381ab4bccf9::t_45970e953dc7dd 84
+frontend/progress.test.js
+  s_36a381ab4bccf9::t_c7ff4617f0d132 47-49,52
+  s_36a381ab4bccf9::t_d1084b181421f2 50-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f399e19cb5b8ebdb67c95465f2404f61423040dc",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
