@@ -1,0 +1,34 @@
+sourceloom/intake_jobs.py
+  s_36a381ab4bccf9::t_ea4f73fb64282a 106-120
+sourceloom/network.py
+  s_36a381ab4bccf9::t_eaf2b9c136083c 215-216,222-226,236,250,260,377
+  s_36a381ab4bccf9::t_c0f1e76e119245 277,283-285,287,291-320
+sourceloom/ingest.py
+  s_36a381ab4bccf9::t_eaf2b9c136083c 157-160,162,165-166,188,288,309,336,356
+tests/test_uploaded_image_capture.py
+  s_36a381ab4bccf9::t_73ce7f136f55ad 4,11-13,51-107
+tests/test_source_url_types.py
+  s_36a381ab4bccf9::t_cdb6f074a7de00 2-16
+  s_36a381ab4bccf9::t_23ce5883dc34ba 1,17-27
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_9b23d0ed23a2b3 592-593,599-601,609-612
+  s_36a381ab4bccf9::t_8a08d747769198 2033-2038,2734-2736,2812,2823-2824,3092-3093
+  s_36a381ab4bccf9::t_cdb6f074a7de00 1432-1434
+  s_36a381ab4bccf9::t_0dea2a84d343cf 638-640
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fc47a3bdd0a033dd17f31b070574c706be38ef37",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
