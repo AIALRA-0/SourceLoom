@@ -1,0 +1,21 @@
+tests/test_responses_json_recovery.py
+  s_36a381ab4bccf9::t_9d5557e371096a 59,61,66-67
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_75ef63094ee192 760,780
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2477148db1f9a4b69acd4d4e8b2f1ac08023208c",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
