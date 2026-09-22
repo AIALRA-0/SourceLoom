@@ -1,0 +1,35 @@
+sourceloom/providers.py
+  s_36a381ab4bccf9::t_1cf163299e2f71 1201-1209
+  s_36a381ab4bccf9::t_3e47ca5d5d8357 1045
+  s_36a381ab4bccf9::t_52d55014f1947b 1046-1049
+  s_36a381ab4bccf9::t_e40f40d9827daa 617-621,623-626,638
+  s_36a381ab4bccf9::t_bb1650ccff8e46 260-263,613-616,622,627-637,639-659,1035,1040-1041,1050,1210-1217
+tests/test_provider_settings.py
+  s_36a381ab4bccf9::t_684f07057bcdc9 164
+  s_36a381ab4bccf9::t_1decbba4d2b39b 124-147
+  s_36a381ab4bccf9::t_15ed48232a7c61 187
+  s_36a381ab4bccf9::t_ac517b6d15bbcc 162,166-186,192-199,201-205
+  s_36a381ab4bccf9::t_38c0c33c4f247f 206-222
+  s_36a381ab4bccf9::t_09f3a089f55b88 163,165,188-191,200
+  s_36a381ab4bccf9::t_3d26ef76a2b450 148-161
+sourceloom/provider_settings.py
+  s_36a381ab4bccf9::t_20c71bfadb226a 145,169,289,398,462,503,731
+  s_36a381ab4bccf9::t_b1f5e8171b3c1f 437-449
+  s_36a381ab4bccf9::t_3c42d1a9382bc7 484
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a7b6ed9d871606f13f5fef00baed4104e20e6059",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
