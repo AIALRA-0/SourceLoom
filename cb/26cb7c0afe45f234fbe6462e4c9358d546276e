@@ -1,0 +1,24 @@
+docs/REAL_CASES.md
+  s_36a381ab4bccf9::t_3363ada1a9f3e5 13-15
+  s_36a381ab4bccf9::t_53d298e7864e07 5-7
+docs/ACTIVE_COMPOSITION_IMPLEMENTATION.md
+  s_36a381ab4bccf9::t_67d26fb9df2b9f 72-73,76,78-80
+reports/AUTOMATIC_TRIAL.md
+  s_36a381ab4bccf9::t_fb7e9ae699bb22 3-4,78,88,98,114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cb26cb7c0afe45f234fbe6462e4c9358d546276e",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
