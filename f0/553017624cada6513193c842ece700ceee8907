@@ -1,0 +1,22 @@
+sourceloom/materials.py
+  s_36a381ab4bccf9::t_253b924e699690 40,70-81,83-94,103
+  s_36a381ab4bccf9::t_4654f472d265b4 82
+tests/test_link_target_binding.py
+  s_36a381ab4bccf9::t_4654f472d265b4 1-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f0553017624cada6513193c842ece700ceee8907",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
