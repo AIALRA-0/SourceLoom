@@ -1,0 +1,21 @@
+README.en.md
+  s_9f7652456e8616::t_af13073dac69b1 9
+README.md
+  s_9f7652456e8616::t_b08164daf93d2c 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7e00584accae17b49b75cfb25414c3d11167111b",
+  "prompts": {},
+  "sessions": {
+    "s_9f7652456e8616": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03a0f-6460-7b73-bec4-9acbdcd78a39",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
