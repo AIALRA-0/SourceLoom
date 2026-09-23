@@ -1,0 +1,23 @@
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_d3105b8fe82a4e 1366-1394,1403-1404
+tests/test_authored_spacing.py
+  s_36a381ab4bccf9::t_85707775c03576 1-17,21,23-25,28-39
+  s_36a381ab4bccf9::t_a4a73ce726f018 27
+  s_36a381ab4bccf9::t_9c53ac06caac31 18-20,22,26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ecc2fcc5aad75d83f4bd8c182bbb6d665bd5cfe2",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": null
+    }
+  }
+}
