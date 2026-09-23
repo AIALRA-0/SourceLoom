@@ -1,0 +1,23 @@
+tests/test_transparent_svg_placeholders.py
+  s_36a381ab4bccf9::t_0850c747e7be52 1-17,19-75
+  s_36a381ab4bccf9::t_368727c20f84a4 18
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_eedec3cb77372c 11,34-95
+  s_36a381ab4bccf9::t_5ea458c4425c75 3803,3811,3821,3867
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a05af04529533547739677da451fc399f946a370",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
