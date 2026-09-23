@@ -1,0 +1,31 @@
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_b33abd189afff2 1162-1163,1170,1175-1179
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_66095b1ad619ce 2846-2847,2864-2874,2877-2881
+  s_36a381ab4bccf9::t_f47fa49bdbceea 2976-2977
+tests/test_kuafu_go_third_route.py
+  s_36a381ab4bccf9::t_9cccb25516523a 376,380,393
+  s_36a381ab4bccf9::t_d316b8f79010aa 377
+  s_36a381ab4bccf9::t_0008ad2724e691 341,382-384
+  s_36a381ab4bccf9::t_a0dcf9c5f593d1 146-147,156,283-340,342-375,378-379,381,385-392,394-396
+sourceloom/production.py
+  s_36a381ab4bccf9::t_bbe9badeba25d8 298-352,356-359,361-396
+  s_36a381ab4bccf9::t_0bb2f6d37b4441 353-355,360
+  s_36a381ab4bccf9::t_2634109d38dbb3 1961-1963
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e6607edc971e3ec693c19d104b0ba6a650b5d4c5",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
