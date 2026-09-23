@@ -1,0 +1,21 @@
+tests/test_gateway_dispatch_budget.py
+  s_36a381ab4bccf9::t_5df26bc50f2e40 182-247
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_436ae80dfb2ef9 79-97,285-289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5d885a8962bbc2ead12a0ac2436ddbd9737e4dc0",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
