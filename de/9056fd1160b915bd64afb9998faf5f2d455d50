@@ -1,0 +1,44 @@
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_0861c9d489d3e1 46-73,75,78-113,115-125,127-140,143-145,148-152,4447
+  s_36a381ab4bccf9::t_f7b0505505f9e8 114,141-142,146-147,4433-4440,4459,4461
+  s_36a381ab4bccf9::t_c6463169f33650 4366-4368
+  s_36a381ab4bccf9::t_269dbc694480e3 74,76-77
+  s_7e23799dc317a2::t_e68c6a673c5e31 126,4055,4094-4095,4369-4380,4432,4441,4448-4458,4460,4462-4467
+sourceloom/source_context.py
+  s_36a381ab4bccf9::t_183bd70644865f 165-183
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_ef8aa104b02565 49-60
+  s_36a381ab4bccf9::t_f9401f6f7a2965 806-810,1413-1499
+tests/test_active_patch_protected_recovery.py
+  s_36a381ab4bccf9::t_6ced4131f5cad2 2-13,16-40,55-56,60-83,86-87,89-93,96-104,106-112,115-139
+  s_36a381ab4bccf9::t_1d0760fafa7809 105
+  s_36a381ab4bccf9::t_a0d563e9fb648a 14,41-54
+  s_36a381ab4bccf9::t_718e10d37f7543 15,57-59,94-95,113-114
+  s_36a381ab4bccf9::t_04ac21e4d9dde0 1,84-85,88
+tests/test_content_root_without_main.py
+  s_36a381ab4bccf9::t_268987446a5700 1-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "de9056fd1160b915bd64afb9998faf5f2d455d50",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_7e23799dc317a2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0ad52-c35f-7882-a496-5c0fabb841af",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
