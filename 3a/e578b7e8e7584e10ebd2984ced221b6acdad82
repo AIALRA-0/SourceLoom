@@ -1,0 +1,22 @@
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_e56f50c30b896b 47-49,2096,2106-2107,2127
+  s_36a381ab4bccf9::t_830a246158ba7f 2122-2126
+tests/test_hybrid_object_patch.py
+  s_36a381ab4bccf9::t_d5db3a88c86cef 1-2,69-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3ae578b7e8e7584e10ebd2984ced221b6acdad82",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
