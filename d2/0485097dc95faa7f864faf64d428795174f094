@@ -1,0 +1,114 @@
+sourceloom/roles/active_write.md
+  s_36a381ab4bccf9::t_c1da45a1051fc9 16
+  s_36a381ab4bccf9::t_38c814fde71fbb 30
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_a1b592177ad67b 658,698-731,861,866-868,870-874
+  s_36a381ab4bccf9::t_25de2e87ad41cf 13-22,24-25,27-31,33-36,864
+  s_36a381ab4bccf9::t_e3b2deec0f7a34 23,26,32,862-863,865,869
+  s_4d8bb530e409af::t_49c7134c561b31 875
+sourceloom/media.py
+  s_36a381ab4bccf9::t_3e87f5a4925d50 58-59
+  s_36a381ab4bccf9::t_1addc623fcfe02 53-57
+tests/test_iteration9.py
+  s_36a381ab4bccf9::t_01795e987ecad8 117-118,120
+  s_36a381ab4bccf9::t_c91719cf77a2ab 126-149
+  s_36a381ab4bccf9::t_1addc623fcfe02 89-116,119,121-125
+tests/test_short_rewrite_quality_fix.py
+  s_36a381ab4bccf9::t_7a974c202cdfca 89,125
+  s_36a381ab4bccf9::t_72d517bf111b14 1-4,6-9,15-17,19-30,68,73,92-96,119,127,129,180-181,203-218,236-245,249-255,257-261,265-279,294-329,331
+  s_36a381ab4bccf9::t_6fbafb58f11717 5,117,219-234
+  s_36a381ab4bccf9::t_e6c1260a8e5b0d 10-13,41-42,44-45,90,98-103,109-111,126,130-131,158-179
+  s_36a381ab4bccf9::t_f530cc06ba63d0 40,43,46-51,54-55,59,61-63,66,71,75-76,80-84,91,97,104-107,112-113,116,118,120,122,128,132-136,138,140,142,144,146-148,151-152,154-157
+  s_36a381ab4bccf9::t_0ca88743c8e092 137,139,141,143,145,149-150,153
+  s_36a381ab4bccf9::t_ce8f5018c4e1d0 235
+  s_36a381ab4bccf9::t_e74607093f009b 182-202,281-282
+  s_36a381ab4bccf9::t_b67cead1ad50b5 246-248,256
+  s_36a381ab4bccf9::t_9464045fc417ec 18,31-39,52-53,56-58,60,64-65,67,69-70,72,74,77-79,85-88,121,123-124
+  s_36a381ab4bccf9::t_ed6871589c446e 14,114-115,262-264,280,283-288,330
+  s_36a381ab4bccf9::t_c07452be690d2d 108
+  s_e8850ef125fb32::t_e2a668d72bccdc 289-293
+docs/REAL_CORPUS_NEXT.md
+  s_36a381ab4bccf9::t_bd4ff717e7c704 17,19,21
+  s_36a381ab4bccf9::t_b3f119a86c9027 1-14,20,22-24
+  s_36a381ab4bccf9::t_8bc9684daf6bee 16,18
+  s_36a381ab4bccf9::t_f78c4ba042013d 15
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_fca7582983df4a 127,185,187,189,226,229,232
+  s_36a381ab4bccf9::t_f1a49c8a329f72 150-151,163-164,1493-1494,1496-1500,1533,1535
+  s_36a381ab4bccf9::t_3c5151cc713b80 3559-3561,3563,3573,3581,3629-3630,3775
+  s_36a381ab4bccf9::t_d510455aa9a442 73-74,76
+  s_36a381ab4bccf9::t_dedbd00c0b4eb9 101-102
+  s_36a381ab4bccf9::t_151bc1f4ad3060 3325
+  s_36a381ab4bccf9::t_4e7177d595bc32 661-662
+  s_36a381ab4bccf9::t_856c98660bd03e 1547
+  s_36a381ab4bccf9::t_28ab805c8b2b8f 1490-1492,1495,1528-1529,1534,1536,1538,1552-1553,1558
+  s_36a381ab4bccf9::t_f5ea8068177004 3311,3322-3324,3326-3328,3351,3363-3364
+  s_36a381ab4bccf9::t_a57b8014e4dd4d 148-149,161-162,258-259
+  s_36a381ab4bccf9::t_ca6d368e5c7b76 1545-1546
+  s_36a381ab4bccf9::t_01700b02e55c7d 3005-3008,3013
+  s_36a381ab4bccf9::t_c0b544a397c22a 3309,3315-3316,3319-3321,3329,3339
+  s_36a381ab4bccf9::t_21c94cec421b09 1567
+  s_36a381ab4bccf9::t_b7e39fd4dd2cfd 1537,1539-1541,1549,1551,1554-1556
+  s_36a381ab4bccf9::t_4ca0993bc3bdb4 124,184
+  s_36a381ab4bccf9::t_c4f899279b81e9 2495-2499,2505,2508-2511,2516,2532-2533,2541-2543,2565-2567
+  s_36a381ab4bccf9::t_9ca992b9613304 199
+  s_36a381ab4bccf9::t_add09cc7dfe404 2232-2233,2313
+  s_36a381ab4bccf9::t_dde049ba4e5fa3 647-652
+  s_36a381ab4bccf9::t_b9e5c5fcd77c31 3310
+  s_36a381ab4bccf9::t_6cd709af15913e 212,223,1246
+  s_36a381ab4bccf9::t_4433a47e1e02ce 174-179
+  s_36a381ab4bccf9::t_d4176d9570fa8e 180-183,186,236-238
+  s_36a381ab4bccf9::t_c6b5426dff7186 70-72,75,77-98,100,103-118,120-123,125,128-131,165-166,190-198,205-206,215-216,239,245,261-262
+  s_36a381ab4bccf9::t_13b2d50f521375 2500-2504
+  s_36a381ab4bccf9::t_894faa5de86e0a 3582
+  s_36a381ab4bccf9::t_0fdcf471155fdf 200
+  s_36a381ab4bccf9::t_16c20196515195 209-210
+  s_36a381ab4bccf9::t_1106773ce46579 640-646,653-660,663-674,3964
+  s_36a381ab4bccf9::t_9a8c65e252e60d 167-173,188,207-208,211,213-214,217-222,224-225,227-228,230-231,233-235
+  s_36a381ab4bccf9::t_9f2767270d8324 1542-1544,3577-3580
+  s_36a381ab4bccf9::t_baa9bcf5370cbe 99,119,126,132-147,152-160,201-204,240-244,246-257,260
+  s_36a381ab4bccf9::t_2830179a457709 1481-1489,1501-1505,1516,1518-1519,1530-1532,1548,1550,1557,1559-1561,1563-1564,1566
+  s_36a381ab4bccf9::t_12d6298e90fd3d 3369
+  s_36a381ab4bccf9::t_3af53c802f7821 3666
+  s_f0dc1701fc0031::t_969f17e70c7edc 675-676
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d20485097dc95faa7f864faf64d428795174f094",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_4d8bb530e409af": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a035e8-bf8f-7530-9481-8d123f42af0d",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_e8850ef125fb32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0457f-8774-7b32-a516-a974107d6ab1",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_f0dc1701fc0031": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc521-e36b-7fd3-8f60-ebd14a6657c9",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
