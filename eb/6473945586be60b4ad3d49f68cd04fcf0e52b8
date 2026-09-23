@@ -1,0 +1,26 @@
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_92b325b9a7659f 689-695,1021-1143
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_f9f5759fab0415 1377-1395,2859-2862
+  s_36a381ab4bccf9::t_f11fbde725e623 3519-3530
+  s_36a381ab4bccf9::t_3612c63b8b8f6e 3438-3439,3459-3460
+  s_36a381ab4bccf9::t_27fda78bde6981 3480-3482,3533-3535
+tests/test_active_plan_catalog_compaction.py
+  s_36a381ab4bccf9::t_92b325b9a7659f 1-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eb6473945586be60b4ad3d49f68cd04fcf0e52b8",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
