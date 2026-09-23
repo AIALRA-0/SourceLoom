@@ -1,0 +1,24 @@
+tests/test_uploaded_html_chrome_scope.py
+  s_36a381ab4bccf9::t_efa3145fbe35ef 1-49
+sourceloom/source_context.py
+  s_36a381ab4bccf9::t_9bf0df23f9045d 349
+  s_36a381ab4bccf9::t_0136c42012830d 214,316-317,346-348,350
+  s_36a381ab4bccf9::t_81bbf9e0d89191 181-183,185-194
+  s_36a381ab4bccf9::t_7468d5a0cfe34b 180,184,195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0feb63df0d244f3e582b4808565e5682cf0d7291",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
