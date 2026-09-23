@@ -1,0 +1,25 @@
+tests/test_active_post_patch_verification.py
+  s_36a381ab4bccf9::t_3b5dec4071be10 71-72
+  s_36a381ab4bccf9::t_7157900a1f4e3e 1-11,16-66,68-70,80-86,89-98
+  s_36a381ab4bccf9::t_a4e8d093602923 12-15,67,73-79,87-88
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_3c77a4d22b683f 3871-3872,4156-4157
+  s_36a381ab4bccf9::t_90470295a3517e 3894-3906
+  s_36a381ab4bccf9::t_0c45f9cbcbfad7 3589,3868
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "290ffe87705f5f2b1da25b7c81a4b11ec9e06929",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
