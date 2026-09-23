@@ -1,0 +1,25 @@
+sourceloom/writing.py
+  s_36a381ab4bccf9::t_7b7eb1bcb78f67 147,163
+sourceloom/readweave_format_compat.py
+  s_36a381ab4bccf9::t_f5e604561c7046 7-12
+  s_36a381ab4bccf9::t_20dd227071729f 234-324
+tests/test_readweave_format_compat.py
+  s_36a381ab4bccf9::t_3d8949b9839fc6 9,64-104,187-192
+  s_36a381ab4bccf9::t_b0b0a24943f64a 193-194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "96cf7e0db65de87510a4fe731225f7f4be52f7ee",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
