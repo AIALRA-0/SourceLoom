@@ -1,0 +1,26 @@
+scripts/v2_real_eval.py
+  s_36a381ab4bccf9::t_bb3a334f48fd43 566,569-570,608-609,625-626,641-642,749-750
+  s_36a381ab4bccf9::t_ec5ada70deb5da 692-697,702-706,708-710,723,727-733,743,751-752
+tests/test_v2_real_eval.py
+  s_36a381ab4bccf9::t_b6da8e44927219 300,336,338-369
+  s_36a381ab4bccf9::t_f2210da00164cf 243-248,280-287,291-299,301-312,314-335,337
+  s_36a381ab4bccf9::t_cb5750a694f841 288-290
+  s_36a381ab4bccf9::t_864b573b465e46 313
+  s_36a381ab4bccf9::t_96a2a24cc7c9ad 370-371
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "031bc3322cd87aea197f032a9350b571325d853b",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
