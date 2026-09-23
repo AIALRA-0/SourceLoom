@@ -1,0 +1,25 @@
+sourceloom/providers.py
+  s_36a381ab4bccf9::t_1bc41dc2018831 477-481
+tests/test_provider_settings.py
+  s_36a381ab4bccf9::t_41adc820790df5 765
+  s_36a381ab4bccf9::t_b49869c1028ed3 323,328,370,372,708
+  s_36a381ab4bccf9::t_1bc41dc2018831 638-670
+tests/test_responses_streaming.py
+  s_36a381ab4bccf9::t_1bc41dc2018831 58,63-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "08c7f773382a87e5cc5a36ef47811e01c10c0012",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
