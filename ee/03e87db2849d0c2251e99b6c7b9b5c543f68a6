@@ -1,0 +1,25 @@
+sourceloom/active_policy.py
+  s_36a381ab4bccf9::t_98281d1e45df1a 1-31
+tests/test_active_plan_policy_refresh.py
+  s_36a381ab4bccf9::t_72140ecb61ce5b 1-141
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_e758ae69a78fc2 15,3176,3210-3211
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_caf87df408601e 11-12,661-719,937-948
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ee03e87db2849d0c2251e99b6c7b9b5c543f68a6",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
