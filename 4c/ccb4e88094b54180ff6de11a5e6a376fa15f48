@@ -1,0 +1,26 @@
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_0d8b736d7c7eb1 2844-2875,2954-2955
+tests/test_kuafu_go_third_route.py
+  s_36a381ab4bccf9::t_a8f62040bfb278 109-131,136,138-140
+  s_36a381ab4bccf9::t_1e8c00cf320824 1-108,132-135,137,141-162
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_064743c5efeff1 251-256,267-317,321-339,1301
+  s_36a381ab4bccf9::t_f106531dc6a6b9 257-266,318-320,1279
+  s_36a381ab4bccf9::t_8d08839c1cbafb 875-878,1221-1278,1280-1300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4cccb4e88094b54180ff6de11a5e6a376fa15f48",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
