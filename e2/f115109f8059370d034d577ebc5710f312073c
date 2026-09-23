@@ -1,0 +1,30 @@
+sourceloom/store.py
+  s_36a381ab4bccf9::t_9939d0a6418b76 239,244-252,289-294
+sourceloom/providers.py
+  s_36a381ab4bccf9::t_b61a6908d3e599 1001-1002,1006-1007,1009
+  s_36a381ab4bccf9::t_371fec1185b092 1003-1005,1008,1011
+  s_36a381ab4bccf9::t_83493b3b194b01 1010
+tests/test_gateway_dispatch_budget.py
+  s_36a381ab4bccf9::t_c72dba7a77a6db 325-370
+  s_36a381ab4bccf9::t_9478c137fe0f94 304,319,321-322
+  s_36a381ab4bccf9::t_73512ebffadfa9 12,302-303,305-318,320
+  s_36a381ab4bccf9::t_6a48b9cd7baf63 249-301,323-324
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_ba2a958885560e 58-66,110-111,295-302,329-334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e2f115109f8059370d034d577ebc5710f312073c",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
