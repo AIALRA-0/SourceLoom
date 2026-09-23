@@ -1,0 +1,33 @@
+scripts/audit_real_outputs.py
+  s_36a381ab4bccf9::t_c757e1decdee4a 28
+  s_36a381ab4bccf9::t_79a0d3394b17ab 137-144,147-166,172-174,182-212,241-253
+  s_36a381ab4bccf9::t_83ac8d07d62570 346-347
+  s_36a381ab4bccf9::t_e139713c87f876 145-146,167-171,175-181
+scripts/v2_real_eval.py
+  s_36a381ab4bccf9::t_99f423e30b1138 778
+  s_36a381ab4bccf9::t_985594ca83ec44 591-604,643-644,777
+tests/test_real_output_audit.py
+  s_36a381ab4bccf9::t_9df2160c682911 12-15,30-31,51-55,63,72,81,92,102,108-144,159-161
+  s_36a381ab4bccf9::t_31190a1ce1c1b0 162-165
+  s_36a381ab4bccf9::t_c92082051a04b6 166-168
+  s_36a381ab4bccf9::t_9c078990c97895 169
+  s_36a381ab4bccf9::t_f415d540a76401 172-184
+  s_36a381ab4bccf9::t_d107f487a16c5a 145-158
+  s_36a381ab4bccf9::t_67f515fbba02e8 170-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "20c95e06a21576618ec11482b0460762cf475890",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
