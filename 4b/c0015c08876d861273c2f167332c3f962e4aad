@@ -1,0 +1,31 @@
+sourceloom/production.py
+  s_36a381ab4bccf9::t_87244240dd42c6 35,45-50
+tests/test_gateway_dispatch_budget.py
+  s_36a381ab4bccf9::t_87244240dd42c6 457,472-490
+  s_36a381ab4bccf9::t_35e7ea6e1d1f6d 444-446
+  s_71db67cf8751ad::t_38d2854f9406e5 491-492
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4bc0015c08876d861273c2f167332c3f962e4aad",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_71db67cf8751ad": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cd4d-9767-7400-affa-5e2753d39249",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
