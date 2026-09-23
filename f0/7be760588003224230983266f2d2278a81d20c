@@ -1,0 +1,25 @@
+tests/test_active_plan_reused_gap_recovery.py
+  s_36a381ab4bccf9::t_705a2edf586650 1-50,52-98
+  s_36a381ab4bccf9::t_45f9ad64ef1e29 51
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_48ca96cc1af6e6 102-108
+  s_36a381ab4bccf9::t_a205e823f1469f 2835-2836,2975-2977,3059-3071,3224-3225
+  s_36a381ab4bccf9::t_0aeffa5ed732c9 2944-2951,3265-3267
+  s_36a381ab4bccf9::t_408d7357fe4764 46-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f07be760588003224230983266f2d2278a81d20c",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
