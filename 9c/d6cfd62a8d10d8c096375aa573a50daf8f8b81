@@ -1,0 +1,35 @@
+tests/test_active_patch_gap_notes.py
+  s_36a381ab4bccf9::t_9cc4b1bdc5b5ae 1-7,9-10,14-20,23-25,28-65,68-74,78-109
+  s_36a381ab4bccf9::t_dd6b940b02cf31 8,11-13,26-27,75-76
+  s_36a381ab4bccf9::t_288ad0cde636a1 66-67,77
+  s_36a381ab4bccf9::t_4d7ba0a459a2ee 21-22
+tests/test_source_url_types.py
+  s_36a381ab4bccf9::t_ad910302c1df96 87,108-109
+tests/test_glossary_quality_escalation.py
+  s_36a381ab4bccf9::t_cf802ae79ddd7b 4,14-29
+  s_36a381ab4bccf9::t_7c638311cfaefa 117-127
+  s_36a381ab4bccf9::t_84fbd3db41c469 1-3,5-13,30-116,128-148
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_aeffeba6f7ffd1 2484-2500,2592-2600
+  s_36a381ab4bccf9::t_19adca5688af01 2203-2207,2209-2214,2220-2221,2237-2239,2246-2249,2270-2272
+  s_36a381ab4bccf9::t_2bb787b037faee 2208,2215-2219
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_b3ba751506e662 629-638,640,644-647,649-650,652-659,672,794-801
+  s_36a381ab4bccf9::t_1ca94b5fe4a231 639,641-643,648,651,660-671
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9cd6cfd62a8d10d8c096375aa573a50daf8f8b81",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
