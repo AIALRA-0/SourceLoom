@@ -1,0 +1,21 @@
+sourceloom/readweave_format_compat.py
+  s_36a381ab4bccf9::t_23b88a728db01f 199-200
+docs/READWEAVE_FORMAT_PARITY.md
+  s_36a381ab4bccf9::t_23b88a728db01f 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1906275e26304021637bd6012f9575b2ef27b432",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
