@@ -1,0 +1,31 @@
+tests/test_web_source_continuity.py
+  s_36a381ab4bccf9::t_878a48edde6380 101
+  s_36a381ab4bccf9::t_c802e94195be10 5,94-100,102-128
+  s_36a381ab4bccf9::t_4800cad9cfcff1 1-4,6-93
+sourceloom/materials.py
+  s_36a381ab4bccf9::t_a960d763bb423e 38-39
+sourceloom/network.py
+  s_36a381ab4bccf9::t_871f55968bb97a 370-371
+  s_36a381ab4bccf9::t_819ab8739861a2 403,432-448,452,472,474,566
+  s_36a381ab4bccf9::t_32b91002d33fc2 336-365,372-385,387-390,395-396,404-407,412,417-431,449-451,453-457,462-471,492-493,560,562
+  s_36a381ab4bccf9::t_71dd29d9661129 367-369,386
+  s_36a381ab4bccf9::t_fce224affdc17e 366,473
+scripts/audit_real_outputs.py
+  s_36a381ab4bccf9::t_0f8c0d4490b51c 160-199,240-243,298-306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "224a1b3ee56be16e35d76ffc3e36d08c8192898c",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
