@@ -1,0 +1,37 @@
+tests/test_gateway_dispatch_budget.py
+  s_36a381ab4bccf9::t_d24adb8313e749 57
+  s_36a381ab4bccf9::t_ffb26549913243 4,17-32
+  s_36a381ab4bccf9::t_e4963157069128 1-3,5-8,12-16,33-55,59-179
+  s_36a381ab4bccf9::t_4f4728990409f8 9-11,58,180-248
+  s_36a381ab4bccf9::t_1f039c28656939 56
+  s_36a381ab4bccf9::t_b150d195ddb6d6 249
+sourceloom/production.py
+  s_36a381ab4bccf9::t_512fce846048c4 34-35,38,45-51,53-59,62-66,68-71,74-76,78-79,102,120-123
+  s_36a381ab4bccf9::t_3387bcaa18b0ea 36-37,39-44,52,60-61,67,72-73,77,80-88,116-119,124-126,1777
+  s_36a381ab4bccf9::t_e63c410e0ca57d 91-95
+sourceloom/store.py
+  s_36a381ab4bccf9::t_a0c166d0a6a43a 139,141-165,168-174,189-190,196-197,199-208,211-214,226
+  s_36a381ab4bccf9::t_5ec453177aa3f6 140,166-167,175-188,191-195,198,209-210
+  s_36a381ab4bccf9::t_40ab3b978266d2 215-225
+sourceloom/providers.py
+  s_36a381ab4bccf9::t_ca74a62ae05b3f 1150-1152
+  s_36a381ab4bccf9::t_10301e365fc475 1153,1289-1290,1365-1366
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_016d7a1e15e9c7 275-286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c6d8fc5eecc1455741416a81ccf1feb406e83512",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
