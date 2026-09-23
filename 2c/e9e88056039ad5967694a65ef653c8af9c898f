@@ -1,0 +1,21 @@
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_b9f76c20b7c422 1069-1083
+tests/test_active_plan_catalog_compaction.py
+  s_36a381ab4bccf9::t_05e379f26d5bcf 175-189
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2ce9e88056039ad5967694a65ef653c8af9c898f",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
