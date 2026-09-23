@@ -1,0 +1,53 @@
+tests/test_readweave_format_compat.py
+  s_36a381ab4bccf9::t_23024be685a88a 50-51,161-169
+  s_36a381ab4bccf9::t_9c1c086073b3df 2,220-221,223-229,231,233-237
+  s_36a381ab4bccf9::t_2da772eaf8630a 114,118,122-124,147,149-152,155-159,177-182,222,230,232,238
+  s_36a381ab4bccf9::t_81f41708286198 3,18,46,53-72
+  s_36a381ab4bccf9::t_780ff44c853391 82,115-117,119-121
+  s_36a381ab4bccf9::t_d7a8705739de71 10,40-45,47-48,75-81,83,148,153-154
+  s_36a381ab4bccf9::t_f66e15c532be50 17,19-20
+  s_36a381ab4bccf9::t_1bff68df4c6da5 49,52,73-74,176
+  s_36a381ab4bccf9::t_bab8a267e822e9 84
+  s_36a381ab4bccf9::t_43fddc94bfce19 160,170-175
+  s_e8850ef125fb32::t_5c3d3f9437ea19 85-86,183-184
+sourceloom/writing.py
+  s_36a381ab4bccf9::t_2a2f2ab91ff70f 147,161
+docs/READWEAVE_FORMAT_PARITY.md
+  s_36a381ab4bccf9::t_c6d240ac5d0123 1-18
+sourceloom/readweave_format_compat.py
+  s_36a381ab4bccf9::t_cf35df41156fed 251
+  s_36a381ab4bccf9::t_1e263ccdd5c70c 31,84-85,90-96,350-351
+  s_36a381ab4bccf9::t_7a67148ae72aa6 66-68,70-77,81-83,86-89,97-104
+  s_36a381ab4bccf9::t_5c631e2392f878 69,78
+  s_36a381ab4bccf9::t_10600abd3e0788 239-240,242-248
+  s_36a381ab4bccf9::t_11d36dda16d786 303,311
+  s_36a381ab4bccf9::t_65b0bad0e5c6ba 7-9,272-275,338-341,344
+  s_36a381ab4bccf9::t_ed1a22ca4c98b7 198-227,229-232,236-238,241,249-250,252
+  s_36a381ab4bccf9::t_bd60d834e8cfda 79-80,312-313
+  s_36a381ab4bccf9::t_37ccf301371e87 228,233-235
+  s_36a381ab4bccf9::t_25e320d2445e57 276-289,342-343,345
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2aee8dbe1702acdc398137957373ab0a884d8962",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_e8850ef125fb32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0457f-8774-7b32-a516-a974107d6ab1",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
