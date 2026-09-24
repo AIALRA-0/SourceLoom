@@ -1,0 +1,200 @@
+tests/test_active_plan_reused_gap_recovery.py
+  s_36a381ab4bccf9::t_5b8d64d488080c 1-98
+tests/test_v2_real_eval.py
+  s_36a381ab4bccf9::t_120cf6dbbbdc77 2,5-7,10,13,19,27,29,66,86-103,118-216,261,288-291,293,335-415,430-659,675-676,690-693,700-786
+tests/test_web_snapshot.py
+  s_36a381ab4bccf9::t_3b38409a2ac3fc 122-158,171-179
+reports/AUTOMATIC_TRIAL.md
+  s_36a381ab4bccf9::t_409958d7cbc650 3-4,78,88,98,114
+deploy/sourceloom-eval-worker2.service
+  s_36a381ab4bccf9::t_2bc65e112c42c8 1-28
+tests/test_source_url_types.py
+  s_36a381ab4bccf9::t_d9449d77fc5ede 1-109
+sourceloom/reading.py
+  s_36a381ab4bccf9::t_f95d72cc6afb06 58
+sourceloom/library_api.py
+  s_36a381ab4bccf9::t_2388c602d47932 146-147,157-158,160,163,165-166,169-171,180,182,199-200,223-224,236-237,247-248,250
+tests/test_iteration8.py
+  s_36a381ab4bccf9::t_7d539f031736d9 466-477,515-516
+tests/test_glossary_writer_repair.py
+  s_36a381ab4bccf9::t_8086dec724f5a7 1-135
+tests/test_responses_json_recovery.py
+  s_36a381ab4bccf9::t_2d5edf82d3a8d5 1-132
+scripts/v2_smoke_campaign.py
+  s_36a381ab4bccf9::t_e6ebf534c73f75 1-259
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_9f494b95c1bbd1 11,13,16,34-413,425-662,709-741,760-766,822-841,974-975,1022-1072,1083,1087,1092,1123-1159,1308-1319,1359-1369,1376-1391,1395-1399,1406-1408,1495-1523,1532-1533,1737-1755,1758-1763,1768,1778,2013-2037,2048,2050-2051,2060-2093,2095-2096,2098-2099,2158-2159,2166-2170,2174-2193,2289-2300,2328-2330,2359,2377-2380,2393-2406,2424,2454-2476,2484,2491-2493,2495,2498-2532,2538-2574,2606,2611-2623,2630,2681-2684,2732-2740,2754,2789-2790,2795,2799-2800,2865,2870,2912-2918,2941-2946,2986,3022-3113,3116-3117,3129-3135,3137-3145,3150-3170,3180,3183-3194,3203-3204,3294-3297,3300-3302,3314-3321,3344-3351,3354,3356-3359,3362-3393,3396-3403,3406-3409,3412-3422,3429-3441,3466-3467,3471-3487,3496-3499,3581-3589,3594-3595,3627-3637,3639-3648,3658,3692-3718,3724-3725,3805,3813,3823,3845-3846,3848-3859,3869,3871-3885,3895-3896,3916-3917,3937-3939,3948-3950,3962-3967,3982-3993,3996-4000,4036-4038,4042-4043,4046-4056,4064,4066,4074-4075,4078,4090-4091,4096-4097,4140-4146,4212-4229,4264-4275,4282-4285,4289-4291,4293,4303,4307-4312,4324-4325,4360-4361,4365-4366,4378,4381-4382,4399,4404-4416,4521,4596-4611,4663-4672,4675-4679,4683-4704,4715-4716,4760
+  s_36a381ab4bccf9::t_ba75b27c4ff61a 3240
+  s_36a381ab4bccf9::t_7e495ba3dd57ad 3238-3239
+sourceloom/provider_settings.py
+  s_36a381ab4bccf9::t_e0b710491f1eb1 145,169,289,364-385,420,425-426,461-475,488,510,529,600-604,759
+tests/test_rendered_web_materials.py
+  s_36a381ab4bccf9::t_e3e9f894b4a8d7 85-160
+sourceloom/materials.py
+  s_36a381ab4bccf9::t_9359c28b971948 42,72-96,105-106,110-164,167
+  s_36a381ab4bccf9::t_59f943499e061a 38-39
+README.en.md
+  s_36a381ab4bccf9::t_8562ddaa196768 9
+scripts/v2_real_eval.py
+  s_36a381ab4bccf9::t_09379a19f298c2 21,26,36-44,46-48,57-60,161-213,230,237-246,249-302,305-306,309-322,326-332,335-437,439-448,502,506,518-525,554-556,569-598,600-601,605-634,636-678,689-776,785-786,815-816,818,821-822,826-832,836-838,843-861,877-878,881,884-894,900-907,910-927,930-931,933-935,938-950,953-967,971-972,975-994,996-1003,1006,1008,1010-1012,1015-1021,1038-1041,1054-1055,1088
+sourceloom/static/workspace.css
+  s_36a381ab4bccf9::t_141c25930d1f9d 75-122,124-125
+sourceloom/roles/active_plan.md
+  s_36a381ab4bccf9::t_83e09842e2a0a4 5-6
+sourceloom/visual_sources.py
+  s_36a381ab4bccf9::t_7b4baab56ea87c 19-26
+sourceloom/export.py
+  s_36a381ab4bccf9::t_0ec8179c4348e4 167-172
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_39269aa1c37450 6,12-337,453,478-520,642-643,647-648,651,873-903,920-1057,1070,1160-1183,1193-1227,1235-1742
+tests/test_link_target_binding.py
+  s_36a381ab4bccf9::t_9d8db436f7f4c5 1-71
+README.md
+  s_36a381ab4bccf9::t_df97330c4daf5a 9
+sourceloom/static/library.js
+  s_36a381ab4bccf9::t_426bf1382c38eb 62,84
+tests/test_readweave_format_compat.py
+  s_36a381ab4bccf9::t_8f3fba5e3bbc05 1-336
+tests/test_glossary_quality_escalation.py
+  s_36a381ab4bccf9::t_9a49f01a327834 1-148
+docs/READWEAVE_FORMAT_PARITY.md
+  s_36a381ab4bccf9::t_c87336901894c3 1-19
+tests/test_active_plan_catalog_compaction.py
+  s_36a381ab4bccf9::t_4cc76fb49ba75c 1-347
+deploy/README.md
+  s_36a381ab4bccf9::t_dfbd94b72969d4 17-19,41
+docs/REAL_CORPUS_NEXT.md
+  s_36a381ab4bccf9::t_1348bc6e966ab4 1-34
+frontend/progress.test.js
+  s_36a381ab4bccf9::t_163c2acd9039a8 1-52
+tests/test_external_action_binding_fix.py
+  s_36a381ab4bccf9::t_460acda5392b61 1-348
+sourceloom/source_context.py
+  s_36a381ab4bccf9::t_a9a8bbfd6a3c10 180-185,195
+  s_e8850ef125fb32::t_00c7807f39835e 316-317
+  s_36a381ab4bccf9::t_c412aec96d68ad 214
+  s_36a381ab4bccf9::t_9bfabe55170bb8 80-86,108-114,153-159,161-179,186-188
+  s_36a381ab4bccf9::t_7d38cef1f7bb57 191-194
+  s_36a381ab4bccf9::t_ae541eff988920 189-190,346-350
+tests/test_short_rewrite_quality_fix.py
+  s_36a381ab4bccf9::t_74c668deff2966 1-333
+tests/test_hybrid_object_patch.py
+  s_36a381ab4bccf9::t_d97f077ecd8a18 1-119
+sourceloom/intake_jobs.py
+  s_36a381ab4bccf9::t_a31e541cf316c1 104-122
+tests/test_kuafu_recovery.py
+  s_36a381ab4bccf9::t_418ae3284d65d3 1-272
+sourceloom/static/production-progress.js
+  s_36a381ab4bccf9::t_98a95ed644a077 4-10,13,15
+sourceloom/readweave_format_compat.py
+  s_36a381ab4bccf9::t_389f49eb27f0a7 1-515
+docs/REAL_CASES.md
+  s_36a381ab4bccf9::t_ece97ad393f444 5-7,13-15
+docs/ACTIVE_COMPOSITION_IMPLEMENTATION.md
+  s_36a381ab4bccf9::t_f6c4339f3dd54b 72-73,76,78-80
+sourceloom/app.py
+  s_36a381ab4bccf9::t_82970ee744c26a 317-321,452-455,472-477,484-489
+tests/test_transparent_svg_placeholders.py
+  s_36a381ab4bccf9::t_dcd8ca305c5636 1-74
+tests/test_uploaded_image_capture.py
+  s_36a381ab4bccf9::t_a3655859ef418d 1-107
+tests/test_provider_settings.py
+  s_36a381ab4bccf9::t_cb20722360005b 14,28-45,143-393,638-670,708,753-780
+tests/test_active_patch_protected_recovery.py
+  s_36a381ab4bccf9::t_b41dad75c3dffb 1-139
+tests/test_content_root_without_main.py
+  s_36a381ab4bccf9::t_468e2c1a278e3f 1-42
+tests/test_glossary_link_measure.py
+  s_36a381ab4bccf9::t_6bf759b1a5eb9f 1-45
+tests/test_iteration9.py
+  s_36a381ab4bccf9::t_ecd595439dc927 89-149
+sourceloom/roles/active_write.md
+  s_36a381ab4bccf9::t_a2b3f45eea44f2 16,30
+tests/test_kuafu_go_third_route.py
+  s_36a381ab4bccf9::t_fde47ffd492666 1-416
+sourceloom/ingest.py
+  s_36a381ab4bccf9::t_8711a00313f4b0 157-160,162,165-166,188,288,309,336,356
+sourceloom/static/document-toolbar.js
+  s_36a381ab4bccf9::t_5ef9e186642ae9 10,21,46-68
+sourceloom/store.py
+  s_36a381ab4bccf9::t_204e0062997213 139-226,239,244-252,289-294
+tests/test_active_composition.py
+  s_36a381ab4bccf9::t_f0ab8fdd195cd8 83-97,102-103,107,110-135,300-310,462,470,472-474,571-585,676,679-681,683-685,687-689,757-758,766-774,815-827,937-940,944,1020-1032,1154-1155,1268,1378-1410,1833,1848-1851,1855-1858,1861-1916,1926-1927,1935,1937-1941,1944-1945,1948,1970-1973,1975-1976,2015-2016
+sourceloom/network.py
+  s_36a381ab4bccf9::t_6743d16cf6f385 577
+  s_36a381ab4bccf9::t_3dd979c20ba418 476-477,486
+  s_36a381ab4bccf9::t_de29f3ca157cfb 38-48,61-62,66,227-228,234-238,248,262,272,282-403,408-409,416-420,424-474,480,509
+  s_36a381ab4bccf9::t_2dad826051136a 475,478-479,481-485,487,572,578
+scripts/audit_real_outputs.py
+  s_36a381ab4bccf9::t_06b9180d9d2256 1-459
+tests/test_core.py
+  s_36a381ab4bccf9::t_dfe94b281d9ab6 178-187
+sourceloom/web_capture.py
+  s_36a381ab4bccf9::t_07701e0e81433f 55,74,89,101-112
+sourceloom/active_policy.py
+  s_36a381ab4bccf9::t_2f352d182686a0 1-31
+sourceloom/writing.py
+  s_36a381ab4bccf9::t_98ad0c6b9650b1 145-152,162-169,706-715
+tests/test_active_plan_original_evidence_repair.py
+  s_36a381ab4bccf9::t_780aa87e09faa7 1-81
+scripts/V2_REAL_EVAL.md
+  s_36a381ab4bccf9::t_0abac455bd62cf 52-54
+tests/test_active_patch_gap_notes.py
+  s_36a381ab4bccf9::t_5682eb04f5e4fc 1-109
+tests/test_active_plan_policy_refresh.py
+  s_36a381ab4bccf9::t_6e4d768c90cc83 1-141
+sourceloom/media.py
+  s_36a381ab4bccf9::t_a5b3f969087597 53-59
+sourceloom/progress.py
+  s_36a381ab4bccf9::t_167311327b9ce4 77
+tests/test_responses_streaming.py
+  s_36a381ab4bccf9::t_7c0710f791f1ec 1-136
+tests/test_real_output_audit.py
+  s_36a381ab4bccf9::t_ff10ababb513fe 1-244
+tests/test_active_post_patch_verification.py
+  s_36a381ab4bccf9::t_2b201042bc6375 1-98
+tests/test_authored_spacing.py
+  s_36a381ab4bccf9::t_ed151121c2fe37 1-39
+docs/security/publication-risk-notes.md
+  s_36a381ab4bccf9::t_8e228e00cf6036 392-397
+sourceloom/providers.py
+  s_36a381ab4bccf9::t_a726283479708c 260-263,367-468,475-484,489,725-807,961-978,1002-1012,1092,1120-1121,1158-1161,1166-1167,1194,1199-1200,1204-1209,1297-1298,1361-1378,1453-1465,1467-1481
+sourceloom/production.py
+  s_36a381ab4bccf9::t_104a709e6dc172 34-94,97-101,106-114,118-120,122-132,155-402,1921,1958-1974,1977-1985
+tests/test_gateway_dispatch_budget.py
+  s_36a381ab4bccf9::t_47413260878348 1-530
+sourceloom/checks.py
+  s_36a381ab4bccf9::t_443ff727a13830 203-207
+tests/test_active_release_issues.py
+  s_36a381ab4bccf9::t_12c10b237eb606 1-30
+tests/test_pdf_link_prefetch_no_url.py
+  s_36a381ab4bccf9::t_4e3a36f2aee36d 1-56
+tests/test_uploaded_html_chrome_scope.py
+  s_36a381ab4bccf9::t_31378c3488a142 1-49
+tests/test_web_source_continuity.py
+  s_36a381ab4bccf9::t_bfc34916363459 1-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2725695b960da868ceb5e1af091acc1260a07472",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_e8850ef125fb32": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0457f-8774-7b32-a516-a974107d6ab1",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
