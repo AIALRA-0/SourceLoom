@@ -1,0 +1,131 @@
+tests/test_active_patch_gap_notes.py
+  s_36a381ab4bccf9::t_952a97f554ca58 9,16
+tests/test_core_chain_objects.py
+  s_36a381ab4bccf9::t_92489afd02456d 57-58,92
+  s_36a381ab4bccf9::t_ba559bb1c1f37a 1-56,59-91,93-116
+tests/test_core_chain_legacy_boundary.py
+  s_36a381ab4bccf9::t_a6d16ad12a7788 3-8,10-23,31,33-44,47-81
+  s_36a381ab4bccf9::t_409d64c289065e 24-30,32,45-46,82-97,99-103,106-116
+  s_36a381ab4bccf9::t_929f06ba612221 9
+  s_36a381ab4bccf9::t_d83d370955ffec 1-2,98,104-105
+tests/test_active_composition_v2.py
+  s_36a381ab4bccf9::t_732a602047196e 206,212-214,232-235
+sourceloom/visual_sources.py
+  s_36a381ab4bccf9::t_3c7299d4993535 21
+sourceloom/roles/active_integrity.md
+  s_36a381ab4bccf9::t_ca079649fa357e 19-20
+  s_36a381ab4bccf9::t_b1f1b743678e33 1-7,11-18
+  s_36a381ab4bccf9::t_1d0998bd84a093 8-10
+sourceloom/library_api.py
+  s_36a381ab4bccf9::t_319653bd7b58b3 189
+  s_36a381ab4bccf9::t_fea315752a346f 173-174,182-188,190
+tests/test_core_chain_boundary.py
+  s_36a381ab4bccf9::t_54827eb66daf36 8
+  s_36a381ab4bccf9::t_92e62251a745f5 34,46
+  s_36a381ab4bccf9::t_071151112280fe 24
+  s_36a381ab4bccf9::t_f940cadf19d166 1-7,9-23,25-33,35-45,47-98
+tests/test_active_post_patch_verification.py
+  s_36a381ab4bccf9::t_3d33133f91bb43 21
+  s_36a381ab4bccf9::t_c7d1e75c9d2b2b 20,22
+sourceloom/checks.py
+  s_36a381ab4bccf9::t_2b966f41c5046a 121,186-188
+  s_36a381ab4bccf9::t_727b91bed4ce63 12-15,19-35,71-74,203-210
+  s_36a381ab4bccf9::t_cc0eedca60ad3f 122-125
+sourceloom/durable.py
+  s_36a381ab4bccf9::t_92e62251a745f5 859-860
+  s_36a381ab4bccf9::t_323011bfbe45bd 404-405,605-606
+  s_36a381ab4bccf9::t_9a1f3d5164cda2 441-442,619,630-631,654-655
+sourceloom/active_contracts.py
+  s_36a381ab4bccf9::t_1f24750d966d91 92-97,140,151,291-307
+sourceloom/active_composition.py
+  s_36a381ab4bccf9::t_ac29fc12d77557 2296,2314-2317,4079,4111-4112
+  s_36a381ab4bccf9::t_7bda356b716af7 2864,2884-2885,2913,2956-2968
+  s_36a381ab4bccf9::t_33a1b23d85e903 1309-1310,5044-5055
+  s_36a381ab4bccf9::t_17583c4af337d5 34-38,2828-2829
+  s_36a381ab4bccf9::t_2f5fadea61efdc 3073
+  s_36a381ab4bccf9::t_eb9f28610cf920 4056-4059,4061-4063,4069,4144-4147,4151-4153,4158,4175-4176
+  s_36a381ab4bccf9::t_698f58e71c2a40 4923-5042
+  s_36a381ab4bccf9::t_327cadef417d8e 3053-3054,4255-4256
+  s_36a381ab4bccf9::t_cf9fca9c6d3648 643-644
+  s_36a381ab4bccf9::t_323011bfbe45bd 3885-3893
+  s_36a381ab4bccf9::t_f666a5e31627ef 2830-2858
+  s_36a381ab4bccf9::t_827c791e2edf72 3057-3072,3074-3103
+  s_36a381ab4bccf9::t_332e1d91fcb968 1299-1300
+  s_36a381ab4bccf9::t_08aadc51ad53eb 4219-4223,4225-4227
+  s_36a381ab4bccf9::t_ccca2ef92ffa5a 2809,2812,4181-4190,4224
+  s_71db67cf8751ad::t_25163513912167 2744-2745,2749-2758,2794,2796-2798,2800-2801,2820-2827
+sourceloom/reading.py
+  s_36a381ab4bccf9::t_319653bd7b58b3 56
+  s_36a381ab4bccf9::t_02fbb5cb1a4444 54-55
+docs/CORE_CHAIN_ROUND_1.md
+  s_36a381ab4bccf9::t_ca4ed736f6f5d5 11,37,41-45
+  s_36a381ab4bccf9::t_e9f994790c4f24 7,9-10,17-21
+  s_36a381ab4bccf9::t_e1bd3a7202bc0b 1-2,4-6,8,12-16,22-36,38,40
+  s_36a381ab4bccf9::t_3447e47a0ccd4a 39
+  s_36a381ab4bccf9::t_8c039ae52a814b 3,46
+sourceloom/store.py
+  s_36a381ab4bccf9::t_323011bfbe45bd 49-60
+sourceloom/roles/active_write.md
+  s_36a381ab4bccf9::t_9277b97b522490 5
+tests/test_core_chain_flow.py
+  s_36a381ab4bccf9::t_2d512aa098baef 10
+  s_36a381ab4bccf9::t_772f24b63a209f 87-99,101-122
+  s_36a381ab4bccf9::t_bdcc7077ec7a55 100
+  s_36a381ab4bccf9::t_a7be3f40cb0a90 1-9,11-86
+sourceloom/export.py
+  s_36a381ab4bccf9::t_24f94293137018 292-293
+tests/test_active_composition.py
+  s_36a381ab4bccf9::t_952a97f554ca58 12-20
+  s_36a381ab4bccf9::t_a129e83b06133e 273,950-951,956,1594,1658,1799,2466,2483
+tests/test_core_chain_integrity_fnmatch.py
+  s_36a381ab4bccf9::t_13ff8fbc71b191 55-71
+  s_36a381ab4bccf9::t_dabd5c7968d656 52
+  s_36a381ab4bccf9::t_0e06854a1b7618 1-28,30-39,41-51,53-54,72-241
+  s_36a381ab4bccf9::t_9b8fa7cf61c371 29,40
+tests/test_core_chain_status.py
+  s_36a381ab4bccf9::t_2649e41306d5d0 45
+  s_36a381ab4bccf9::t_dee1e1a266b0e1 169,195-207
+  s_36a381ab4bccf9::t_fbc07f3ddfc672 1-44,46-123,134-168,170-190,192,208-213
+  s_36a381ab4bccf9::t_c064513848f73e 124-133,191,193-194
+sourceloom/production.py
+  s_36a381ab4bccf9::t_319653bd7b58b3 1946
+  s_36a381ab4bccf9::t_ee69214e59309e 1944-1945,1947-1950,1957-1958
+sourceloom/progress.py
+  s_9f7652456e8616::t_8fde9086aa9d87 55-57,72-73
+sourceloom/roles/active_plan.md
+  s_36a381ab4bccf9::t_ff08308c7b774b 11-13,17
+sourceloom/static/document-toolbar.js
+  s_9f7652456e8616::t_1405040e2a2a09 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ad12313922d8ffba7978adc2cd9eff2e44d99cc2",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_71db67cf8751ad": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0cd4d-9767-7400-affa-5e2753d39249",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    },
+    "s_9f7652456e8616": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03a0f-6460-7b73-bec4-9acbdcd78a39",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
