@@ -463,6 +463,18 @@ def test_web_scripts_are_complete_inert_metadata_not_silently_executed_or_droppe
     assert result['objects'][1]==source['objects'][1]
 
 
+def test_large_embedded_script_is_archived_without_becoming_a_writing_unit():
+    from sourceloom.source_context import classify_inert_markup
+    from sourceloom.visual_sources import decorative_resource
+    raw='<script>'+('window.__DATA__={"value":1};'*600)+'</script>'
+    source={'objects':[dict(id='script',kind='unknown',text='',raw=raw)],
+            'unknown':[dict(object_id='script',reason='script 未执行，需要独立解释或安全转换')]}
+    result=classify_inert_markup(source)
+    assert result['objects'][0]['text']==raw
+    assert result['objects'][0]['source_scope']=='source_metadata'
+    assert decorative_resource(result['objects'][0])
+
+
 def test_progress_snapshot_tracks_direct_queue_updates_without_reading_job_history(tmp_path):
     import sqlite3
     from sourceloom.progress import latest,FIELDS
@@ -500,7 +512,8 @@ def test_unsaved_candidate_progress_does_not_read_model_history(tmp_path):
     with patch.object(s,'connect',without_history),patch.object(IntakeQueue,'latest',return_value=None),TestClient(app) as c:
         response=c.get(f"/api/projects/{p['id']}/production")
         assert response.status_code==200
-        assert response.json()['has_output'] and response.json()['output_chars']==len(canonical(draft))
+        assert not response.json()['has_output'] and response.json()['output_chars']==0
+        assert response.json()['candidate_url']==f"/api/projects/{p['id']}/attempts/j/output"
     job['draft']['blocks'][0]['markdown']='New actual draft'
     with connect() as cx:
         cx.execute('UPDATE jobs SET body=? WHERE id=?',(json.dumps(job),'j'))

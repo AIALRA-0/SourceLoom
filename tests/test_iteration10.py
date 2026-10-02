@@ -1419,7 +1419,7 @@ def test_expired_interrupted_subscription_resume_records_unknown_then_continues_
     call={'id':'interrupted','role':'style','channel':'openai-compatible','step_key':step,
         'status':'submitted','dispatch_started':True,'deadline_at':time.time()-1,
         'upstream_base':'https://opencode.ai/zen/go/v1'}
-    job.update(status='failed',stage='style',pending=step,calls=[call])
+    job.update(core_chain_version=0,status='failed',stage='style',pending=step,calls=[call])
     store.put_job(job);store.change(p['id'],lambda p:p.update(active_job=None))
     with store.connect() as cx:
         cx.execute("UPDATE production_control SET status='failed' WHERE id=?",(job['id'],))

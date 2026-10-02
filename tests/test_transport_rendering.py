@@ -99,7 +99,32 @@ def test_authored_period_normalization_preserves_protected_source_bytes():
     draft={'blocks':[dict(id='b',kind='explanation',markdown='第一句。第二句。\n\n'+literal,
                            embedded_object_ids=['link'])]}
     result=normalize_authored_periods(draft,source)
-    assert result['blocks'][0]['markdown']=='第一句\n\n第二句\n\n'+literal
+    assert result['blocks'][0]['markdown']=='第一句；第二句\n\n'+literal
+
+
+def test_authored_spacing_normalization_does_not_collapse_multiline_link_literal():
+    from sourceloom.writing import normalize_authored_periods, protected_objects
+
+    source={'objects':[dict(id='card',kind='link',
+        text='Hubble\n\n\n\n\nScience Highlights\n\n\nDescription',
+        target='https://example.org/highlights')]}
+    literal=protected_objects(source)['card']
+    draft={'blocks':[dict(id='b',kind='explanation',
+        markdown='前言。\n\n\n'+literal+'\n\n\n结尾。',embedded_object_ids=['card'])]}
+    normalized=normalize_authored_periods(draft,source)['blocks'][0]['markdown']
+    assert literal in normalized and normalized.count(literal)==1
+    assert normalized.startswith('前言\n\n') and normalized.endswith('\n\n结尾')
+
+
+def test_authored_period_normalization_keeps_writer_paragraphs_and_code():
+    from sourceloom.writing import normalize_authored_periods
+    prose='同一件事的起点。它接着发生变化。\n\n另一个主题开始。'
+    code='```text\n原件中的句号。\n```'
+    draft={'blocks':[dict(id='prose',kind='explanation',markdown=prose),
+                     dict(id='code',kind='explanation',markdown=code)]}
+    result=normalize_authored_periods(draft,{'objects':[]})
+    assert result['blocks'][0]['markdown']=='同一件事的起点；它接着发生变化\n\n另一个主题开始'
+    assert result['blocks'][1]['markdown']==code
 
 
 def flat(nodes):
@@ -209,6 +234,23 @@ def test_math_preview_keeps_tex_and_readweave_uses_native_editor_storage():
     native=safe_html(markdown_renderer('readweave').render(source))
     assert 'class="math-tex"' in native and r'\(x^2\)' in native
     assert r'\[\frac{a}{b}\]' in native
+
+
+def test_bracket_math_renders_without_changing_protected_code():
+    source = (r'Inline \(x^2\).' + '\n\n' + r'\[' + '\n'
+              + r'M_i = f_\theta(C_i, M_{i-1})' + '\n' + r'\]'
+              + '\n\n```text\n' + r'\[literal code\]' + '\n```')
+    preview = safe_html(markdown_renderer().render(source))
+    assert preview.count('<math') == 2
+    assert 'application/x-tex' in preview
+    assert '<pre><code' in preview and r'\[literal code\]' in preview
+    assert '<p>[\nM_i' not in preview
+    native = safe_html(markdown_renderer('readweave').render(source))
+    assert native.count('class="math-tex"') == 2
+    assert r'\(x^2\)' in native and r'\[\nM_i' not in native
+    assert r'\[literal code\]' in native
+    numbered = safe_html(markdown_renderer().render(r'\[x=1\](7)'))
+    assert '<math' in numbered and '(7)' in numbered
 
 
 def test_alignment_survives_markdown_style_spelling_without_allowing_active_css():

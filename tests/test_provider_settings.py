@@ -11,6 +11,7 @@ from sourceloom.provider_settings import (
     PROTOCOL_RESPONSES,
     activate_staged_route,
     import_readweave_registry,
+    load_private_settings,
     normalize_usage,
     probe_staged_route,
     public_provider_metadata,
@@ -22,6 +23,24 @@ from sourceloom.providers import Provider
 from sourceloom.providers import apply_route_override
 from sourceloom.app import create_app
 from tests.test_production import prepared
+
+
+def test_existing_provider_overlay_cannot_silently_fall_back_on_read_error(tmp_path, monkeypatch):
+    path=tmp_path/'provider-settings.json'
+    path.write_text('{"version":1}',encoding='utf-8')
+    original=type(path).read_text
+    def denied(self,*args,**kwargs):
+        if self==path:raise PermissionError('denied')
+        return original(self,*args,**kwargs)
+    monkeypatch.setattr(type(path),'read_text',denied)
+    with pytest.raises(RuntimeError,match='无法读取有效的生成线路配置'):
+        load_private_settings(tmp_path)
+
+
+def test_invalid_provider_overlay_cannot_silently_revert_routes(tmp_path):
+    (tmp_path/'provider-settings.json').write_text('{',encoding='utf-8')
+    with pytest.raises(RuntimeError,match='无法读取有效的生成线路配置'):
+        load_private_settings(tmp_path)
 
 
 @pytest.fixture
@@ -119,6 +138,257 @@ def test_activated_route_drops_stale_role_credential_and_transport():
     assert 'api_key' not in role and role['billing_mode']=='metered'
     effective=activated|role
     assert effective['api_key']=='kuafu-key'
+
+
+def test_reciprocal_route_backup_metadata_survives_activation_and_reload(tmp_path, monkeypatch):
+    config_file=tmp_path/'config.json';config_file.write_text('{}',encoding='utf-8')
+    data=tmp_path/'data';monkeypatch.setenv('SOURCELOOM_CONFIG',str(config_file))
+    monkeypatch.setenv('SOURCELOOM_DATA',str(data))
+    config=load_config()
+    registry={'providers':[
+        {'id':'kuafu-a','baseUrl':'https://a.kuafu.example/v1','requestProtocol':'responses',
+         'endpoint':'/responses','model':'deepseek-v4.1-flash','enabled':True,
+         'backupProviderId':'kuafu-b'},
+        {'id':'kuafu-b','baseUrl':'https://b.kuafu.example/v1','requestProtocol':'chat_completions',
+         'model':'deepseek-v4.1-flash','enabled':True,'backupProviderId':'kuafu-a'},
+    ]}
+    routes=import_readweave_registry(registry)
+    config=stage_imported_routes(config,routes,{'kuafu-a':'key-a','kuafu-b':'key-b'})
+    config=activate_staged_route(config,'kuafu-a');save_private_settings(data,config)
+    restored=load_config()
+    assert restored['provider_routes']['kuafu-a']['backup_provider_id']=='kuafu-b'
+    assert restored['provider_routes']['kuafu-b']['backup_provider_id']=='kuafu-a'
+    assert restored['role_providers']['active_plan']['backup_provider_id']=='kuafu-b'
+    public=public_provider_metadata(restored)
+    assert public['active']['backup_provider_id']=='kuafu-b'
+    assert 'key-a' not in json.dumps(public) and 'key-b' not in json.dumps(public)
+
+
+@pytest.mark.parametrize("reverse_backup", [None, "kuafu-c"])
+def test_kuafu_deepseek_activation_rejects_asymmetric_backup_pair(reverse_backup):
+    routes={
+        "kuafu-a": {"provider_id":"kuafu-a", "provider":"openai-compatible",
+            "model":"deepseek-v4.1-flash", "protocol":"responses",
+            "base_url":"https://api.kuafushe.cc/v1", "enabled":True,
+            "backup_provider_id":"kuafu-b"},
+        "kuafu-b": {"provider_id":"kuafu-b", "provider":"openai-compatible",
+            "model":"deepseek-v4.1-flash", "protocol":"chat_completions",
+            "base_url":"https://api.kuafushe.cc/v1", "enabled":True,
+            "backup_provider_id":reverse_backup},
+    }
+    credentials={"kuafu-a":"key-a", "kuafu-b":"key-b"}
+    if reverse_backup=="kuafu-c":
+        routes["kuafu-c"]={"provider_id":"kuafu-c", "provider":"openai-compatible",
+            "model":"deepseek-v4.1-flash", "protocol":"responses",
+            "base_url":"https://api.kuafushe.cc/v1", "enabled":True}
+        credentials["kuafu-c"]="key-c"
+
+    with pytest.raises(ValueError, match="夸父社 DeepSeek 同模型备用线路必须互相指回"):
+        activate_staged_route({"provider_routes":routes,
+            "provider_credentials":credentials}, "kuafu-a")
+
+
+def test_staging_imported_kuafu_deepseek_pair_rejects_missing_reverse_link():
+    routes=import_readweave_registry({"providers":[
+        {"id":"kuafu-a", "baseUrl":"https://api.kuafushe.cc/v1",
+         "requestProtocol":"responses", "endpoint":"/responses",
+         "model":"deepseek-v4.1-flash", "enabled":True,
+         "backupProviderId":"kuafu-b"},
+        {"id":"kuafu-b", "baseUrl":"https://api.kuafushe.cc/v1",
+         "requestProtocol":"chat_completions", "model":"deepseek-v4.1-flash",
+         "enabled":True},
+    ]})
+
+    with pytest.raises(ValueError, match="夸父社 DeepSeek 同模型备用线路必须互相指回"):
+        stage_imported_routes({}, routes, {"kuafu-a":"key-a", "kuafu-b":"key-b"})
+
+
+def test_non_kuafu_provider_backup_may_remain_one_way():
+    routes={
+        "vendor-a": {"provider_id":"vendor-a", "provider":"openai-compatible",
+            "model":"deepseek-v4.1-flash", "protocol":"responses",
+            "base_url":"https://a.example/v1", "enabled":True,
+            "backup_provider_id":"vendor-b"},
+        "vendor-b": {"provider_id":"vendor-b", "provider":"openai-compatible",
+            "model":"deepseek-v4.1-flash", "protocol":"responses",
+            "base_url":"https://b.example/v1", "enabled":True},
+    }
+
+    active=activate_staged_route({"provider_routes":routes,
+        "provider_credentials":{"vendor-a":"key-a", "vendor-b":"key-b"}}, "vendor-a")
+
+    assert active["active_route_id"]=="vendor-a"
+    assert active["backup_provider_id"]=="vendor-b"
+
+
+@pytest.mark.parametrize(('backup_id','include_backup'),[('kuafu-a',True),('missing-route',False)])
+def test_route_activation_rejects_self_or_missing_backup(backup_id,include_backup):
+    routes={'kuafu-a':{'provider_id':'kuafu-a','provider':'openai-compatible','model':'deepseek',
+        'protocol':'responses','base_url':'https://a.example/v1','enabled':True,
+        'backup_provider_id':backup_id}}
+    credentials={}
+    if include_backup and backup_id!='kuafu-a':
+        routes[backup_id]={'provider_id':backup_id,'provider':'openai-compatible','model':'deepseek',
+            'protocol':'responses','base_url':'https://b.example/v1','enabled':True}
+        credentials[backup_id]='backup-key'
+    with pytest.raises(ValueError,match='备用线路'):
+        activate_staged_route({'provider_routes':routes,'provider_credentials':credentials},'kuafu-a')
+
+
+@pytest.mark.parametrize(('primary_id','backup_id'),[('kuafu-a','kuafu-b'),('kuafu-b','kuafu-a')])
+@pytest.mark.parametrize('primary_failure',['connect','gateway_524'])
+def test_provider_call_fails_over_reciprocally_on_connection_or_gateway_failure(
+        tmp_path,skill,monkeypatch,primary_id,backup_id,primary_failure):
+    store,queue,project,bundle=prepared(tmp_path,skill);job=queue.enqueue(project['id'],bundle)
+    routes={
+        'kuafu-a':{'provider_id':'kuafu-a','provider':'openai-compatible','model':'deepseek-v4.1-flash',
+            'protocol':'responses','endpoint':'/responses','base_url':'https://a.example/v1',
+            'enabled':True,'backup_provider_id':'kuafu-b'},
+        'kuafu-b':{'provider_id':'kuafu-b','provider':'openai-compatible','model':'deepseek-v4.1-flash',
+            'protocol':'responses','endpoint':'/responses','base_url':'https://b.example/v1',
+            'enabled':True,'backup_provider_id':'kuafu-a'},
+    }
+    config=load_config()|routes[primary_id]|{
+        'api_key':'key-'+primary_id,'provider_routes':routes,
+        'provider_credentials':{'kuafu-a':'key-kuafu-a','kuafu-b':'key-kuafu-b'},
+        'writing_skill_dir':str(skill),'max_input_bytes':100000,
+    }
+    seen=[]
+    class Response:
+        status_code=200;content=b'{}'
+        def json(self):return {'status':'completed','output_text':'{"ok":true}',
+            'usage':{'input_tokens':10,'output_tokens':2}}
+    def post(url,headers,body,deadline):
+        seen.append((url,headers['Authorization']))
+        if len(seen)==1:
+            if primary_failure=='connect':
+                raise httpx.ConnectError('synthetic pre-response connection failure',
+                                         request=httpx.Request('POST',url))
+            return httpx.Response(524,text='synthetic gateway timeout',request=httpx.Request('POST',url))
+        return Response()
+    monkeypatch.setattr('sourceloom.providers.post_before_deadline',post)
+    result=Provider(store,config).call(project['id'],'writer',{'source':'text'},
+                                      {'type':'object','properties':{'ok':{'type':'boolean'}},'required':['ok']},job)
+    assert result=={'ok':True}
+    assert [url for url,_ in seen]==[
+        routes[primary_id]['base_url']+'/responses',routes[backup_id]['base_url']+'/responses']
+    assert seen[1][1]=='Bearer key-'+backup_id
+    assert job['calls'][0]['status']==('unavailable' if primary_failure=='connect' else 'uncertain')
+    assert job['calls'][1]['provider_id']==backup_id and job['calls'][1]['status']=='completed'
+    assert job['route_switches'][0]['from_provider_id']==primary_id
+    assert job['route_switches'][0]['to_provider_id']==backup_id
+
+
+@pytest.mark.parametrize('backup_id',[None,'missing-route'])
+def test_definitive_provider_rejection_without_usable_backup_is_failed_not_uncertain(
+        tmp_path,skill,monkeypatch,backup_id):
+    store,queue,project,bundle=prepared(tmp_path,skill);job=queue.enqueue(project['id'],bundle)
+    config=load_config()|{'provider':'openai-compatible','provider_id':'kuafu-a',
+        'protocol':'responses','endpoint':'/responses','base_url':'https://a.example/v1',
+        'model':'deepseek-v4.1-flash','api_key':'synthetic-key','writing_skill_dir':str(skill),
+        'max_input_bytes':100000,'provider_routes':{},'provider_credentials':{}}
+    if backup_id:config['backup_provider_id']=backup_id
+    monkeypatch.setattr('sourceloom.providers.post_before_deadline',lambda url,*args:
+        httpx.Response(403,json={'error':{'code':'forbidden'}},request=httpx.Request('POST',url)))
+    with pytest.raises(ValueError,match='拒单'):
+        Provider(store,config).call(project['id'],'writer',{'source':'text'},
+            {'type':'object','properties':{'ok':{'type':'boolean'}},'required':['ok']},job)
+    assert job['calls'][0]['status']=='rejected'
+
+
+def test_chat_stream_route_can_fall_back_to_responses_protocol(tmp_path,skill,monkeypatch):
+    store,queue,project,bundle=prepared(tmp_path,skill);job=queue.enqueue(project['id'],bundle)
+    routes={
+        'kuafu-chat':{'provider_id':'kuafu-chat','provider':'openai-compatible','model':'deepseek-v4.1-flash',
+            'protocol':'chat_completions','base_url':'https://api.kuafushe.cc/v1',
+            'enabled':True,'backup_provider_id':'kuafu-responses'},
+        'kuafu-responses':{'provider_id':'kuafu-responses','provider':'openai-compatible','model':'deepseek-v4.1-flash',
+            'protocol':'responses','endpoint':'/responses','base_url':'https://api.kuafushe.cc/v1',
+            'enabled':True,'backup_provider_id':'kuafu-chat'},
+    }
+    config=load_config()|routes['kuafu-chat']|{
+        'api_key':'key-kuafu-chat','provider_routes':routes,
+        'provider_credentials':{'kuafu-chat':'key-kuafu-chat','kuafu-responses':'key-kuafu-responses'},
+        'writing_skill_dir':str(skill),'max_input_bytes':100000,
+    }
+    stream_calls=[];response_calls=[]
+    def fail_chat_stream(url,headers,body,deadline):
+        stream_calls.append((url,body))
+        raise httpx.ConnectError('synthetic connection failure',request=httpx.Request('POST',url))
+    def complete_responses(url,headers,body,deadline):
+        response_calls.append((url,body))
+        return httpx.Response(200,json={'status':'completed','output_text':'{"ok":true}',
+            'usage':{'input_tokens':10,'output_tokens':2}},request=httpx.Request('POST',url))
+    monkeypatch.setattr('sourceloom.providers.post_stream_before_deadline',fail_chat_stream)
+    monkeypatch.setattr('sourceloom.providers.post_responses_stream_before_deadline',complete_responses)
+    result=Provider(store,config).call(project['id'],'writer',{'source':'text'},
+        {'type':'object','properties':{'ok':{'type':'boolean'}},'required':['ok']},job)
+    assert result=={'ok':True}
+    assert stream_calls[0][0].endswith('/chat/completions') and stream_calls[0][1]['stream'] is True
+    assert response_calls[0][0].endswith('/responses') and response_calls[0][1]['stream'] is True
+    assert 'instructions' in response_calls[0][1] and 'input' in response_calls[0][1]
+    assert job['calls'][0]['protocol']=='chat_completions' and job['calls'][0]['status']=='unavailable'
+    assert job['calls'][1]['protocol']=='responses' and job['calls'][1]['status']=='completed'
+
+
+@pytest.mark.parametrize('primary_protocol',['chat_completions','responses'])
+def test_kuafu_dispatched_read_error_uses_reciprocal_backup_and_keeps_unknown_cost(
+        tmp_path,skill,monkeypatch,primary_protocol):
+    store,queue,project,bundle=prepared(tmp_path,skill);job=queue.enqueue(project['id'],bundle)
+    chat={
+        'provider_id':'kuafu-chat','provider':'openai-compatible','model':'deepseek-v4.1-flash',
+        'protocol':'chat_completions','base_url':'https://api.kuafushe.cc/v1',
+        'enabled':True,'backup_provider_id':'kuafu-responses',
+    }
+    responses={
+        'provider_id':'kuafu-responses','provider':'openai-compatible','model':'deepseek-v4.1-flash',
+        'protocol':'responses','endpoint':'/responses','base_url':'https://api.kuafushe.cc/v1',
+        'enabled':True,'backup_provider_id':'kuafu-chat',
+    }
+    routes={'kuafu-chat':chat,'kuafu-responses':responses}
+    primary_id='kuafu-chat' if primary_protocol=='chat_completions' else 'kuafu-responses'
+    backup_id='kuafu-responses' if primary_protocol=='chat_completions' else 'kuafu-chat'
+    config=load_config()|routes[primary_id]|{
+        'api_key':'key-'+primary_id,'provider_routes':routes,
+        'provider_credentials':{'kuafu-chat':'key-kuafu-chat','kuafu-responses':'key-kuafu-responses'},
+        'writing_skill_dir':str(skill),'max_input_bytes':100000,
+    }
+    seen=[]
+    def fail_primary(url,headers,body,deadline):
+        seen.append(('primary',url,body))
+        raise httpx.ReadError('synthetic mid-stream read failure',request=httpx.Request('POST',url))
+    def succeed_backup(url,headers,body,deadline):
+        seen.append(('backup',url,body))
+        if backup_id=='kuafu-responses':
+            return httpx.Response(200,json={'status':'completed','output_text':'{"ok":true}',
+                'usage':{'input_tokens':10,'output_tokens':2}},request=httpx.Request('POST',url))
+        return httpx.Response(200,json={'choices':[{'message':{'content':'{"ok":true}'},
+            'finish_reason':'stop'}],'usage':{'prompt_tokens':10,'completion_tokens':2}},
+            request=httpx.Request('POST',url))
+    if primary_protocol=='chat_completions':
+        monkeypatch.setattr('sourceloom.providers.post_stream_before_deadline',fail_primary)
+        monkeypatch.setattr('sourceloom.providers.post_responses_stream_before_deadline',succeed_backup)
+    else:
+        monkeypatch.setattr('sourceloom.providers.post_responses_stream_before_deadline',fail_primary)
+        monkeypatch.setattr('sourceloom.providers.post_stream_before_deadline',succeed_backup)
+
+    result=Provider(store,config).call(project['id'],'writer',{'source':'text'},
+        {'type':'object','properties':{'ok':{'type':'boolean'}},'required':['ok']},job)
+
+    assert result=={'ok':True}
+    assert [call[0] for call in seen]==['primary','backup']
+    assert seen[0][1].endswith('/chat/completions' if primary_protocol=='chat_completions' else '/responses')
+    assert seen[1][1].endswith('/responses' if backup_id=='kuafu-responses' else '/chat/completions')
+    if backup_id=='kuafu-chat':
+        assert seen[1][2]['stream'] is True
+    assert job['calls'][0]['status']=='uncertain'
+    assert job['calls'][0]['provider_id']==primary_id
+    assert job['calls'][1]['status']=='completed' and job['calls'][1]['provider_id']==backup_id
+    switch=job['route_switches'][0]
+    assert switch['reason']=='configured_backup_after_uncertain_primary'
+    assert switch['primary_call_id']==job['calls'][0]['id']
+    primary_cost=next(cost for cost in store.costs(project['id']) if cost['id']==job['calls'][0]['id'])
+    assert primary_cost['status']=='unknown' and primary_cost['actual'] is None
 
 
 def test_explicit_role_overrides_survive_activated_settings_route(tmp_path, monkeypatch):
@@ -365,6 +635,39 @@ def test_responses_transport_normalizes_usage_and_keeps_wire_protocol(tmp_path, 
     assert row["body"]["actual_cny"] == pytest.approx(.00017145)
 
 
+def test_ordinary_kuafu_responses_dispatch_defaults_to_streaming(tmp_path, skill, monkeypatch):
+    store, queue, project, bundle = prepared(tmp_path, skill)
+    job = queue.enqueue(project["id"], bundle)
+    captured = []
+
+    def stream_request(url, headers, body, deadline):
+        captured.append((url, body.copy()))
+        return httpx.Response(200, json={
+            "status": "completed",
+            "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": '{"ok":true}'}]}],
+            "usage": {"input_tokens": 100, "output_tokens": 10},
+        })
+
+    monkeypatch.setattr("sourceloom.providers.post_responses_stream_before_deadline", stream_request)
+    config = load_config() | {
+        "provider": "openai-compatible",
+        "provider_id": "kuafu-responses",
+        "protocol": "responses",
+        "endpoint": "/responses",
+        "base_url": "https://api.kuafushe.cc/v1",
+        "api_key": "synthetic-key",
+        "pricing_cny": {"input": 1.62, "cached_input": .054, "output": 4.86},
+        "writing_skill_dir": str(skill),
+        "max_input_bytes": 100000,
+    }
+
+    assert Provider(store, config).call(
+        project["id"], "writer", {"source": "text"}, {"type": "object"}, job) == {"ok": True}
+    assert captured[0][0] == "https://api.kuafushe.cc/v1/responses"
+    assert captured[0][1]["stream"] is True
+
+
 def test_kuafu_chat_stream_reassembles_content_tools_and_usage():
     from sourceloom.providers import (apply_stream_timeout, chat_completion_from_sse,
                                       completed_chat_sse, streaming_chat_enabled)
@@ -402,7 +705,7 @@ def test_kuafu_transient_401_replays_once_only_after_catalog_revalidation(tmp_pa
         "status":"completed","output_text":'{"ok":true}',
         "usage":{"input_tokens":10,"output_tokens":2}})]
     calls=[]
-    monkeypatch.setattr("sourceloom.providers.post_before_deadline",
+    monkeypatch.setattr("sourceloom.providers.post_responses_stream_before_deadline",
                         lambda *args:(calls.append(args) or returned.pop(0)))
     monkeypatch.setattr("sourceloom.providers.httpx.get",
                         lambda *args,**kwargs:Response(200,{"data":[]}))
@@ -445,6 +748,34 @@ def test_large_kuafu_request_uses_configured_official_route_before_dispatch(tmp_
     assert calls==["https://api.deepseek.com/v1/responses"]
     assert len(job["calls"])==1 and job["calls"][0]["provider_id"]=="deepseek-official"
     assert job["route_switches"][0]["reason"]=="kuafu_verified_request_size_boundary"
+
+
+def test_large_kuafu_request_streams_when_no_fallback_is_configured(tmp_path, skill, monkeypatch):
+    store, queue, project, bundle = prepared(tmp_path, skill)
+    job = queue.enqueue(project["id"], bundle)
+    calls=[]
+
+    class Response:
+        status_code=200
+        content=b'{}'
+        def json(self):
+            return {"status":"completed","output_text":'{"ok":true}',
+                    "usage":{"input_tokens":10,"output_tokens":2}}
+
+    monkeypatch.setattr("sourceloom.providers.post_responses_stream_before_deadline",
+                        lambda url,*args:(calls.append(url) or Response()))
+    config=load_config()|{
+        "provider":"openai-compatible","provider_id":"kuafu","protocol":"responses",
+        "endpoint":"/responses","base_url":"https://api.kuafushe.cc/v1",
+        "api_key":"kuafu-key","writing_skill_dir":str(skill),"max_input_bytes":100000,
+        "kuafu_safe_input_bytes":1,"quota_fallback":None,
+    }
+    result=Provider(store,config).call(project["id"],"writer",{"source":"text"},{"type":"object"},job)
+    assert result=={"ok":True}
+    assert calls==["https://api.kuafushe.cc/v1/responses"]
+    assert not job.get("route_switches")
+    assert job["nonblocking_transport_notes"][0]["reason"]==(
+        "kuafu_verified_request_size_boundary_streamed_without_fallback")
 
 
 def test_active_plan_uses_official_compatibility_route_without_kuafu_attempt(tmp_path, skill, monkeypatch):

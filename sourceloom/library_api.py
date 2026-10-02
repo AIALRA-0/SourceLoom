@@ -62,6 +62,30 @@ def source_locations(project):
 def register(app, store, config):
     queue=Queue(store,pipeline=config.get('generation_pipeline','legacy'))
 
+    def legacy_folder(fid, subtree=False):
+        """Archived controls cannot bypass the current material-tree boundary."""
+        if fid is None:
+            return
+        with store.connect() as cx:
+            rows = {r['id']: dict(r) for r in cx.execute('SELECT id,parent,scope FROM library_folders')}
+            selected = {fid}
+            if subtree:
+                pending = [fid]
+                while pending:
+                    parent = pending.pop()
+                    for key, row in rows.items():
+                        if row['parent'] == parent and key not in selected:
+                            selected.add(key)
+                            pending.append(key)
+            if any(rows.get(key, {}).get('scope') == 'processor' for key in selected):
+                raise Conflict('当前文件夹请使用处理器材料树整理')
+            if subtree and cx.execute(
+                "SELECT 1 FROM projects WHERE json_type(body,'$.processor')='object' "
+                "AND json_extract(body,'$.folder') IN (" + ','.join('?' for _ in selected) + ') LIMIT 1',
+                tuple(selected),
+            ).fetchone():
+                raise Conflict('此目录包含当前材料，请使用处理器材料树整理')
+
     def latest_production(pid):
         with store.connect() as cx:
             row=cx.execute("SELECT body FROM jobs WHERE project=? AND role='production' ORDER BY created DESC LIMIT 1",(pid,)).fetchone()
@@ -95,19 +119,26 @@ def register(app, store, config):
 
     @app.post('/api/library/folders')
     def folder(body:dict):
+        legacy_folder(body.get('parent'))
         return queue.folder(str(body.get('name','')),body.get('parent'))
 
     @app.patch('/api/library/folders/{fid}')
     def change_folder(fid:str,body:dict):
+        legacy_folder(fid, subtree=True)
+        legacy_folder(body.get('parent'))
         return queue.folder(str(body.get('name','')),body.get('parent'),fid,body.get('revision'))
 
     @app.delete('/api/library/folders/{fid}')
     def remove_folder(fid:str):
+        legacy_folder(fid, subtree=True)
         queue.delete_folder(fid)
         return {'deleted':True}
 
     @app.patch('/api/library/documents/{pid}')
     def change_document(pid:str,body:dict):
+        if 'processor' in store.get(pid):
+            raise Conflict('当前材料请使用处理器材料树整理')
+        legacy_folder(body.get('folder'))
         return queue.edit_document(pid,body['library_revision'],title=body.get('title'),
                                    folder=body.get('folder'),move='folder' in body,trashed=body.get('trashed'),budget_cny=body.get('budget_cny'))
 
@@ -143,7 +174,8 @@ def register(app, store, config):
             messages={'codex_quota_exhausted':'转发服务报告本次所用通道额度耗尽，未返回正文；这不代表全部账号或订阅都不可用',
                       'chatgpt_delivery_uncertain':'无法确认聊天消息是否送达，已保留原请求，未自动重发'}
             if row[2] in messages:j['error']=messages[row[2]]
-            if not p.get('draft') and j['has_candidate']:
+            if j['has_candidate'] and (not p.get('draft') or
+                    (p.get('production') or {}).get('job')!=j['id']):
                 from .progress import candidate as saved_candidate
                 with store.connect() as cx:
                     candidate=saved_candidate(cx,j['id'])
@@ -153,17 +185,24 @@ def register(app, store, config):
                 j=latest_production(pid)
         if not j:
             return {'status':'not_started'}
+        legacy_source_fallback=(p.get('production') or {}).get('delivery_state')=='recovered_ready_for_review'
+        legacy_job=legacy_source_fallback and (p.get('production') or {}).get('job')==j['id']
         try:
-            available=None if p.get('draft') else available_draft(j)
+            available=available_draft(j) if (j.get('draft') or {}).get('blocks') or not p.get('draft') else None
         except ValueError:
             available=None
-        displayed=p.get('draft') or available
+        displayed=None if legacy_source_fallback else p.get('draft')
         output_text=canonical(displayed) if displayed else ''
-        newer_candidate=(j['status'] in {'failed','uncertain','cancelled'} and
-            bool(j.get('has_candidate') or j.get('draft',{}).get('blocks')) and
+        newer_candidate=(available is not None and
+            j.get('delivery_state')!='recovered_ready_for_review' and
             (p.get('production') or {}).get('job')!=j['id'])
         candidate_url=f"/api/projects/{pid}/attempts/{j['id']}/output" if newer_candidate else None
+        if legacy_job:
+            j['status']='failed'
+            j['error']='旧版自动恢复稿混入原文，不能作为生成结果；请重新生成'
         j['role']='production'
+        receipt=p.get('production') or {}
+        core=receipt.get('core_chain_version')==1
         return {k:j.get(k) for k in ('id','status','stage','pipeline','created','started','finished','error','quality_issues','repair_rounds')} | {
             'call_count':j.get('call_count',len(j.get('calls',[]))),'has_output':bool(displayed),
             'output_chars':len(output_text),
@@ -171,11 +210,15 @@ def register(app, store, config):
             'candidate_url':candidate_url,
             'candidate_markdown_url':candidate_url+'?format=markdown' if candidate_url else None,
             'progress':summary(j),
-            'formal':(p.get('production') or {}).get('status') in {'completed','ready_for_review'} and
-                (p.get('production') or {}).get('pipeline')!='active_composition_v1',
-            'delivery_complete':(p.get('production') or {}).get('status') in {'completed','ready_for_review'},
-            'delivery_state':(p.get('production') or {}).get('delivery_state'),
-            'semantic_status':(p.get('production') or {}).get('semantic_status')}
+            'formal':(receipt.get('publication_status') in {'Verified','Published'} if core else
+                not legacy_source_fallback and receipt.get('status') in {'completed','ready_for_review'} and
+                receipt.get('pipeline')!='active_composition_v1'),
+            'delivery_complete':not legacy_source_fallback and receipt.get('status') in {'completed','ready_for_review'},
+            'delivery_state':receipt.get('delivery_state'),
+            'publication_status':receipt.get('publication_status') if core else None,
+            'integrity_verdict':receipt.get('integrity_verdict') if core else None,
+            'execution_status':('unknown' if j.get('status')=='uncertain' else j.get('status')) if core else None,
+            'semantic_status':receipt.get('semantic_status') if not core else None}
 
     @app.get('/api/projects/{pid}/intakes/{jid}/original/{key}')
     def intake_original(pid:str,jid:str,key:str):
@@ -190,6 +233,8 @@ def register(app, store, config):
     def attempt_output(pid:str,jid:str,format:str='html'):
         p=store.get(pid);job=store.job(jid)
         if job.get('project')!=pid or job.get('role')!='production':raise KeyError(jid)
+        if job.get('delivery_state')=='recovered_ready_for_review':
+            raise Conflict('旧版自动恢复稿混入原文，不能作为生成结果；请重新生成')
         draft=available_draft(job)
         if not draft:raise Conflict('本次尚未生成可阅读正文')
         if format=='markdown':
@@ -212,6 +257,8 @@ def register(app, store, config):
     @app.get('/api/projects/{pid}/editable')
     def editable(pid:str):
         p=store.get(pid)
+        if (p.get('production') or {}).get('delivery_state')=='recovered_ready_for_review':
+            raise Conflict('旧版自动恢复稿混入原文，不能作为生成结果；请重新生成')
         if not p.get('draft'):
             j=latest_production(pid)
             if j:
@@ -223,6 +270,8 @@ def register(app, store, config):
     @app.get('/api/projects/{pid}/source-locations')
     def locations(pid:str):
         p=store.get(pid)
+        if (p.get('production') or {}).get('delivery_state')=='recovered_ready_for_review':
+            return {}
         if not p.get('draft'):
             j=latest_production(pid)
             if j:
@@ -232,14 +281,10 @@ def register(app, store, config):
     @app.get('/api/projects/{pid}/output')
     def output(pid:str,format:str='html',numbering:str|None=None):
         p=store.get(pid)
+        if (p.get('production') or {}).get('delivery_state')=='recovered_ready_for_review':
+            raise Conflict('旧版自动恢复稿混入原文，不能作为生成结果；请重新生成')
         if not p.get('draft'):
-            j=latest_production(pid)
-            if not j:
-                raise Conflict('尚未生成正文')
-            available=available_draft(j)
-            if not available:
-                raise Conflict('尚未生成正文')
-            p=p|dict(draft=available,inventory=j['inventory'],plan=j['plan'])
+            raise Conflict('尚未生成可交付正文；处理失败时只保留单独标记的候选稿')
         snapshot=json.dumps(p,ensure_ascii=False,separators=(',',':'))
         if format=='markdown':
             return Response(cached_output(pid,numbering,format,snapshot),media_type='text/markdown',

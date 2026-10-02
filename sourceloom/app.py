@@ -3,12 +3,13 @@
 from contextlib import asynccontextmanager
 import copy
 import json
+import mimetypes
 import re
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,6 +47,10 @@ class Create(BaseModel):
 
 
 def create_app(config=None):
+    # Windows registries can report .mjs as text/plain; PDF modules and workers
+    # must use the JavaScript MIME type on every local entry point.
+    mimetypes.add_type("application/javascript", ".mjs")
+    mimetypes.add_type("application/wasm", ".wasm")
     config=config or load_config()
     restored=apply_private_settings(config,load_private_settings(config["data_dir"]))
     config.clear();config.update(restored)
@@ -55,12 +60,15 @@ def create_app(config=None):
     async def lifespan(app):
         yield
         pipeline.executor.shutdown(wait=False,cancel_futures=True)
+        app.state.processor_executor.shutdown(wait=False,cancel_futures=True)
     app=FastAPI(title="SourceLoom",version="0.1.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.add_middleware(GZipMiddleware,minimum_size=1000)
     app.state.store=store
     app.state.pipeline=pipeline
     from .library_api import register
     queue=register(app,store,config)
+    from .processor_api import register as register_processor
+    register_processor(app,store,config)
 
     @app.middleware("http")
     async def security(request:Request,call_next):
@@ -81,13 +89,21 @@ def create_app(config=None):
                 length=request.headers.get("content-length")
                 if length and int(length)>MAX_FILE*4:
                     return JSONResponse({"error":"本次上传超过大小限制"},status_code=413)
+                legacy_project = re.match(r'^/api/projects/([a-zA-Z0-9_-]+)(?:/|$)',request.url.path)
+                if legacy_project:
+                    try:
+                        saved = store.get(legacy_project[1])
+                    except KeyError:
+                        saved = {}
+                    if 'processor' in saved:
+                        return JSONResponse({"error":"这份材料使用新处理器，请在材料工作台操作；历史主链不能修改冻结原件"},status_code=409)
         response=await call_next(request)
         response.headers["X-Content-Type-Options"]="nosniff"
         response.headers["Referrer-Policy"]="no-referrer"
         response.headers["Cache-Control"]=("private, max-age=0, must-revalidate"
                                            if request.url.path.startswith('/static/') else "no-store")
         if (request.method in {'GET','HEAD'} and response.status_code==200
-                and re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/assets/[0-9a-f]{64}',request.url.path)):
+                and re.fullmatch(r'/api/(?:projects/[a-zA-Z0-9_-]+/assets|processor/projects/[a-zA-Z0-9_-]+/files)/[0-9a-f]{64}',request.url.path)):
             response.headers['Cache-Control']='private, max-age=31536000, immutable'
         if "Content-Security-Policy" not in response.headers:
             response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
@@ -314,7 +330,11 @@ def create_app(config=None):
         if background:
             from .intake_jobs import IntakeQueue
             return JSONResponse(IntakeQueue(store,config).enqueue(pid,uploads=uploads,generate=generate,request_id=request_id),status_code=202)
-        return assign_inventory(pid,isolated_intake(store,uploads))
+        from .network import fetch_uploaded_assets
+        bundle,aliases,failures=fetch_uploaded_assets(uploads)
+        inv=isolated_intake(store,bundle,asset_aliases=aliases)
+        inv['upload_snapshot']={'asset_aliases':aliases,'fetch_failures':failures}
+        return assign_inventory(pid,inv)
 
     @app.post("/api/projects/{pid}/url")
     def import_url(pid:str,body:dict):
@@ -445,6 +465,10 @@ def create_app(config=None):
     @app.get("/api/projects/{pid}/preview")
     def preview(pid:str):
         p=store.get(pid)
+        if (p.get('production') or {}).get('delivery_state')=='recovered_ready_for_review':
+            raise Conflict('旧版自动恢复稿混入原文，不能作为生成结果；请重新生成')
+        if not p.get('draft'):
+            raise Conflict('尚未生成可预览正文')
         content=render(p,lambda key:f"/api/projects/{pid}/assets/{key}")
         return HTMLResponse(reading_page(content),
                             headers={"Content-Security-Policy":"sandbox allow-same-origin; default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"})
@@ -461,23 +485,56 @@ def create_app(config=None):
 
     @app.get("/api/projects/{pid}/export")
     def export(pid:str,release:bool=False):
-        return Response(export_zip(store,store.get(pid),release),media_type="application/zip",
+        p=store.get(pid)
+        if (p.get('production') or {}).get('delivery_state')=='recovered_ready_for_review':
+            raise Conflict('旧版自动恢复稿混入原文，不能作为生成结果；请重新生成')
+        if not p.get('draft'):
+            raise Conflict('尚未生成可交付正文；处理失败时只保留单独标记的候选稿')
+        return Response(export_zip(store,p,release),media_type="application/zip",
                         headers={"Content-Disposition":'attachment; filename="SourceLoom-ReadWeave-Candidate.zip"'})
 
     @app.post('/api/projects/{pid}/readweave')
     def send_readweave(pid:str):
         from .readweave import import_candidate
         with pipeline.lock:
-            if store.get(pid)['active_job']:raise Conflict('角色执行中，稍后导入')
+            p=store.get(pid)
+            if p['active_job']:raise Conflict('角色执行中，稍后导入')
+            if (p.get('production') or {}).get('delivery_state')=='recovered_ready_for_review':
+                raise Conflict('旧版自动恢复稿混入原文，不能作为生成结果；请重新生成')
+            if not p.get('draft'):
+                raise Conflict('尚未生成可交付正文；处理失败时只保留单独标记的候选稿')
             return import_candidate(store,config,pid)
 
     @app.get("/")
     def index():
-        return FileResponse(Path(__file__).parent/"static"/"library.html")
+        return FileResponse(Path(__file__).parent/"static"/"processor.html")
+
+    @app.get('/favicon.ico', include_in_schema=False)
+    def favicon():
+        return FileResponse(Path(__file__).parent/'static'/'favicon.svg', media_type='image/svg+xml')
+
+    @app.get("/legacy")
+    def legacy_library(document: str | None = None):
+        destination = '/?space=archives'
+        if document:
+            try:
+                saved = store.get(document)
+            except KeyError:
+                saved = None
+            if saved and 'processor' in saved:
+                destination = '/?material='+quote(document, safe='')
+            elif saved and saved.get('draft'):
+                # A historical deep link retains read-only access to its real
+                # saved body through the existing reader, without its old UI.
+                destination = '/api/projects/'+quote(document, safe='')+'/output'
+            elif saved and (saved.get('inventory') or {}).get('originals'):
+                key = saved['inventory']['originals'][0]['sha256']
+                destination = '/api/projects/'+quote(document, safe='')+'/original-view/'+quote(key, safe='')
+        return RedirectResponse(destination, status_code=307)
 
     @app.get('/workbench')
     def workbench():
-        return FileResponse(Path(__file__).parent/'static'/'index.html')
+        return RedirectResponse('/', status_code=307)
 
     examples=store.root/"examples"
     examples.mkdir(exist_ok=True)

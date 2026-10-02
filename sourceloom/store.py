@@ -46,6 +46,18 @@ class Store:
                 cx.execute('ALTER TABLE spending ADD COLUMN created REAL NOT NULL DEFAULT 0')
             from .progress import install
             install(cx)
+            # Classify jobs that predate the core-chain cutover exactly once.
+            # A missing marker created after this migration is an error, not
+            # implicit permission to run the legacy executor.
+            if cx.execute('PRAGMA user_version').fetchone()[0] == 0:
+                for row in cx.execute("SELECT id,body FROM jobs WHERE role='production'").fetchall():
+                    job = json.loads(row['body'])
+                    if (job.get('pipeline') in {'active_composition_v1', 'active_composition_v2'}
+                            and 'core_chain_version' not in job):
+                        job['core_chain_version'] = 0
+                        cx.execute('UPDATE jobs SET body=? WHERE id=?',
+                                   (json.dumps(job, ensure_ascii=False), row['id']))
+                cx.execute('PRAGMA user_version=1')
 
     @contextmanager
     def connect(self):
@@ -136,6 +148,108 @@ class Store:
             cx.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,body=excluded.body",
                        (job["id"], job["project"], job["role"], job["status"], job["created"], json.dumps(job, ensure_ascii=False)))
 
+    def begin_provider_dispatch(self, job, call_id, limit=3):
+        """Persist one dispatch claim; retain old route budgets for old tasks.
+
+        The claim commits before bytes leave the process. A crash after this
+        point conservatively consumes a slot; it can never make a restart
+        resend an already claimed request under a fresh identity.
+        """
+        from urllib.parse import urlsplit
+        limit=max(1,int(limit))
+        with self.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            if job.get('worker_owner'):
+                owner=cx.execute('SELECT owner FROM production_control WHERE id=?',(job['id'],)).fetchone()
+                if not owner or owner[0]!=job['worker_owner']:
+                    raise Conflict('后台执行权已变化，未派发模型请求')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(job['id'],)).fetchone()
+            if not row:
+                raise Conflict('后台调用记录不存在，未派发模型请求')
+            saved=json.loads(row[0])
+            current=next((item for item in saved.get('calls',[]) if item.get('id')==call_id),None)
+            if not current:
+                raise Conflict('后台调用身份不存在，未派发模型请求')
+            if current.get('dispatch_started'):
+                raise Conflict('该调用身份已领取派发名额，禁止再次发送')
+            step=current.get('step_key')
+            if saved.get('core_chain_version')==1:
+                logical_id=current.get('logical_request_id')
+                if not logical_id:
+                    raise Conflict('新版调用缺少稳定逻辑身份，未派发模型请求')
+                prior=[item for item in saved.get('calls',[])
+                       if item.get('id')!=call_id
+                       and (item.get('logical_request_id')==logical_id
+                            or item.get('step_key')==step)
+                       and item.get('dispatch_started')
+                       and item.get('status')!='rejected'
+                       and item.get('dispatch_state')!='confirmed_not_sent']
+                if prior:
+                    raise Conflict('同一逻辑请求此前可能已送达，未确认前禁止再次生成')
+            route_host=(urlsplit(str(current.get('upstream_base') or '')).hostname or '').casefold()
+            recovery=(saved.get('transport_recovery_routes') or {}).get(step)
+            legacy_excess=bool(recovery and recovery.get('recovery_protocol_version')
+                               =='kuafu-responses-sse-v1' and recovery.get('legacy_excess'))
+            is_active_v2=(saved.get('pipeline')=='active_composition_v2'
+                          and saved.get('core_chain_version')==0 and step)
+            same_step=[item for item in saved.get('calls',[])
+                       if item.get('step_key')==step and item.get('dispatch_started')
+                       and item.get('dispatch_state')!='confirmed_not_sent']
+            kuafu=[item for item in same_step
+                   if (urlsplit(str(item.get('upstream_base') or '')).hostname or '').casefold()
+                   =='api.kuafushe.cc']
+            is_sse=(bool(recovery and recovery.get('recovery_protocol_version')
+                         =='kuafu-responses-sse-v1') and recovery.get('status')=='dispatching'
+                    and current.get('protocol')=='responses' and current.get('streaming') is True)
+            if is_active_v2 and route_host=='api.kuafushe.cc':
+                prior_ids={item.get('provider_id') for item in kuafu}
+                prior_sse=[item for item in kuafu if item.get('protocol')=='responses'
+                           and item.get('streaming') is True]
+                if is_sse:
+                    saved_nonstream_error=any(item.get('protocol')=='responses'
+                        and item.get('streaming') is False and item.get('status')=='uncertain'
+                        and item.get('http_status') in {520,521,522,523,524}
+                        and item.get('response_blob') for item in kuafu)
+                    if prior_sse or not saved_nonstream_error:
+                        raise Conflict('本阶段 Responses SSE 恢复已尝试或缺少已保存的非流式 52x 响应')
+                    if len(same_step)>=limit and not legacy_excess:
+                        raise Conflict('本阶段模型派发次数已用完，原件与已完成结果均保留')
+                else:
+                    if len(kuafu)>=2 or current.get('provider_id') in prior_ids:
+                        raise Conflict('本阶段夸父社主备线路都已派发，禁止重新发送')
+                    if len(same_step)>=2:
+                        raise Conflict('本阶段夸父社主备派发次数已用完，等待唯一的 Responses SSE 恢复')
+            current['dispatch_started']=True
+            current['dispatch_state']='started'
+            if is_active_v2 and route_host=='api.kuafushe.cc':
+                prior_count=len(same_step)
+                current['step_dispatch_ordinal']=prior_count+1
+                budgets=saved.setdefault('step_dispatch_budgets',{})
+                budget=budgets.setdefault(step,{'limit':limit,'call_ids':[]})
+                budget['limit']=limit
+                budget.setdefault('call_ids',[]).append(call_id)
+                budget['dispatch_count']=prior_count+1
+                if legacy_excess:
+                    budget['legacy_excess']=True
+                    budget['legacy_prior_dispatches']=prior_count
+                if is_sse:
+                    budget['sse_recovery_call_id']=call_id
+            saved['calls']=[current if item.get('id')==call_id else item
+                            for item in saved.get('calls',[])]
+            cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                       (saved.get('status','running'),json.dumps(saved,ensure_ascii=False),job['id']))
+        # Keep the in-memory recovery objects alive. ActiveComposition holds a
+        # reference to transport_recovery_routes[step] while Provider runs;
+        # replacing the whole dict here would leave it mutating a detached
+        # state object after this durable dispatch claim.
+        local_call=next((item for item in job.get('calls',[]) if item.get('id')==call_id),None)
+        if local_call is not None:
+            local_call.update(current)
+        else:
+            job.setdefault('calls',[]).append(current)
+        if 'step_dispatch_budgets' in saved:
+            job['step_dispatch_budgets']=saved['step_dispatch_budgets']
+
     def job(self, jid):
         with self.connect() as cx:
             r = cx.execute("SELECT body FROM jobs WHERE id=?", (jid,)).fetchone()
@@ -148,11 +262,20 @@ class Store:
             return [json.loads(r[0]) for r in cx.execute("SELECT body FROM jobs WHERE project=? ORDER BY created", (pid,))]
 
     def reserve(self, pid, call_id, amount, body, daily_budget=None, daily_calls=80,
-                total_budget=None, subscription_calls=None):
+                total_budget=None, subscription_calls=None, job_record=None):
         if amount < 0:
             raise ValueError("费用预留不能为负数")
         with self.connect() as cx:
             cx.execute("BEGIN IMMEDIATE")
+            if job_record is not None:
+                if job_record.get('project')!=pid:
+                    raise Conflict('请求记录与项目不匹配，未预留费用')
+                if job_record.get('worker_owner'):
+                    control=cx.execute('SELECT owner,status,lease_until FROM production_control WHERE id=?',
+                        (job_record['id'],)).fetchone()
+                    if (not control or control['owner']!=job_record['worker_owner']
+                            or control['status']!='running' or control['lease_until']<=time.time()):
+                        raise Conflict('后台执行权已变化，未预留费用或派发请求')
             p = json.loads(cx.execute("SELECT body FROM projects WHERE id=?", (pid,)).fetchone()[0])
             previous = cx.execute("SELECT * FROM spending WHERE id=?", (call_id,)).fetchone()
             if previous:
@@ -189,6 +312,12 @@ class Store:
                     "(COALESCE(actual,-1)=0 AND COALESCE(json_extract(body,'$.status'),'')='rejected')").fetchone()[0]
                 if used>=subscription_calls:
                     raise Conflict('订阅测试请求次数已达累计上限')
+            if job_record is not None:
+                updated=cx.execute('UPDATE jobs SET status=?,body=? WHERE id=? AND project=?',
+                    (job_record.get('status','running'),json.dumps(job_record,ensure_ascii=False),
+                     job_record['id'],pid))
+                if updated.rowcount!=1:
+                    raise Conflict('后台请求记录不存在，未预留费用')
             cx.execute("INSERT INTO spending(id,project,reserved,actual,status,body,created) VALUES(?,?,?,?,?,?,?)", (call_id, pid, amount, None, "reserved", json.dumps(body),time.time()))
 
     def settle(self, call_id, actual, body):

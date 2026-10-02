@@ -35,8 +35,11 @@ def bind_web_material_manifest(source, manifest):
     result['web_snapshot']=dict(result.get('web_snapshot') or {},material_manifest=bound,
         material_summary=dict(discovered=len(bound),article_figures=len(required),
                               ready_article_figures=len(required)-len(gaps),gaps=gaps))
+    if isinstance(manifest,dict) and isinstance(manifest.get('source_continuity'),dict):
+        result['web_snapshot']['source_continuity']=copy.deepcopy(manifest['source_continuity'])
     by_capture={obj.get('capture_id'):obj for obj in result.get('objects',[]) if obj.get('capture_id')}
     rendered=[]
+    link_target_discrepancies=[]
     for raw in rendered_manifest:
         item=copy.deepcopy(raw);obj=by_capture.get(item.get('id'))
         # A nested SVG/canvas can be captured by the browser even when the
@@ -66,6 +69,31 @@ def bind_web_material_manifest(source, manifest):
             by_capture[item.get('id')]=obj
         item.update(source_id=obj['id'] if obj else '',ready=bool(obj),
                     resource_id=obj.get('resource_id','') if obj else '')
+        if obj and obj.get('kind')=='link':
+            # Keep the browser-resolved destination beside the source href and
+            # parser-resolved target. Hydration may rewrite links after the
+            # initial response; binding by capture ID preserves that fact
+            # without silently replacing either source representation.
+            rendered_target=item.get('target','')
+            parser_target=obj.get('target','')
+            obj['rendered_target']=rendered_target
+            try:
+                from .active_resources import canonical_url
+                same_destination=(canonical_url(parser_target)==
+                                 canonical_url(rendered_target))
+            except (AttributeError,TypeError,ValueError):
+                same_destination=parser_target==rendered_target
+            item['target_comparison']='canonical_match' if same_destination else 'canonical_mismatch'
+            if same_destination:
+                obj.pop('rendered_target_discrepancy',None)
+            else:
+                discrepancy=dict(source_id=obj['id'],capture_id=item.get('id',''),
+                    original_target=obj.get('original_target',parser_target),
+                    parser_target=parser_target,rendered_target=rendered_target,
+                    reason='rendered_link_destination_differs_from_parser_target')
+                obj['rendered_target_discrepancy']=discrepancy.copy()
+                item['target_discrepancy']=discrepancy.copy()
+                link_target_discrepancies.append(discrepancy)
         rendered.append(item)
     rendered_gaps=[dict(material_id=item['id'],kind=item.get('kind','unknown'),
                         failure='渲染对象没有绑定到原件清单') for item in rendered
@@ -74,11 +102,69 @@ def bind_web_material_manifest(source, manifest):
         attempted=isinstance(manifest,dict) and manifest.get('rendered') is not None,
         completed=bool(manifest.get('rendered')) if isinstance(manifest,dict) else False,
         objects=rendered,gaps=rendered_gaps))
+    result['web_snapshot']['link_target_discrepancies']=link_target_discrepancies
+    repair_nested_rendered_bindings(result)
     return result
+
+
+def repair_nested_rendered_bindings(source):
+    """Bind separately reported SVG/canvas descendants to saved parent pixels."""
+    rendered=(source.get('web_snapshot') or {}).get('rendered_capture')
+    if not isinstance(rendered,dict):return 0
+    objects=rendered.get('objects') or []
+    captured=[item for item in objects if item.get('ready') and item.get('resource_id')
+              and item.get('kind') in {'image','canvas','video','media'}]
+    repaired=0
+    for item in objects:
+        if item.get('ready') or item.get('scope')!='article':continue
+        try:
+            left,top=float(item['x']),float(item['y'])
+            right,bottom=left+float(item['width']),top+float(item['height'])
+        except (KeyError,TypeError,ValueError):continue
+        def contains(candidate):
+            try:
+                x,y=float(candidate['x']),float(candidate['y'])
+                return (x<=left and y<=top and x+float(candidate['width'])>=right
+                        and y+float(candidate['height'])>=bottom)
+            except (KeyError,TypeError,ValueError):return False
+        candidates={candidate.get('id'):candidate for candidate in captured
+                    if candidate.get('scope')=='article' and contains(candidate)}
+        ancestry=item.get('parent_capture_ids')
+        if isinstance(ancestry,list):
+            # New captures carry true DOM ancestry in nearest-first order.
+            # Geometry is still checked so stale or malformed ancestry cannot
+            # assign a descendant to pixels that do not cover it.
+            parent=next((candidates[capture_id] for capture_id in ancestry
+                         if capture_id in candidates),None)
+            if parent is None and candidates:
+                item['binding_failure']='declared_ancestors_do_not_contain_descendant'
+                item['candidate_parent_captures']=list(candidates)
+        else:
+            # Older manifests have only rectangles. Keep the established
+            # single-parent behavior; overlapping candidates are ambiguous and
+            # must remain visible as a gap instead of silently swapping IDs.
+            parent=next(iter(candidates.values())) if len(candidates)==1 else None
+            if len(candidates)>1:
+                item['binding_failure']='ambiguous_parent_capture_without_dom_ancestry'
+                item['candidate_parent_captures']=list(candidates)
+        if parent:
+            item.update(source_id=parent['source_id'],resource_id=parent['resource_id'],
+                        ready=True,covered_by_capture=parent['id'])
+            item.pop('binding_failure',None)
+            item.pop('candidate_parent_captures',None)
+            repaired+=1
+    rendered['gaps']=[dict(material_id=item['id'],kind=item.get('kind','unknown'),
+                            failure=item.get('binding_failure') or '渲染对象没有绑定到原件清单',
+                            **({'candidate_parent_captures':item['candidate_parent_captures']}
+                               if item.get('candidate_parent_captures') else {})
+                            ) for item in objects
+                       if item.get('scope')=='article' and not item.get('ready')]
+    return repaired
 
 
 def require_complete_web_materials(source):
     """Refuse semantic generation when a discovered article figure is absent."""
+    repair_nested_rendered_bindings(source)
     snapshot=source.get('web_snapshot') or {}
     manifest=snapshot.get('material_manifest')
     if manifest is None:return

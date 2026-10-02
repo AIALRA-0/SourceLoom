@@ -2,114 +2,88 @@
 
 <h1>AIALRA SourceLoom</h1>
 
-<p><strong>Turn source material into readable, traceable content</strong></p>
+<p><strong>Keep originals and turn model returns into readable, traceable document packages</strong></p>
 
-<p>Content preparation for ReadWeave</p>
+<p>A local material workbench · Shared processing for manual and automatic handoff</p>
 
-[中文](README.md) · [Actual trials](reports/AUTOMATIC_TRIAL.md) · [Master plan](docs/MASTER_PLAN.md) · [Deployment](deploy/README.md)
+<p><a href="README.md">简体中文</a> · <a href="docs/PROCESSOR_V11_USE.md">Usage guide</a> · <a href="SECURITY.md">Security</a></p>
 
 </div>
 
-## 1 Current results
+## 1 Current product
 
-SourceLoom preserves originals and separates inventory, planning, writing, review, and local repair before preparing material for ReadWeave. Default rewriting keeps the source purpose and improves clarity and transitions, without inventing classroom scenarios, exercises, or extensions
+Import the complete original, prepare one model task package, receive Markdown, restore images and source locations, then read, edit, export, or hand off to ReadWeave
 
-New jobs establish the rewrite boundary, source obligations, concept dependencies and article structure before writing in batches. Concrete defects receive exact local patches. See the [implementation and real-case record](docs/ACTIVE_COMPOSITION_IMPLEMENTATION.md) for results and verification scope.
+- Originals, model returns, and saved versions stay separate
+- Nested folders, multiple selection, moves, archive, trash, and restore affect management metadata rather than document text
+- Continuous source reading provides native text selection, search, zoom, and source-page references; paired panes scroll independently or follow each other
+- Resource issues offer previews and concrete choices; mechanical checks do not replace semantic review
+- Manual and automatic channels share processing; the actual channel must support the required attachments
 
-The reading workspace provides a unified toolbar, bidirectional source navigation, editing and version history. Images are collapsed by default with a shared expand/collapse switch. Earlier results remain in [historical trials](docs/ITERATION_8.md), [performance measurements](docs/ITERATION_6.md), and [workbench updates](docs/ITERATION_4.md)
-
-Earlier manually revised examples remain [historical examples](docs/REAL_CASES.md), not evidence of unattended automatic quality
+Older multi-role generation code remains for historical task compatibility. It is not the default workflow for new materials, and the processor does not require the legacy Worker
 
 <div align="center">
 
-<img src="docs/assets/readme/library-desktop.png" width="1120" alt="Actual SourceLoom document tree and source comparison using synthetic material only">
+<img src="docs/assets/readme/processor-desktop.png" width="1120" alt="SourceLoom material tree and paired reader using synthetic content">
 
-Figure 1.1 The actual library interface, using synthetic material to demonstrate document management and object rendering
+Figure 1.1 Current workbench using synthetic content; this demonstrates management and reading, not generated-content quality
 
 </div>
 
-## 2 Using the library
+## 2 Run locally
 
-1. Select files or enter a webpage address; file uploads display actual transfer progress
-2. Choose a folder and wait for confirmation that the server has saved the input before closing the page
-3. With a configured provider, request rewriting during import or start it later; the server keeps processing and the document shows the current stage and part
-4. Reopen the material to compare its source and available output; click linked text on either side to locate the other side, choosing among multiple sources when needed. Stopped jobs keep any drafts already produced
-5. Download the text or send an eligible candidate archive to ReadWeave
-
-Rename, move, duplicate, trash, and restore documents. Editing saves a new version and invalidates previous acceptance
-
-The tree supports context menus, keyboard navigation, multi-selection and nested-folder restoration. The editor supports highlighting, line numbers, find and replace, undo, preview, autosave and conflict recovery. Heading numbers can be preserved, shown or hidden. See [rewriting and workbench changes](docs/ITERATION_4.md)
-
-See [the previous iteration](docs/ITERATION_3.md) for long-source preflight, source navigation, and measured performance
-
-## 3 Run locally
-
-Requires Python 3.11 or later
+Use Python 3.11 or newer, from the repository root:
 
 ```bash
 # Create an isolated environment
 python -m venv .venv
 ```
 
-Activate it with `.venv/Scripts/Activate.ps1` on Windows or `source .venv/bin/activate` elsewhere
+- Windows: run `.venv/Scripts/Activate.ps1`
+- macOS or Linux: run `source .venv/bin/activate`
 
 ```bash
-# Install the application
+# Install the product and pinned dependencies
 python -m pip install .
-
-# Start the local library, listening on port 8765 by default
-python -m sourceloom.cli serve
+# Start the loopback-only workbench
+python -m sourceloom.cli serve --port 8765
 ```
 
-Open the local address printed by the server. In another terminal with the same configuration and data directory:
+Open <http://127.0.0.1:8765/>. No API key is needed for import, manual handoff, or local export. A clean installation includes no private materials
+
+The default store is `data/`; private configuration is read from `.local/config.json`. Override with `SOURCELOOM_DATA` and `SOURCELOOM_CONFIG`. Stop the relevant service and back up before changing stores; do not run multiple writers against the same store
+
+## 3 Complete your first material
+
+1. Import the original and inspect its files, extracted text, and resources
+2. Download the complete task package and copy the start instruction. Upload to a model session with file tools, using your chosen depth
+3. Import the returned Markdown through the normal result entry. The processor saves a new version and restores resources without hand-written image paths
+4. Read the draft, compare source pages, and resolve necessary issues. See the [usage guide](docs/PROCESSOR_V11_USE.md)
+5. Export a reading package or import into your explicitly configured ReadWeave destination. A reliable receipt allows opening the corresponding note
+
+Receiving a ZIP does not prove that a model unpacked it or inspected its images. Full real-session xhigh single-package capability remains unverified; the depth name alone does not establish attachment support
+
+## 4 State and data boundaries
+
+- Candidate is a saved, readable draft; mechanical checks do not automatically make it semantically Verified
+- Scanned pages remain available as source pages; missing native text does not imply OCR completion
+- UNKNOWN preserves the original request identity and costs rather than allowing an automatic retry
+- ReadWeave import and readback require external configuration; its initialization performance is separate from SourceLoom reading
+- Deletion normally moves materials to trash. Permanent deletion needs separate confirmation and never deletes ReadWeave notes
+
+Originals, drafts, databases, sessions, private configuration, and acceptance videos stay local. The repository distributes code, pinned dependencies, synthetic tests, and necessary static assets. See [third-party notices](THIRD_PARTY_NOTICES.md)
+
+## 5 Development and verification
 
 ```bash
-# Process persisted jobs independently of the browser
-python -m sourceloom.cli worker
-```
-
-Without a configured provider, the library stores and manages material but explains why generation is unavailable
-
-## 4 Full writing skill and providers
-
-Copy [the example configuration](config.example.json) to a private location. Set `SOURCELOOM_CONFIG` to that file and `SOURCELOOM_DATA` to the material directory
-
-Point `writing_skill_dir` at the complete [Chinese technical writing skill](https://github.com/AIALRA-0/agent-human-readable-technical-writing). Every role receives the unabridged effective instruction files, while the entire package is frozen alongside the job. See [delivery details](docs/SKILL_RUNTIME.md)
-
-Receiving instructions does not prove compliance. Source and structure checks, per-batch model review, risk-triggered cross-batch semantic review, and user acceptance are recorded separately. A successful save is not a proof of perfect fidelity.
-
-Subscription and metered requests are accounted for separately. Subscription requests do not consume the metered request allowance. New jobs allow up to two combined local patch rounds per batch; content and format findings are merged when possible. Existing jobs retain their original pipeline and configuration. These bounds prevent accidental loops; they are not subscription limits. There is no default document or project elapsed-time limit, while each network request remains bounded
-
-Cumulative subscription calls have no default limit. Generation and repair prioritize DeepSeek. Native yuan protection requires the provider's yuan rates for input, cached input, and output; historical dollar records keep their original currency. About ¥0.10 per 1,000 source characters is a long-term comparison target, not a hard reason to truncate information or stop a complex document. Trial limits and unknown subscription costs are recorded in [the trial report](reports/AUTOMATIC_TRIAL.md)
-
-## 5 Verified scope and limits
-
-- Deterministic tests cover folders, document management, versions, trash, and persistent job recovery
-- Web intake stores original HTML and bounded raster downloads; missing assets remain explicit gaps, and dynamic pages are not comprehensively supported
-- Ordinary word-processing documents expose text, tables, links, and media; complex equations, tracked changes, and unsupported objects remain explicit gaps
-- Real browser upload checks cover reopening after closing the page, byte-exact original downloads, available draft downloads and stage progress; malformed model responses are not marked as completed generation
-- One synthetic mixed document completed real ReadWeave import, editing, saving, and reopening with repeated images, tables, code, math, paragraph anchors, and footnote targets preserved
-- Broader held-out quality and native-yuan cost calibration remains governed by the published acceptance records; one document cannot establish performance for every material type
-
-```bash
-# Install test dependencies
-python -m pip install ".[test]"
-
-# Run deterministic checks with a 120-second deadline and no paid model calls
+# Install synthetic test dependencies
+python -m pip install '.[test]'
+# Run bounded deterministic tests without paid model calls
 python scripts/verify.py
 ```
 
-Passing program tests does not establish writing quality or user acceptance
+See [CONTRIBUTING.md](CONTRIBUTING.md) for frontend checks. Browser acceptance uses isolated materials and does not insert test text into real drafts. Private originals and runtime records are not distributed with public tests
 
-## 6 Further reading
+## 6 Maintenance and license
 
-- [Master plan](docs/MASTER_PLAN.md)
-- [Requirements](docs/REQUIREMENTS.md)
-- [Full skill delivery](docs/SKILL_RUNTIME.md)
-- [Actual trial results](reports/AUTOMATIC_TRIAL.md)
-- [Project lessons](docs/PROJECT_LESSONS.md)
-- [Deployment and rollback](deploy/README.md)
-- [Contributing](CONTRIBUTING.md)
-- [Security](SECURITY.md)
-
-Private documents, provider credentials, production configuration, login records, and raw model requests are excluded from the public repository
+Use this repository for ordinary support and improvements. Follow [SECURITY.md](SECURITY.md) for credentials or private material, and [CONTRIBUTING.md](CONTRIBUTING.md) for contributions. The project [LICENSE](LICENSE) does not replace licenses of dependencies or original materials

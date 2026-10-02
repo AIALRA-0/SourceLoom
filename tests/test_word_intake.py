@@ -101,3 +101,29 @@ def test_header_image_is_preserved_as_document_metadata_without_visual_generatio
     image=next(o for o in inv['objects'] if o['kind']=='image')
     assert image['source_scope']=='source_metadata'
     assert image['visual_classification']=={'method':'word_story_part','source_role':'source_metadata'}
+
+
+def test_vml_picture_binds_saved_bitmap_at_its_paragraph_location(tmp_path):
+    from PIL import Image
+    image_bytes=BytesIO();Image.new('RGB',(80,24),'white').save(image_bytes,'PNG')
+    body=('<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml" '
+          'style="width:240pt;height:65pt"><v:imagedata r:id="rLogo" '
+          'o:title="OAG Logo" xmlns:o="urn:schemas-microsoft-com:office:office"/>'
+          '</v:shape></w:pict></w:r></w:p><w:p><w:r><w:t>正文继续</w:t></w:r></w:p>')
+    raw=document(body,{
+        'word/_rels/document.xml.rels':'<Relationships><Relationship Id="rLogo" Target="media/logo.png"/></Relationships>',
+        'word/media/logo.png':image_bytes.getvalue()})
+    store=Store(tmp_path)
+    inv=intake(store,[('source.docx',raw)])
+    image=next(obj for obj in inv['objects'] if obj['kind']=='image')
+    assert image['text']=='OAG Logo'
+    assert image['source_format']=='vml-imagedata'
+    assert image['parent_id']==inv['objects'][0]['id']
+    assert store.read_blob(image['resource_id'])==image_bytes.getvalue()
+    assert not any('pict' in gap['reason'] or '归属' in gap['reason'] for gap in inv['unknown'])
+
+    broken=document(body,{'word/media/logo.png':image_bytes.getvalue()})
+    missing=intake(Store(tmp_path/'broken'),[('source.docx',broken)])
+    assert not any(obj['kind']=='image' for obj in missing['objects'])
+    assert any('旧式文稿图片关系' in gap['reason'] for gap in missing['unknown'])
+    assert any('归属' in gap['reason'] for gap in missing['unknown'])

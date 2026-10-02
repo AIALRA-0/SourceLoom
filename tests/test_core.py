@@ -175,6 +175,16 @@ def test_compare_and_swap_and_revision_persistence(store,demo):
     assert restored['title']==demo['title']
 
 
+def test_unfinished_project_cannot_export_or_send_readweave(tmp_path):
+    app=create_app(load_config()|{'data_dir':str(tmp_path),'provider':'manual'})
+    project=app.state.store.create('unfinished')
+    with TestClient(app) as client:
+        assert client.get(f"/api/projects/{project['id']}/output?format=markdown").status_code==409
+        assert client.get(f"/api/projects/{project['id']}/export").status_code==409
+        assert client.post(f"/api/projects/{project['id']}/readweave",
+            headers={'X-SourceLoom':'1'}).status_code==409
+
+
 def test_api_upload_freeze_demo_fault_repair_export(tmp_path):
     app=create_app(load_config()|{'data_dir':str(tmp_path),'provider':'manual'})
     with TestClient(app) as c:

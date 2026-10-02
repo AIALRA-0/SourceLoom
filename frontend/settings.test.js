@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {buildSettingsPayload,maskSecret,nextLifecycleState,normalizeSettings} from '../sourceloom/static/settings.js';
+import {buildSettingsPayload,maskSecret,nextLifecycleState,normalizeSettings} from './historical_settings.js';
 
 test('masks provider secrets without retaining the raw value in normalized state',()=>{
  const state=normalizeSettings({providers:[{provider_id:'kuafu',api_key:'example-key',protocol:'responses',model:'deepseek-v4.1-flash'}]});
@@ -49,6 +49,6 @@ test('accepts the public provider metadata shape used by SourceLoom routes',()=>
 });
 
 test('does not persist settings or secrets in browser storage',()=>{
- const source=readFileSync(new URL('../sourceloom/static/settings.js',import.meta.url),'utf8');
+ const source=readFileSync(new URL('./historical_settings.js',import.meta.url),'utf8');
  assert.equal(/localStorage|sessionStorage/.test(source),false);
 });

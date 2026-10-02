@@ -138,10 +138,19 @@ def unwrap_source_marker_images(text):
 def normalize_authored_periods(draft,inventory):
     """Apply the installed Chinese prose punctuation rule outside source bytes.
 
-    Ordinary prose sentences become separate Markdown paragraphs.  A list or
-    table row stays one structural row and uses a semicolon between clauses.
-    Code fences, protected objects and original quotations remain byte exact.
+    Punctuation repair must not choose paragraph boundaries: the writer owns
+    those boundaries.  Keep each authored line and paragraph in place while
+    replacing unprotected sentence-internal periods with semicolons. Code
+    fences and protected source objects remain byte exact.
     """
+    from .readweave_format_compat import (
+        repair_readweave_adjacent_inline_code_spacing,
+        repair_readweave_bilingual_name_line_breaks,
+        repair_readweave_duplicate_names,
+        repair_readweave_mixed_bilingual_explanation,
+        repair_readweave_mixed_unit_gloss,
+        repair_readweave_prose_spacing,
+    )
     result=copy.deepcopy(draft);literals=protected_objects(inventory)
     for block in result.get('blocks',[]):
         if block.get('kind') in {'object','source'}:continue
@@ -151,6 +160,14 @@ def normalize_authored_periods(draft,inventory):
             token='SOURCELOOMLITERAL'+digest([sid,literal])[:24]
             while token in text:token+='X'
             masked[token]=literal;text=text.replace(literal,token)
+        # Port ReadWeave's deterministic RW-FMT-047 boundary repair. Protected
+        # source markers remain opaque here and are restored byte-for-byte.
+        text=repair_readweave_bilingual_name_line_breaks(text)
+        text=repair_readweave_adjacent_inline_code_spacing(text)
+        text=repair_readweave_mixed_unit_gloss(text)
+        text=repair_readweave_mixed_bilingual_explanation(text)
+        text=repair_readweave_duplicate_names(text)
+        text=repair_readweave_prose_spacing(text)
         lines=[];fence=None
         for line in text.splitlines():
             marker=re.match(r'^\s*(`{3,}|~{3,})',line)
@@ -160,16 +177,12 @@ def normalize_authored_periods(draft,inventory):
                 lines.append(line);continue
             if fence is not None or '。' not in line:
                 lines.append(line);continue
-            stripped=line.lstrip()
-            compact=bool(re.match(r'(?:[-+*]|\d+[.)])\s+',stripped) or stripped.startswith('|')
-                         or stripped.startswith(('<','>')))
             line=line.rstrip('。')
-            if compact:line=line.replace('。','；')
-            else:line=line.replace('。','\n\n')
-            lines.extend(line.splitlines())
+            lines.append(line.replace('。','；'))
         text='\n'.join(lines)
+        text=re.sub(r'\n{3,}','\n\n',text)
         for token,literal in masked.items():text=text.replace(token,literal)
-        block['markdown']=re.sub(r'\n{3,}','\n\n',text)
+        block['markdown']=text
     return result
 
 
@@ -687,6 +700,16 @@ def scan(bundle, draft, work):
         raise ValueError('完整技能的实际检查器执行失败，未标为通过')
     result=json.loads(report.read_text(encoding='utf-8'))
     result['canonical_digest']=key
+    from .readweave_format_compat import readweave_format_candidates
+    protected_lines=set();cursor=0
+    for block in draft.get('blocks',[]):
+        markdown=block.get('markdown','')
+        if block.get('kind') in {'object','source','document_info'}:
+            first_line=text[:cursor].count('\n')+1
+            protected_lines.update(range(first_line,first_line+markdown.count('\n')+1))
+        cursor+=len(markdown)+2
+    found=readweave_format_candidates(text,skip_lines=frozenset(protected_lines))
+    result.setdefault('format',{}).setdefault('candidates',[]).extend(found)
     for category in ('findings','candidates'):
         for n,item in enumerate(result['format'][category]):
             item['id']=category+'-'+str(n+1)

@@ -111,7 +111,7 @@ def attach_markdown_fences(objects, text, tokens=None):
     return attached
 
 
-def intake(store, uploads, source_url=None, asset_aliases=None):
+def intake(store, uploads, source_url=None, asset_aliases=None, progress=None):
     files = {}
     originals = []
     for name, raw in uploads:
@@ -154,11 +154,16 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
     def gap(reason, locator, object_id=""):
         unknown.append(dict(id=f"gap-{len(unknown)+1}", reason=reason, locator=locator, object_id=object_id))
 
+    def safe_join(ref):
+        try:return urljoin(document_base or '',ref)
+        except ValueError:return ref
+
     def resolve_asset(ref, name):
-        linked=(asset_aliases or {}).get(urljoin(document_base or '',ref))
+        linked=(asset_aliases or {}).get(safe_join(ref))
         if linked in resource_index:
             return resource_index[linked]
-        parsed = urlsplit(ref)
+        try:parsed = urlsplit(ref)
+        except ValueError:return None
         if parsed.scheme == "data":
             try:
                 head, data = ref.split(",", 1)
@@ -180,7 +185,7 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
         soup = BeautifulSoup(html, "html.parser")
         nonlocal document_base
         if document_base and soup.find('base',href=True):
-            document_base=urljoin(document_base,soup.find('base',href=True)['href'])
+            document_base=safe_join(soup.find('base',href=True)['href'])
         root = soup.body or soup
         article = soup.find('article') or soup.find('main')
         blocks = {"p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "pre", "table", "figcaption", "blockquote", "dt", "dd", "summary"}
@@ -280,7 +285,7 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 preview=resolve_asset('capture://'+capture_id,name) if capture_id else None
                 material_candidate=bool(article and article in node.parents)
                 obj=add('media',node.get('aria-label') or node.get('title') or node.get_text(' ',strip=True),
-                        locator,raw=str(node),target=urljoin(document_base or '',target),resource_id=preview,
+                        locator,raw=str(node),target=safe_join(target),resource_id=preview,
                         capture_id=capture_id,media_type=media_type,material_candidate=material_candidate,
                         **({'source_scope':'article_media'} if material_candidate else {}))
                 if not preview and not target:
@@ -301,7 +306,7 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 figure=node.find_parent('figure');caption=figure.find('figcaption') if figure else None
                 material_candidate=bool(figure and article and article in node.parents)
                 obj = add("image", node.get("alt", ""), locator, resource_id=key, target=ref,
-                          raw=str(node),candidate_targets=[urljoin(document_base or '',item) for item in refs],
+                          raw=str(node),candidate_targets=[safe_join(item) for item in refs],
                           capture_id=capture_id,
                           material_candidate=material_candidate,
                           figure_caption=caption.get_text(' ',strip=True) if caption else '',
@@ -328,12 +333,18 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                 for n, link in enumerate(node.find_all("a")):
                     target = link.get("href", "")
                     add("link", link.get_text(), f"{locator}/a[{n+1}]", original_target=target,
-                        target=urljoin(document_base, target) if document_base else target,parent_id=obj["id"],
+                        target=safe_join(target),parent_id=obj["id"],
                         capture_id=link.get('data-sourceloom-capture-id',''))
                 for n, pic in enumerate(node.find_all("img")):
+                    before=len(objects)
                     walk(pic, f"{locator}/img[{n+1}]")
+                    if len(objects)>before:
+                        objects[before]['parent_id']=obj['id']
                 for n,math in enumerate(node.find_all('math')):
+                    before=len(objects)
                     walk(math,f'{locator}/math[{n+1}]')
+                    if len(objects)>before:
+                        objects[before]['parent_id']=obj['id']
                 for n,svg in enumerate(node.find_all('svg')):
                     walk(svg,f'{locator}/svg[{n+1}]')
                 if kind not in {'code','table'}:
@@ -348,7 +359,7 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
             if node.name == "a":
                 target = node.get("href", "")
                 parent=add("link", node.get_text(), locator, original_target=target,
-                           target=urljoin(document_base, target) if document_base else target,capture_id=capture_id)
+                           target=safe_join(target),capture_id=capture_id)
                 # Links frequently wrap a picture or icon.  Preserve the link
                 # relation and still inventory its non-text descendants.
                 for n,pic in enumerate(node.find_all('img')):
@@ -365,7 +376,10 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
             walk(child, f"{name}/node[{n+1}]")
 
     ordered_files=sorted(files.items(),key=lambda pair:mimetypes.guess_type(pair[0])[0] in SAFE_IMAGE)
-    for name, raw in ordered_files:
+    for file_index, (name, raw) in enumerate(ordered_files, 1):
+        if progress:
+            progress(dict(phase='parsing_file',completed=file_index-1,total=len(ordered_files),
+                          detail=name))
         ext = name.lower().rsplit(".", 1)[-1]
         if ext in {"txt", "md", "markdown", "rst", "rest", "html", "htm"}:
             text = decode(raw)
@@ -461,6 +475,9 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
                         target = a.get("/A", {}).get("/URI")
                         if target:
                             add("link", str(a.get("/Contents", target)), locator+"/annotation", target=str(target))
+                    if progress:
+                        progress(dict(phase='pdf_pages',completed=n+1,total=len(reader.pages),
+                                      detail=name))
             finally:
                 pdf.close()
         elif ext == "docx":
@@ -478,6 +495,9 @@ def intake(store, uploads, source_url=None, asset_aliases=None):
         else:
             obj = add("attachment", name, name, resource_id=resource_index[name])
             gap("此文件已保存，尚无完整内容解析器", name, obj["id"])
+        if progress:
+            progress(dict(phase='parsing_file',completed=file_index,total=len(ordered_files),
+                          detail=name))
     obligations = [dict(id=f"obl-{n+1:05d}",object_id=o["id"],statement=o["text"] or f"保留 {o['kind']} 的原始内容及出现位置",
                         conditions=[],quantities=re.findall(r"\d+(?:\.\d+)?%?",o["text"]),negations=[],status="unreviewed") for n,o in enumerate(objects)]
     return dict(id=identity(), version=1, originals=originals, resources=resources, objects=objects,

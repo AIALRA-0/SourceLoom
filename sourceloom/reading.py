@@ -51,11 +51,14 @@ def reader_summary(project,costs):
     p={k:project.get(k) for k in ('id','title','mode','state','revision','active_job','goal','folder',
         'library_revision','trashed','budget_usd','max_calls','heading_numbering','media_collapsed','accepted_revision')}
     p['delivery_state']=(project.get('production') or {}).get('delivery_state')
+    p['publication_status']=(project.get('production') or {}).get('publication_status')
+    p['integrity_verdict']=(project.get('production') or {}).get('integrity_verdict')
+    p['execution_status']=(project.get('production') or {}).get('execution_status')
     inv=project.get('inventory')
     p['inventory']=None if not inv else {'originals':inv.get('originals',[]),
         'source_chars':sum(len(o.get('text','')) for o in inv['objects']),
         'visual_count':sum(o['kind'] in {'page','image'} and bool(o.get('resource_id')) for o in inv['objects'])}
-    p['draft']=bool(project.get('draft'))
+    p['draft']=bool(project.get('draft')) and p['delivery_state']!='recovered_ready_for_review'
     p['cost_summary']={'known_usd':sum(c['actual'] or 0 for c in costs),
         'subscription_calls':sum(c['actual'] is None and c['body'].get('channel') in {'subscription','router','codex-cli'} for c in costs)}
     from .money import summary

@@ -50,6 +50,13 @@ def reading_draft(project):
     """Add reading wrappers without changing stored words or source bytes."""
     result=copy.deepcopy(project['draft'])
     if not result:return result
+    # Keep administrative metadata in end matter in every reader projection,
+    # even when an earlier generated unit authored it in place.  This is a
+    # stable presentation-only move: IDs, evidence and block contents remain
+    # attached to the same blocks in the saved draft.
+    blocks=result.get('blocks',[])
+    result['blocks']=([block for block in blocks if block.get('kind')!='document_info']+
+                      [block for block in blocks if block.get('kind')=='document_info'])
     objects={o['id']:o for o in (project.get('inventory') or {}).get('objects',[])}
     from .writing import protected_objects
     literals=protected_objects(project.get('inventory') or {'objects':[]})

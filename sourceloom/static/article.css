@@ -1,10 +1,35 @@
-:root{font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;line-height:1.9;color:#222;background:white}body{max-width:760px;margin:32px auto;padding:0 24px}h1,h2,h3{line-height:1.5;font-weight:600}section{margin-bottom:20px}p,li{font-size:14px;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;background:#f6f6f4;border:1px solid #e2e2de}table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:20px auto}td,th{border:1px solid #ddd;padding:10px 14px}img{max-width:100%;height:auto;display:block;margin:20px auto}figure{text-align:center}a{color:#444}code{font-size:12px}blockquote{margin-left:0;padding-left:20px;border-left:2px solid #aaa}
-img.source-spacer{width:1px;height:1px;margin:0;opacity:0}div:has(>img.source-spacer:only-child){margin:0}p:has(>img.source-spacer:only-child){margin:0;line-height:0}
-
-section[data-readweave-anchor-id]{margin:0 0 22px;padding:0 0 22px;border-bottom:1px solid #efefeb}section[data-readweave-anchor-id]:last-child{border-bottom:0}h2,h3,h4,h5,h6{font-weight:600;line-height:1.45;margin:1.6em 0 .55em}h2{font-size:1.35rem}h3{font-size:1.17rem}h4,h5,h6{font-size:1.04rem}p,ul,ol,blockquote,pre,figure,table{margin-top:.7em;margin-bottom:1em}li+li{margin-top:.28em}ul,ol{padding-left:1.7em}blockquote{color:#3b3b3b;background:#fafaf8;padding:8px 16px;border-color:#c9c9c2}figure,table{max-width:100%}figcaption,caption{font-size:.88rem;color:#666;line-height:1.5}a{text-decoration-thickness:1px;text-underline-offset:3px}
-
-section[data-readweave-anchor-id]{margin:0 0 12px;padding:0;border:0}section[data-readweave-anchor-id]:focus-visible{outline:1px solid #bdbbb2;outline-offset:4px}.source-focused{outline:1px solid #c6bfa7;outline-offset:5px;background:#faf8ef}blockquote:empty{display:none}body{margin:24px auto}h2,h3,h4,h5,h6{scroll-margin-top:24px}section[data-readweave-anchor-id]{scroll-margin-top:28px}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
-details{margin:1em 0;border:1px solid #e5e5e2;border-radius:6px;background:#fafaf9;text-align:left}summary{padding:9px 13px;font-size:13px;color:#666;cursor:pointer;line-height:1.6}summary:hover{color:#222;background:#f3f3f0}summary:focus-visible{outline:2px solid #888;outline-offset:2px}details[open]>summary{border-bottom:1px solid #e5e5e2}details>:not(summary){margin-left:14px;margin-right:14px}details img{max-width:calc(100% - 28px)}figure{margin-left:0;margin-right:0}td img,th img{margin-left:auto;margin-right:auto}pre,table{border-radius:4px}p:empty{display:none}@media(max-width:600px){body{padding:0 16px;margin:16px auto}td,th{padding:8px}pre{padding:12px}}
-
-.media-paragraph{margin:1em 0}
-details{padding:0 14px 14px}details>summary{margin:0 -14px}details:not([open]){padding-bottom:0}details>:not(summary){margin-left:auto;margin-right:auto}details img{max-width:100%}details>figure,details>div[align="center"]{text-align:center}table{display:table;width:max-content;max-width:100%;margin-left:auto;margin-right:auto}.table-scroll{max-width:100%;overflow-x:auto;margin:.7em auto 1em}.table-scroll>table{margin:0 auto}caption{text-align:center}figure,div[align="center"]{text-align:center}
+/* Compiled reading content only; PDF.js and application controls are separate. */
+:root{font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;font-size:18px;line-height:1.9;color:#222;background:white}
+*{box-sizing:border-box}
+body{max-width:760px;margin:24px auto;padding:0 24px}
+h1,h2,h3,h4,h5,h6{font-weight:600;line-height:1.45;margin:1.6em 0 .55em;scroll-margin-top:24px}
+h2{font-size:1.35rem}h3{font-size:1.17rem}h4,h5,h6{font-size:1.04rem}
+section[data-readweave-anchor-id]{margin:0 0 12px;padding:0;border:0;scroll-margin-top:28px}
+section[data-readweave-anchor-id]:focus-visible{outline:1px solid #bdbbb2;outline-offset:4px}
+.source-focused{outline:1px solid #c6bfa7;outline-offset:5px;background:#faf8ef}
+p,li{font-size:1rem;overflow-wrap:anywhere}p,ul,ol,blockquote,pre,figure,table{margin-top:.7em;margin-bottom:1em}
+p:empty,blockquote:empty{display:none}li+li{margin-top:.28em}ul,ol{padding-left:1.7em}
+a{color:#444;text-decoration-thickness:1px;text-underline-offset:3px}code{font-size:.85rem}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:16px;background:#f6f6f4;border:1px solid #e2e2de;border-radius:4px}
+blockquote{margin-left:0;color:#3b3b3b;background:#fafaf8;padding:8px 16px;border-left:2px solid #c9c9c2}
+img{max-width:100%;height:auto;display:block;margin:20px auto}
+figure,div[align="center"]{text-align:center}figure{max-width:100%;margin-left:0;margin-right:0}
+figcaption,caption{font-size:.88rem;color:#666;line-height:1.5}
+span[data-source-role="inline-icon"],span[data-source-role="inline-component"],span[data-source-role="table-symbol"]{display:inline-block;line-height:1;vertical-align:text-bottom}
+img[data-source-role="inline-icon"],img[data-source-role="inline-component"],img[data-source-role="table-symbol"]{width:1.1em;height:auto;display:inline-block;margin:0;vertical-align:text-bottom}
+img.source-spacer{width:1px;height:1px;margin:0;opacity:0}
+div:has(>img.source-spacer:only-child){margin:0}p:has(>img.source-spacer:only-child){margin:0;line-height:0}
+table{border-collapse:collapse;display:table;width:max-content;max-width:100%;margin-left:auto;margin-right:auto;border-radius:4px}
+td,th{border:1px solid #ddd;padding:10px 14px}td img,th img{margin-left:auto;margin-right:auto}caption{text-align:center}
+.table-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;margin:.7em auto 1em}
+.table-scroll>table{margin:0 auto;min-width:max-content;max-width:none;width:max-content}
+.table-scroll th,.table-scroll td{min-width:130px;overflow-wrap:normal;word-break:normal}
+.table-scroll th:first-child,.table-scroll td:first-child{min-width:180px}
+details{margin:1em 0;padding:0 14px 14px;border:1px solid #e5e5e2;border-radius:6px;background:#fafaf9;text-align:left}
+details>summary{margin:0 -14px;padding:9px 13px;font-size:13px;color:#666;cursor:pointer;line-height:1.6}
+summary:hover{color:#222;background:#f3f3f0}summary:focus-visible{outline:2px solid #888;outline-offset:2px}
+details:not([open]){padding-bottom:0}details[open]>summary{border-bottom:1px solid #e5e5e2}
+details>:not(summary){margin-left:auto;margin-right:auto}details img{max-width:100%}
+details>figure,details>div[align="center"]{text-align:center}.media-paragraph{margin:1em 0}
+@media(max-width:600px){body{padding:0 16px;margin:16px auto}td,th{padding:8px}pre{padding:12px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}

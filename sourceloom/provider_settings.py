@@ -142,6 +142,7 @@ class ProviderRoute:
     auth_type: str = "bearer"
     model_parameters: dict[str, Any] | None = None
     search_per_request: float | None = None
+    backup_provider_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.protocol not in _PROTOCOLS:
@@ -165,6 +166,7 @@ class ProviderRoute:
             "auth_type": self.auth_type,
             "model_parameters": deepcopy(self.model_parameters or {}),
             "search_per_request": self.search_per_request,
+            "backup_provider_id": self.backup_provider_id,
             "pricing": self.price_snapshot.public() if self.price_snapshot else None,
         }
 
@@ -284,6 +286,7 @@ def route_from_config(config: Mapping[str, Any]) -> ProviderRoute:
         model_parameters=deepcopy(config.get("model_parameters") or config.get("modelParameters") or {}),
         search_per_request=(float(config["search_per_request"]) if config.get("search_per_request") is not None
                             else float(config["searchPerRequest"]) if config.get("searchPerRequest") is not None else None),
+        backup_provider_id=(str(config.get("backup_provider_id") or config.get("backupProviderId") or "") or None),
     )
 
 
@@ -358,6 +361,28 @@ def _search_routes_by_id(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _is_kuafu_deepseek_model_route(route: Mapping[str, Any]) -> bool:
+    host=(urlsplit(str(route.get("base_url") or route.get("baseUrl") or "")).hostname or "").casefold()
+    model=str(route.get("model") or "").casefold()
+    return host=="api.kuafushe.cc" and model.startswith("deepseek-")
+
+
+def _validate_kuafu_deepseek_backup_pair(
+    routes: Mapping[str, Any], provider_id: str, route: Mapping[str, Any]
+) -> None:
+    """Require reciprocity only for a same-model pair on KuaFu's DS routes."""
+    backup_id=str(route.get("backup_provider_id") or route.get("backupProviderId") or "")
+    backup=routes.get(backup_id)
+    if (not backup_id or not isinstance(backup, Mapping)
+            or not _is_kuafu_deepseek_model_route(route)
+            or not _is_kuafu_deepseek_model_route(backup)
+            or str(route.get("model") or "")!=str(backup.get("model") or "")):
+        return
+    reciprocal=str(backup.get("backup_provider_id") or backup.get("backupProviderId") or "")
+    if reciprocal!=str(provider_id):
+        raise ValueError("夸父社 DeepSeek 同模型备用线路必须互相指回对方")
+
+
 def stage_imported_routes(
     config: Mapping[str, Any],
     routes: Mapping[str, ProviderRoute],
@@ -392,10 +417,13 @@ def stage_imported_routes(
             "modelParameters": deepcopy(route.model_parameters or {}),
             "search_per_request": route.search_per_request,
             "searchPerRequest": route.search_per_request,
+            "backup_provider_id": route.backup_provider_id,
         }
         if route.route_kind == "search" or route.protocol == PROTOCOL_REST_SEARCH:
             search_routes[str(provider_id)] = _search_route_entry(route)
     next_config["provider_routes"] = staged
+    for provider_id in routes:
+        _validate_kuafu_deepseek_backup_pair(staged,str(provider_id),staged[str(provider_id)])
     next_config["search_routes"] = search_routes
     if credentials:
         private = dict(next_config.get("provider_credentials") or {})
@@ -430,6 +458,21 @@ def activate_staged_route(config: Mapping[str, Any], provider_id: str) -> dict[s
         raise KeyError(provider_id)
     if str(raw.get("route_kind") or raw.get("kind") or "model") == "search" or raw.get("protocol") == PROTOCOL_REST_SEARCH:
         raise ValueError("搜索 route 只能作为搜索资源通道，不能激活为模型生成通道")
+    backup_id=str(raw.get("backup_provider_id") or raw.get("backupProviderId") or "")
+    if backup_id:
+        if backup_id==provider_id:
+            raise ValueError("备用线路不能指向自身")
+        backup=(config.get("provider_routes") or {}).get(backup_id)
+        if not isinstance(backup,Mapping):
+            raise ValueError("备用线路 ID 不存在，无法激活")
+        if (not backup.get("enabled",True)
+                or str(backup.get("route_kind") or backup.get("kind") or "model")=="search"
+                or backup.get("protocol")==PROTOCOL_REST_SEARCH):
+            raise ValueError("备用线路未启用或不是模型生成通道，无法激活")
+        if not (config.get("provider_credentials") or {}).get(backup_id) and not backup.get("api_key"):
+            raise ValueError("备用线路缺少服务器凭据，无法激活")
+        _validate_kuafu_deepseek_backup_pair(
+            config.get("provider_routes") or {},str(provider_id),raw)
     next_config = deepcopy(dict(config))
     previous_provider_id = next_config.get("provider_id")
     route = dict(raw)
@@ -442,7 +485,7 @@ def activate_staged_route(config: Mapping[str, Any], provider_id: str) -> dict[s
                     "pricing_currency", "pricing_cny", "pricing_source", "pricing_version",
                     "pricing_effective_at", "display_multiplier", "route_role", "priority", "enabled", "route_kind",
                     "auth_type", "authType", "model_parameters", "modelParameters", "billing_mode",
-                    "search_per_request", "searchPerRequest")
+                    "search_per_request", "searchPerRequest", "backup_provider_id", "backupProviderId")
         if key in route
     }
     frozen_route['billing_mode']=billing_mode
@@ -464,6 +507,7 @@ def activate_staged_route(config: Mapping[str, Any], provider_id: str) -> dict[s
         "auth_type": route.get("auth_type", route.get("authType", "bearer")),
         "model_parameters": deepcopy(route.get("model_parameters", route.get("modelParameters", {})) or {}),
         "search_per_request": route.get("search_per_request", route.get("searchPerRequest")),
+        "backup_provider_id": route.get("backup_provider_id", route.get("backupProviderId")),
         "provider_settings_state": "active",
         "active_route_id": provider_id,
     })
@@ -482,7 +526,7 @@ def activate_staged_route(config: Mapping[str, Any], provider_id: str) -> dict[s
     route_identity_keys = {
         "provider", "provider_id", "model", "protocol", "endpoint", "base_url",
         "api_key", "token", "credential_ref", "billing_mode", "structured_output",
-        "execution_channel", "responses_profile", "quota_fallback",
+        "execution_channel", "responses_profile", "quota_fallback", "backup_provider_id", "backupProviderId",
     }
     for role in content_roles:
         # Preserve role-local limits and effort, but never carry another
@@ -553,9 +597,11 @@ def load_private_settings(data_dir: str | Path) -> dict[str, Any]:
         return {}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) and value.get("version") == 1 else {}
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"无法读取有效的生成线路配置：{path}") from exc
+    if not isinstance(value, dict) or value.get("version") != 1:
+        raise RuntimeError(f"生成线路配置版本无效：{path}")
+    return value
 
 
 def apply_private_settings(config: Mapping[str, Any], settings: Mapping[str, Any]) -> dict[str, Any]:
@@ -710,5 +756,6 @@ def import_readweave_registry(source: Mapping[str, Any] | list[Mapping[str, Any]
             model_parameters=deepcopy(raw.get("modelParameters") or raw.get("model_parameters") or {}),
             search_per_request=(float(raw["searchPerRequest"]) if raw.get("searchPerRequest") is not None else
                                 float(raw["search_per_request"]) if raw.get("search_per_request") is not None else None),
+            backup_provider_id=(str(raw.get("backupProviderId") or raw.get("backup_provider_id") or "") or None),
         )
     return result

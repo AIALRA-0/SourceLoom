@@ -77,6 +77,13 @@ def classify_inert_markup(source):
         if not match:continue
         obj.update(kind='metadata',original_extracted_text=obj['text'],text=raw,
                    inert_markup=match[1].lower())
+        # Large embedded application/data payloads are retained byte-for-byte in
+        # the original snapshot, but they are not reader-visible prose and must
+        # not become a 40k-character writing unit.  Small scripts remain an
+        # explicit protected object for compatibility with source-code pages.
+        if len(raw)>12000:
+            obj.update(source_scope='source_metadata',visual_classification=dict(
+                method='source_dom_large_inert_markup',source_role='source_metadata'))
         converted.add(obj['id'])
     resolved=[gap for gap in result.get('unknown',[]) if gap['object_id'] in converted and
               re.match(r'^(script|style) 未执行，需要独立解释或安全转换$',gap['reason'])]
@@ -98,6 +105,13 @@ def classify_web_chrome(store,source):
     rendered_rows={row.get('id'):row for row in
         (result.get('web_snapshot',{}).get('rendered_capture',{}).get('objects',[]))}
     for obj in result.get('objects',[]):
+        if (obj.get('kind')=='metadata' and
+                re.fullmatch(r'\s*<!--[\s\S]*?-->\s*',obj.get('raw',''))):
+            # An HTML comment is absent from the rendered article. Keep its
+            # exact source bytes, but do not teach its inactive markup as prose.
+            obj['source_scope']='source_metadata'
+            obj['visual_classification']=dict(method='source_dom_nonrendered_comment',
+                source_role='source_metadata')
         row=rendered_rows.get(obj.get('capture_id'))
         if (obj.get('kind')=='link' and row and row.get('scope')=='page'
                 and isinstance(row.get('y'),(int,float)) and row['y']<=120):
@@ -121,7 +135,6 @@ def classify_web_chrome(store,source):
             obj['visual_classification']=dict(method='rendered_dom_duplicate_media_reference',
                 source_role='layout_decorative',visible_source_id=visible[0]['id'])
     page_url=result.get('source_url','')
-    if not page_url:return result
     parsed=urlsplit(page_url)
     pages=[];chrome_prefixes=[];metadata_prefixes=[];content_roots=[];control_icon_prefixes=[];profile_images=set()
     def dom_locator(name,root,element):
@@ -137,16 +150,49 @@ def classify_web_chrome(store,source):
             page=BeautifulSoup(store.read_blob(original['sha256']),'html.parser')
             pages.append(page)
             root=page.body or page
-            # An inline SVG nested in an actual button/summary is interface chrome.
-            # Classify only the icon itself: article diagrams and the control's
-            # visible label stay available to the normal source rules.
-            for control in root.find_all(['button','summary']):
-                for icon in control.find_all('svg'):
-                    prefix=dom_locator(original['name'],root,icon)
-                    if prefix:control_icon_prefixes.append(prefix)
+            # Navigation can be nested inside a responsive wrapper that also
+            # contains ``main``.  Looking only at direct body children or at
+            # navigation inside ``main`` misses this common shape and turns an
+            # entire site menu into dozens of content obligations and external
+            # page fetches.  The HTML ``nav`` element is explicit structural
+            # evidence, so archive every such subtree while retaining its
+            # literal bytes in the original snapshot.
             main=(root.find('main') or root.find(id='main') or root.find(attrs={'role':'main'}))
-            has_main=bool(main)
-            if main:
+            if not main:
+                # Older pages often have no semantic <main>. A unique article
+                # heading inside an explicitly named content container is still
+                # structural evidence. Keep this conservative: a title-only
+                # wrapper or an ambiguous page cannot define article scope.
+                headings=root.find_all('h1')
+                if len(headings)==1:
+                    for parent in headings[0].parents:
+                        if parent is root:break
+                        labels={str(parent.get('id','')).lower(),
+                                *(str(item).lower() for item in parent.get('class',[]))}
+                        article_labels={'content','inner_content','inner-content',
+                                        'main-content','article-content','entry-content',
+                                        'post-content','story-content'}
+                        if (labels&article_labels and
+                                len(parent.get_text(' ',strip=True))>=300 and
+                                parent.find(['p','section','figure','table'])):
+                            main=parent
+                            break
+            has_main=bool(main and (page_url or len(main.get_text(' ',strip=True))>=300))
+            # For a locally uploaded HTML file, navigation is site chrome
+            # only when the same document also has a substantive article area.
+            # A standalone markup example containing <nav> remains content.
+            structural_chrome=bool(page_url or has_main)
+            if structural_chrome:
+                for navigation in root.find_all('nav'):
+                    prefix=dom_locator(original['name'],root,navigation)
+                    if prefix:chrome_prefixes.append(prefix)
+                # An inline SVG nested in an actual button/summary is interface
+                # chrome; keep the visible label and article diagrams.
+                for control in root.find_all(['button','summary']):
+                    for icon in control.find_all('svg'):
+                        prefix=dom_locator(original['name'],root,icon)
+                        if prefix:control_icon_prefixes.append(prefix)
+            if has_main:
                 articles=[item for item in main.find_all('article')
                           if item.find('h1') and len(item.get_text(' ',strip=True))>100]
                 content=articles[0] if len(articles)==1 else main
@@ -158,6 +204,27 @@ def classify_web_chrome(store,source):
                     if located:profile_images.add(located)
                 for element in content.find_all(True):
                     classes=' '.join(element.get('class',[])).lower()
+                    component_classes={str(label).lower() for label in element.get('class',[])}
+                    # Publishing systems often nest page controls inside the
+                    # semantic article element. Their component role, rather
+                    # than that outer tag, determines whether their bytes are
+                    # reader article content. Keep the original HTML intact.
+                    if (element.name=='li' and any(re.search(
+                            r'(?:^|[-_])social[-_]icon$',label)
+                            for label in component_classes) and
+                            element.find('a',href=True)):
+                        prefix=dom_locator(original['name'],root,element)
+                        if prefix:chrome_prefixes.append(prefix)
+                    if any(re.search(r'(?:^|[-_])credits[-_]and[-_]details$',label)
+                           for label in component_classes):
+                        prefix=dom_locator(original['name'],root,element)
+                        if prefix:metadata_prefixes.append(prefix)
+                    if (any(re.search(r'(?:^|[-_])topic[-_]cards$',label)
+                            for label in component_classes)
+                            and not element.find('h1')
+                            and len(element.find_all('a',href=True))>=2):
+                        prefix=dom_locator(original['name'],root,element)
+                        if prefix:chrome_prefixes.append(prefix)
                     if (element.name=='header' and 'in-resource' in element.get('class',[])
                             and element.find('h1')):
                         for paragraph in element.find_all('p',recursive=False):
@@ -165,7 +232,7 @@ def classify_web_chrome(store,source):
                             if not anchor or not paragraph.get_text(' ',strip=True).lower().startswith('in '):
                                 continue
                             target=urlsplit(urljoin(page_url,anchor['href']))
-                            if (target.hostname==parsed.hostname and
+                            if (parsed.hostname and target.hostname==parsed.hostname and
                                     parsed.path.startswith(target.path.rstrip('/')+'/')):
                                 prefix=dom_locator(original['name'],root,paragraph)
                                 if prefix:chrome_prefixes.append(prefix)
@@ -267,7 +334,8 @@ def classify_web_chrome(store,source):
                 if not anchor or not heading:continue
                 destination=urljoin(page_url,anchor['href'])
                 linked=urlsplit(destination)
-                if linked.hostname!=parsed.hostname or not parsed.path.startswith(linked.path.rstrip('/')+'/'):
+                if (not parsed.hostname or linked.hostname!=parsed.hostname
+                        or not parsed.path.startswith(linked.path.rstrip('/')+'/')):
                     continue
                 obj['visual_classification']=dict(method='source_dom_heading_home_link',
                     source_role='site_branding',destination=destination,
@@ -296,6 +364,11 @@ def classify_web_chrome(store,source):
         obj['visual_classification']=dict(method='source_dom_svg_use_of_decorative_symbol',
             source_role=scope,definition_source_id=target['id'],resource_available=False)
         obj['source_scope']=scope;resolved.append(obj['id'])
+    # Structural HTML context also resolves parser gaps in site navigation and
+    # footer controls. Archive those gaps with the unchanged original HTML;
+    # they are not missing article content or reasons to fail generation.
+    resolved.extend(obj['id'] for obj in result['objects']
+                    if obj.get('source_scope') in {'site_chrome','source_metadata','layout_decorative'})
     if resolved:
         result['resolved_chrome_gaps']=result.get('resolved_chrome_gaps',[])+[
             gap for gap in result.get('unknown',[]) if gap['object_id'] in resolved]

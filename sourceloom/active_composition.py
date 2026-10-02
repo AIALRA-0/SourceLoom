@@ -8,9 +8,12 @@ import json
 import re
 import time
 import unicodedata
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlsplit
 from . import active_contracts as A
 from .active_resources import Resources, canonical_url
+from .active_policy import missing_evidence_gap_policy
 from .checks import freeze, inspect_draft
 from .contracts import Plan
 from .providers import Provider, Uncertain, apply_stream_timeout
@@ -28,6 +31,514 @@ def is_v2(job):
     return job.get('pipeline') == PIPELINE_V2
 
 
+def is_core_chain(job):
+    """Only jobs created after the core-chain cutover use article-level review."""
+    return is_v2(job) and job.get('core_chain_version') == 1
+
+
+class _AccessibleMarkupProbe(HTMLParser):
+    """Conservatively detect labels or text that make raw markup meaningful."""
+
+    label_attributes = {'alt', 'title', 'aria-label', 'aria-labelledby', 'aria-describedby'}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.has_content = False
+
+    def handle_starttag(self, tag, attrs):
+        if any(name.lower() in self.label_attributes and value and value.strip()
+               for name, value in attrs):
+            self.has_content = True
+
+    def handle_data(self, data):
+        if data.strip():
+            self.has_content = True
+
+
+def _unlabelled_transparent_svg(obj):
+    classification = obj.get('visual_classification') or {}
+    if classification.get('method') != 'all_pixels_alpha_zero':
+        return False
+    if any(obj.get(key) is not None and str(obj.get(key)).strip() for key in (
+            'text', 'original_text', 'original_extracted_text', 'source_text',
+            'visible_content', 'alt', 'title', 'aria_label', 'aria-labelledby',
+            'caption', 'figure_caption', 'label')):
+        return False
+    raw = obj.get('raw')
+    if not isinstance(raw, str) or not re.search(r'<svg\b', raw, re.IGNORECASE):
+        return False
+    probe = _AccessibleMarkupProbe()
+    try:
+        probe.feed(raw)
+        probe.close()
+    except Exception:
+        return False
+    return not probe.has_content
+
+
+def classify_transparent_svg_placeholders(source):
+    """Archive blank inline SVGs as decorative without dropping their source bytes."""
+    result = copy.deepcopy(source)
+    decorative_ids = set()
+    for obj in result.get('objects', []):
+        if obj.get('kind') in {'image', 'media'} and _unlabelled_transparent_svg(obj):
+            obj['source_scope'] = 'layout_decorative'
+            decorative_ids.add(obj['id'])
+    if decorative_ids:
+        # The alpha scan resolved the visual gap: this object has no pixels or
+        # accessible source content to review. Keep the object/resource itself.
+        result['unknown'] = [gap for gap in result.get('unknown', [])
+                             if gap.get('object_id') not in decorative_ids]
+    return result
+
+
+def _needs_active_visual_card(obj):
+    return (obj.get('kind') in {'image', 'page', 'media'} and bool(obj.get('resource_id'))
+            and not obj.get('visual_classification') and obj.get('source_scope') not in
+            {'site_chrome', 'source_metadata', 'layout_decorative'})
+
+
+def _turn_gap_declarations(gaps):
+    """Return gap IDs and their original text without discarding descriptions."""
+    declarations=[]
+    for value in gaps or []:
+        raw=str(value).strip()
+        match=re.match(r'^([^\s:：]+)\s*[:：]\s*(.*)$',raw)
+        if match:
+            declarations.append(dict(id=match[1],text=raw,description=match[2]))
+        else:
+            declarations.append(dict(id=raw,text=raw,description=raw))
+    return declarations
+
+
+_PROTECTED_PATCH_KINDS = {'object', 'source', 'document_info'}
+_HYBRID_OBJECT_MARKUP = re.compile(
+    r'<!--|-->|</?[A-Za-z][^>]*>|<![A-Za-z][^>]*>|!\s*\[|\{\{\s*source\s*:',
+    re.I)
+
+
+def _protected_literal_spans(text, literals):
+    text=str(text or '')
+    spans=[]
+    for literal in literals or []:
+        if not isinstance(literal,str) or not literal:
+            continue
+        start=0
+        while True:
+            start=text.find(literal,start)
+            if start<0:break
+            spans.append((start,start+len(literal)))
+            start+=len(literal)
+    merged=[]
+    for start,end in sorted(spans):
+        if merged and start<=merged[-1][1]:
+            merged[-1]=(merged[-1][0],max(merged[-1][1],end))
+        else:
+            merged.append((start,end))
+    return merged
+
+
+def _outside_protected_literals(text, literals):
+    spans=_protected_literal_spans(text,literals)
+    pieces=[];cursor=0
+    for start,end in spans:
+        if start>cursor:pieces.append(text[cursor:start])
+        cursor=max(cursor,end)
+    if cursor<len(text):pieces.append(text[cursor:])
+    return pieces
+
+
+def _has_authored_object_text(block,literals):
+    text=block.get('markdown','')
+    spans=_protected_literal_spans(text,literals)
+    if not spans:return False
+    outside='\n'.join(_outside_protected_literals(text,literals))
+    # Ignore structural HTML wrappers around the immutable object. Visible
+    # prose, such as an authored Chinese figure caption, remains patchable.
+    outside=re.sub(r'<!--.*?-->|<[^>]*>','',outside,flags=re.S)
+    return bool(outside.strip())
+
+
+def _quote_is_outside_protected_literals(block,quote,literals):
+    quote=str(quote or '').strip()
+    return bool(quote and any(quote in part for part in
+                              _outside_protected_literals(block.get('markdown',''),literals)))
+
+
+def patchable_block_ids(draft,protected_literals=()):
+    """Return authored block IDs, including captions outside object literals."""
+    protected_literals=tuple(protected_literals or ())
+    result=set()
+    for block in draft.get('blocks',[]):
+        if not block.get('id'):continue
+        if block.get('kind') not in _PROTECTED_PATCH_KINDS:
+            result.add(block['id'])
+        elif (block.get('kind')=='object'
+              and _has_authored_object_text(block,protected_literals)):
+            result.add(block['id'])
+    return result
+
+
+def retarget_protected_findings(review, draft,protected_literals=()):
+    """Move findings on immutable blocks to nearby authored explanation prose.
+
+    A protected object can still be the subject of a valid review. Its bytes
+    are never patch targets: when possible, point the finding at the closest
+    explanation block bound to the same source object and quote existing prose.
+    Findings without such a target remain explicit protected-reference notes.
+    """
+    protected_literals=tuple(protected_literals or ())
+    blocks = draft.get('blocks', [])
+    by_id = {block.get('id'): (index, block) for index, block in enumerate(blocks)}
+    retained = []
+    notes = list(review.get('protected_reference_notes', []))
+    receipts = []
+    for finding in review.get('findings', []):
+        target = by_id.get(finding.get('block_id'))
+        if not target or target[1].get('kind') not in _PROTECTED_PATCH_KINDS:
+            retained.append(finding)
+            continue
+        source_index, protected = target
+        if (protected.get('kind')=='object'
+                and _has_authored_object_text(protected,protected_literals)
+                and _quote_is_outside_protected_literals(
+                    protected,finding.get('output_quote'),protected_literals)):
+            retained.append(finding)
+            continue
+        source_ids = set(protected.get('source_ids', [])) | set(protected.get('object_ids', []))
+        if finding.get('source_id'):
+            source_ids = ({finding['source_id']} if not source_ids
+                          else source_ids & {finding['source_id']})
+        candidates = []
+        for index, block in enumerate(blocks):
+            if block.get('kind') != 'explanation' or not (source_ids & set(block.get('source_ids', []))):
+                continue
+            distance = abs(index - source_index)
+            # For equal distances, prefer the explanation following the source
+            # object: source material is normally rendered before its prose.
+            candidates.append((distance, index < source_index, index, block))
+        candidates.sort(key=lambda item: item[:3])
+        if not candidates:
+            notes.append(copy.deepcopy(finding))
+            continue
+        _, _, _, authored = candidates[0]
+        quote = next((line.strip() for line in authored.get('markdown', '').splitlines()
+                      if line.strip()), '')
+        if not quote:
+            notes.append(copy.deepcopy(finding))
+            continue
+        prior_id = finding.get('block_id')
+        finding['block_id'] = authored['id']
+        finding['output_quote'] = quote
+        finding['required_change'] = (
+            '保留关联的原始材料对象，只在这段已有解释文字中修正问题；' +
+            finding.get('required_change', '').strip())
+        receipts.append(dict(from_block_id=prior_id, to_block_id=authored['id'],
+                             source_id=finding.get('source_id', ''),
+                             operation='protected_finding_retargeted_to_bound_explanation'))
+        retained.append(finding)
+    review['findings'] = retained
+    if notes:
+        review['protected_reference_notes'] = notes
+    if receipts:
+        review.setdefault('protected_finding_retargets', []).extend(receipts)
+    return review
+
+
+def claim_unknown_patch_continuation(job, original_step_key, continuation_session_key, now=None):
+    """Claim at most one new, versioned step after a completed KuaFu SSE deadline.
+
+    The old call remains untouched and its spend remains unknown. This helper
+    only qualifies a new logical step; it never edits call or ledger receipts.
+    """
+    now = time.time() if now is None else now
+    candidate = job.get('active_candidate', {})
+    markers = candidate.setdefault('unknown_patch_continuations', [])
+    existing = next((item for item in markers
+                     if item.get('original_step_key') == original_step_key), None)
+    if existing:
+        return None
+    if (job.get('pending') != original_step_key or original_step_key in job.get('results', {})):
+        return None
+    call = next((item for item in reversed(job.get('calls', []))
+                 if item.get('step_key') == original_step_key), None)
+    if not call:
+        return None
+    endpoint = urlsplit(call.get('upstream_base') or '')
+    if (call.get('role') != 'active_patch' or call.get('status') != 'uncertain'
+            or call.get('protocol') != 'responses' or call.get('streaming') is not True
+            or call.get('http_status') != 200 or call.get('response_blob')
+            or call.get('upstream_id') or not call.get('dispatch_started')
+            or endpoint.hostname not in {'api.kuafushe.cc'}
+            or float(call.get('deadline_at') or 0) > now):
+        return None
+    if not continuation_session_key or continuation_session_key == original_step_key:
+        return None
+    marker = dict(version='active-patch-unknown-sse-v1',
+        original_step_key=original_step_key, original_call_id=call.get('id'),
+        original_call_status='uncertain', original_result='unknown_not_replayed',
+        continuation_session_key=continuation_session_key,
+        status='queued', claimed_at=now)
+    markers.append(marker)
+    job.pop('pending', None)
+    return marker
+
+
+def _restore_reused_gap_declarations(declarations, saved_declarations):
+    """Expand a reused bare ID from its immutable same-session declaration.
+
+    A bare ID carries no new text, so treating it as a changed declaration is
+    incorrect. Explicitly supplied text is never normalized or overwritten.
+    """
+    saved_by_id={}
+    duplicates=set()
+    for item in saved_declarations or []:
+        gap_id=item.get('id') if isinstance(item,dict) else None
+        if not gap_id:continue
+        if gap_id in saved_by_id:duplicates.add(gap_id)
+        saved_by_id[gap_id]=item
+    restored=[]
+    for declaration in declarations:
+        gap_id=declaration.get('id')
+        saved=saved_by_id.get(gap_id)
+        if (declaration.get('text')==gap_id and saved is not None
+                and gap_id not in duplicates):
+            restored.append(copy.deepcopy(saved))
+        else:
+            restored.append(declaration)
+    return restored
+
+
+def _split_recovery_marker(job, session_key):
+    if not isinstance(session_key,str) or not session_key.startswith('active-plan-'):
+        return None
+    prefix=session_key[len('active-plan-'):]
+    return next((item for item in job.get('active_plan_split_recoveries',[])
+        if prefix in item.get('recovery_prefixes',[])),None)
+
+
+def _mark_split_recovery_started(job, session_key):
+    marker=_split_recovery_marker(job,session_key)
+    if marker is None:return
+    now=time.time()
+    if marker.get('status')!='running':
+        marker['started_at']=marker.get('started_at') or now
+    marker['status']='running'
+    marker['updated_at']=now
+    marker.setdefault('completed_sessions',[])
+
+
+def _mark_split_recovery_completed(job, session_key):
+    marker=_split_recovery_marker(job,session_key)
+    if marker is None:return
+    completed=marker.setdefault('completed_sessions',[])
+    if session_key not in completed:completed.append(session_key)
+    expected={'active-plan-'+prefix for prefix in marker.get('recovery_prefixes',[])}
+    if expected and expected<=set(completed):
+        marker.update(status='completed',completed_at=time.time(),updated_at=time.time())
+    else:
+        marker.update(status='running',updated_at=time.time())
+
+
+def _mark_split_recovery_failed(job, session_key, error):
+    marker=_split_recovery_marker(job,session_key)
+    if marker is None:return
+    marker.update(status='failed',last_error=str(error),failed_at=time.time(),
+                  updated_at=time.time())
+
+
+def _text_mentions_exact(text, needle):
+    if not text or not needle:return False
+    if re.fullmatch(r'[\w.-]+',needle,re.UNICODE):
+        return re.search(r'(?<!\w)'+re.escape(needle)+r'(?!\w)',text,re.I|re.UNICODE) is not None
+    return needle.casefold() in text.casefold()
+
+
+def _infer_external_action_source(action, gap_descriptions, source_objects, assigned_ids):
+    """Align an omitted action source only when current evidence has one identity."""
+    assigned=set(assigned_ids)
+    all_ids=set(source_objects)
+    gap_text='\n'.join(gap_descriptions)
+    context='\n'.join([gap_text,action.get('query','')])
+    hints=[]
+
+    mentioned={sid for sid in all_ids if _text_mentions_exact(gap_text,sid)}
+    if mentioned:
+        hints.append(('explicit_source_id_in_gap',mentioned,
+                      {'source_ids':sorted(mentioned)}))
+        if not mentioned <= assigned:
+            return None,dict(reason='gap_source_outside_assigned_group',source_ids=sorted(mentioned),
+                methods=[dict(method=method,source_ids=sorted(ids),evidence=evidence)
+                         for method,ids,evidence in hints])
+
+    if action.get('kind')=='page' and action.get('url'):
+        direct={sid for sid,obj in source_objects.items()
+                if sid in assigned and obj.get('kind')=='link' and obj.get('target')
+                and canonical_url(action['url'])==canonical_url(obj['target'])}
+        if direct:hints.append(('exact_direct_link_target',direct,{'url':action['url']}))
+
+    labels={sid for sid,obj in source_objects.items()
+            if sid in assigned and obj.get('kind')=='link'
+            and _text_mentions_exact(context,str(obj.get('text','')).strip())}
+    if labels:hints.append(('unique_link_label_in_gap_or_query',labels,{
+        'labels':sorted({str(source_objects[sid].get('text','')).strip() for sid in labels})}))
+
+    if not hints:return None,dict(reason='no_source_identity_evidence')
+    methods=[dict(method=method,source_ids=sorted(ids),evidence=evidence)
+             for method,ids,evidence in hints]
+    hinted_ids=set().union(*(ids for _,ids,_ in hints))
+    if any(len(ids)!=1 for _,ids,_ in hints) or len(hinted_ids)!=1:
+        return None,dict(reason='ambiguous_source_identity',source_ids=sorted(hinted_ids),
+                          methods=methods)
+    source_id=next(iter(hinted_ids))
+    return source_id,dict(methods=methods)
+
+
+def _direct_link_target_saved(resources, source_obj):
+    target=source_obj.get('target','')
+    if not target:return False
+    address=canonical_url(target)
+    resource_id=resources.state.get('url_index',{}).get(address)
+    entries=resources.state.get('entries',{})
+    entry=entries.get(resource_id,{}) if resource_id else {}
+    if not entry:
+        entry=next((item for item in entries.values()
+            if item.get('kind')=='external'
+            and canonical_url(item.get('original_url') or item.get('locator',''))==address),{})
+    return bool(entry.get('kind')=='external' and entry.get('snapshot_blob'))
+
+
+def authorize_plan_link_actions(response, source, assigned, saved_decisions):
+    """Classify original links before any Planner action can fetch their targets."""
+    links={obj['id']:obj for obj in source['objects']
+           if obj['id'] in assigned and obj['kind']=='link' and obj.get('target')}
+    context={row['source_id']:row for row in plan_link_context(source,assigned)}
+    submitted={}
+    for item in response.get('link_decisions',[]):
+        sid=item['source_id']
+        if sid not in links or sid in submitted:
+            raise ValueError('链接职责必须唯一对应当前分组的原文链接')
+        previous=saved_decisions.get(sid)
+        if previous and previous!=item:
+            raise ValueError('已分类的原文链接不能在后续取材时改换职责')
+        if item['role']=='semantic_dependency' and (
+                not item['missing'].strip() or not item['source_quote'].strip() or
+                item['source_quote'] not in context[sid]['surrounding_text']):
+            raise ValueError('语义依赖必须引用相邻原文，并指出当前论点的具体理解缺口')
+        submitted[sid]=item
+    decisions={**saved_decisions,**submitted}
+    for action in response['actions']:
+        if action['kind'] not in {'page','search','image'}:continue
+        target_matches={sid for sid,obj in links.items() if action.get('url')
+                        and canonical_url(action['url'])==canonical_url(obj['target'])}
+        sid=action.get('source_id','')
+        if target_matches and sid not in target_matches:
+            raise ValueError('读取原文链接目标必须准确绑定该原文链接 source_id')
+        matches={sid} if sid in links else set()
+        for sid in matches:
+            decision=decisions.get(sid)
+            if (not decision or decision['role']!='semantic_dependency'
+                    or not decision['missing'].strip()):
+                raise ValueError('原文链接必须先判定为有具体理解缺口的语义依赖，才能读取目标')
+            if action['kind']!='page' or canonical_url(action.get('url',''))!=canonical_url(links[sid]['target']):
+                raise ValueError('语义依赖链接只能先读取其精确直接目标')
+    return decisions
+
+
+def normalize_rewrite_reference_turn(raw, source, assigned):
+    """Keep ordinary source links as references in the default rewrite path."""
+    if not isinstance(raw,dict):return raw,None
+    links={obj['id']:obj for obj in source['objects']
+           if obj['id'] in assigned and obj['kind']=='link' and obj.get('target')}
+    if not links:return raw,None
+    cleaned=copy.deepcopy(raw)
+    submitted=cleaned.get('link_decisions',[])
+    if isinstance(submitted,list):
+        cleaned['link_decisions']=[item for item in submitted
+            if not isinstance(item,dict) or item.get('source_id') not in links]
+    actions=cleaned.get('actions',[])
+    if not isinstance(actions,list):return cleaned,None
+    targets={canonical_url(obj['target']) for obj in links.values()}
+    blocked=[action for action in actions if isinstance(action,dict) and (
+        action.get('source_id') in links or
+        (action.get('url') and canonical_url(action['url']) in targets))]
+    if blocked and len(blocked)!=len(actions):
+        raise ValueError('普通改写不能混合原文链接目标研究与其他取材动作')
+    if blocked:
+        cleaned.update(actions=[],gaps=[])
+        if cleaned.get('result') is None:
+            cleaned['ready_reason']='普通改写保留原文链接，不读取目标页'
+    if blocked or len(cleaned.get('link_decisions',[]))!=len(submitted):
+        return cleaned,dict(reason='default_rewrite_links_are_references',
+            reference_link_ids=sorted(links),suppressed_action_count=len(blocked))
+    return cleaned,None
+
+
+def normalize_first_plan_link_classification(raw, source, assigned):
+    """Suppress only premature reads of links classified as references."""
+    if not isinstance(raw,dict) or not isinstance(raw.get('link_decisions'),list):
+        return raw,None
+    submitted=[A.PlanLinkDecision.model_validate(item).model_dump()
+               for item in raw['link_decisions']]
+    expected={item['source_id'] for item in plan_link_context(source,assigned)}
+    if len(submitted)!=len(expected):
+        return raw,None
+    decisions=authorize_plan_link_actions(
+        {'link_decisions':submitted,'actions':[]},source,assigned,{})
+    if set(decisions)!=expected:
+        return raw,None
+    actions=raw.get('actions',[])
+    gaps=raw.get('gaps',[])
+    if not isinstance(actions,list) or not isinstance(gaps,list):
+        return raw,None
+    if not actions or raw.get('result') is not None:
+        return raw,None
+    links={obj['id']:obj for obj in source['objects'] if obj['id'] in assigned
+           and obj['kind']=='link' and obj.get('target')}
+    reference_actions=[action for action in actions if action.get('source_id') in links
+        and decisions[action['source_id']]['role']=='reference']
+    if not reference_actions:
+        return raw,None
+    if len(reference_actions)!=len(actions):
+        raise ValueError('同一 Turn 混合参考链接取材与其他动作，不能安全执行')
+    cleaned=copy.deepcopy(raw)
+    cleaned.update(actions=[],gaps=[],result=None,
+        ready_reason='参考链接职责已冻结，不执行其目标页读取')
+    return cleaned,dict(retained_link_decision_ids=list(decisions),
+        suppressed_action_count=len(actions),suppressed_gap_count=len(gaps),
+        suppressed_result=False,
+        reason='classification_complete_before_external_actions')
+
+
+def plan_link_context(source,assigned):
+    """Give the Planner the current source sentence, not the target page."""
+    objects=[obj for obj in source['objects'] if obj['id'] in assigned]
+    result=[]
+    for index,obj in enumerate(objects):
+        if obj['kind']!='link' or not obj.get('target'):continue
+        locator=obj.get('locator','')
+        parent=locator.rsplit('/a[',1)[0] if '/a[' in locator else locator.rsplit('/',1)[0]
+        nearby=next((row.get('text','') for row in reversed(objects[:index])
+                     if row['kind']!='link' and row.get('locator')==parent),'')
+        if not nearby:
+            nearby=next((row.get('text','') for row in reversed(objects[:index])
+                         if row['kind'] in {'text','heading'}),'')
+        heading=next((row.get('text','') for row in reversed(objects[:index])
+                      if row['kind']=='heading'),'')
+        result.append(dict(source_id=obj['id'],label=obj.get('text',''),
+                           target=obj['target'],surrounding_text=nearby[:1200],
+                           preceding_heading=heading[:160]))
+    return result
+
+
+def _name_lookup_requested(gap_descriptions, query):
+    context='\n'.join([*gap_descriptions,query or ''])
+    return re.search(
+        r'(?:\b(?:official|full|english|formal)\s+(?:name|term)\b|'
+        r'\b(?:name|acronym|abbreviation)\b|英文(?:全称|名称)?|全称|正式名称|官方名称|名称|缩写)',
+        context,re.I) is not None
+
+
 def bounded_prior_context(blocks, limit=8000):
     """Keep a small continuity window only when the plan identifies a risk."""
     selected=[];used=0
@@ -37,6 +548,247 @@ def bounded_prior_context(blocks, limit=8000):
         text=value[-limit:] if not selected and len(value)>limit else value
         selected.append(text);used+=len(text)
     return list(reversed(selected))
+
+
+def bounded_established_memory(job, max_items=12, max_chars=3200):
+    """Expose prior concept anchors without replaying earlier authored units."""
+    planned={}
+    for part in job.get('active_plans',[]):
+        for concept in part.get('concepts',[]):
+            if isinstance(concept,dict) and concept.get('id'):
+                planned.setdefault(concept['id'],concept)
+    result=[];used=0;seen=set()
+    for memory in job.get('knowledge_memory',[]):
+        for established in memory.get('established',[]):
+            cid=established.get('id')
+            if not cid or cid in seen:continue
+            concept=planned.get(cid,{})
+            item=dict(node_id=memory.get('node_id'),concept_id=cid)
+            for key in ('chinese_name','english_name','name'):
+                if concept.get(key):item[key]=str(concept[key])[:120]
+            definition=(established.get('definition') or (
+                '' if is_core_chain(job) and job.get('transformation_mode')=='rewrite'
+                else concept.get('definition')) or '').strip()
+            if definition:item['prior_explanation']=definition[:280]
+            source_ids=concept.get('source_ids') or established.get('source_ids') or []
+            if source_ids:item['source_ids']=list(source_ids[:8])
+            size=len(json.dumps(item,ensure_ascii=False))
+            if len(result)>=max_items or used+size>max_chars:break
+            result.append(item);used+=size;seen.add(cid)
+        if len(result)>=max_items or used>=max_chars:break
+    return result
+
+
+def normalized_concept_name(value):
+    """Normalize a concept label for exact bilingual identity checks."""
+    normalized=unicodedata.normalize('NFKC',str(value or '')).casefold()
+    # Ignore spacing and typography dashes, while retaining meaningful symbols
+    # such as the pluses in C++ and the hash in C#.
+    return ''.join(char for char in normalized
+                   if not char.isspace() and unicodedata.category(char)!='Pd')
+
+
+def concept_name_pair(concept):
+    """Read a Chinese/English label pair without guessing from definitions."""
+    chinese=(concept.get('chinese_name') or '').strip()
+    english=(concept.get('english_name') or '').strip()
+    name=(concept.get('name') or '').strip()
+    match=re.fullmatch(r'\s*(.*?)\s*[（(]([^（）()]*)[）)]\s*',name)
+    if match:
+        left,right=match.groups()
+        if re.search(r'[\u3400-\u9fff]',left) and not chinese:chinese=left.strip()
+        elif re.search(r'[\u3400-\u9fff]',right) and not chinese:chinese=right.strip()
+        if re.search(r'[A-Za-z]',left) and not english:english=left.strip()
+        elif re.search(r'[A-Za-z]',right) and not english:english=right.strip()
+    elif name:
+        if re.search(r'[\u3400-\u9fff]',name) and not chinese:chinese=name
+        if re.search(r'[A-Za-z]',name) and not re.search(r'[\u3400-\u9fff]',name) and not english:
+            english=name
+    return normalized_concept_name(chinese),normalized_concept_name(english)
+
+
+def coalesce_current_short_rewrite_concepts(job,node,source_objects):
+    """Map accepted duplicates and preserve verified name completions in this unit."""
+    if job.get('transformation_mode')!='rewrite':return []
+    if any(obj.get('kind') not in {'text','heading','link','page','metadata'}
+           for obj in source_objects):return []
+    prose=[obj for obj in source_objects if obj.get('kind') in {'text','heading'}]
+    if not any(obj.get('kind')=='text' for obj in prose):return []
+    if sum(len(obj.get('text','')) for obj in prose)>=1200:return []
+    if re.search(r'(?mi)^\s*(?:glossary|terminology|术语表|定义)\b',
+                 '\n'.join(obj.get('text','') for obj in prose)):
+        return []
+
+    planned={concept.get('id'):concept for part in job.get('active_plans',[])
+             for concept in part.get('concepts',[]) if concept.get('id')}
+    accepted=[];accepted_ids=set()
+    for memory in job.get('knowledge_memory',[]):
+        for entry in memory.get('established',[]):
+            cid=entry.get('id')
+            concept=planned.get(cid)
+            if not cid or not concept:continue
+            chinese,english=concept_name_pair(concept)
+            if not chinese:continue
+            accepted.append((cid,chinese,english,memory.get('node_id')))
+            accepted_ids.add(cid)
+    if not accepted:return []
+
+    referenced=set((node.get('requires_concepts') or [])+(node.get('establishes_concepts') or []))
+    aliases={}
+    name_completions={}
+    for cid in sorted(referenced-accepted_ids):
+        concept=planned.get(cid)
+        if not concept:continue
+        chinese,english=concept_name_pair(concept)
+        if not chinese or not english:continue
+        match=next((row for row in accepted if row[1] and row[2]
+                    and row[1:3]==(chinese,english)),None)
+        if match:
+            aliases[cid]=match[0]
+            continue
+        # A previously accepted Chinese concept may lack a verified English
+        # label. Preserve the current source-backed pair as a name completion;
+        # the alias is still routed to the accepted identity and never defines
+        # the concept a second time.
+        completion_match=next((row for row in accepted if row[1]==chinese and not row[2]),None)
+        verified_evidence=(concept.get('naming_status')=='verified'
+            and bool(concept.get('english_name','').strip())
+            and bool(concept.get('name_evidence'))
+            and all(isinstance(item,dict) and item.get('resource_id') and item.get('quote')
+                    for item in concept.get('name_evidence',[])))
+        if completion_match and verified_evidence:
+            abbreviation_shorts=[item.get('short','').strip()
+                for item in concept.get('abbreviations',[]) if item.get('short','').strip()]
+            first_use_display=(' '.join(abbreviation_shorts)+' ' if abbreviation_shorts else '')
+            first_use_display+=concept.get('chinese_name','')+'（'+concept.get('english_name','')+'）'
+            aliases[cid]=completion_match[0]
+            name_completions[cid]=dict(
+                version='short-rewrite-name-completion-v1',unit_id=node.get('id'),
+                source_concept_id=cid,accepted_concept_id=completion_match[0],
+                chinese_name=concept.get('chinese_name',''),
+                english_name=concept.get('english_name',''),
+                name_evidence=copy.deepcopy(concept.get('name_evidence',[])),
+                source_ids=list(concept.get('source_ids',[])),
+                naming_status='verified',abbreviations=copy.deepcopy(concept.get('abbreviations',[])),
+                requires_first_use_pair=True,first_use_display=first_use_display,
+                instruction=('此前已解释该中文概念；只在当前本单元有来源证据的首次出现处补成“'
+                    +first_use_display+'”；缩写置于中文名称之前，全角括号内只放已核实英文名称；'
+                    '不要重讲定义或另起术语条目。'))
+    if not aliases:return []
+
+    batches=job.get('writing_batches') or []
+    unit_ids=set()
+    for item in batches[int(job.get('unit_index',0)):]:
+        if item.get('id'):unit_ids.add(item['id'])
+        unit_ids.update(section.get('id') for section in (item.get('section_outline') or [])
+                        if section.get('id'))
+    if not unit_ids:
+        fallback_nodes=[item for part in job.get('active_plans',[])
+                        for item in part.get('nodes',[])]
+        for item in fallback_nodes[int(job.get('unit_index',0)):]:
+            if item.get('id'):unit_ids.add(item['id'])
+            unit_ids.update(section.get('id') for section in (item.get('section_outline') or [])
+                            if section.get('id'))
+    def remap_node(item,in_scope=False):
+        in_scope=in_scope or item.get('id') in unit_ids
+        if in_scope:
+            if 'requires_concepts' in item:
+                item['requires_concepts']=list(dict.fromkeys(
+                    aliases.get(cid,cid) for cid in (item.get('requires_concepts') or [])))
+            if 'establishes_concepts' in item:
+                item['establishes_concepts']=[cid for cid in (item.get('establishes_concepts') or [])
+                    if cid not in aliases and cid not in aliases.values()]
+        for section in item.get('section_outline') or []:remap_node(section,in_scope)
+
+    receipts=[]
+    for cid,target in aliases.items():
+        source=planned[cid]
+        target_memory=next(row for row in accepted if row[0]==target)
+        receipts.append(dict(unit_id=node.get('id'),source_concept_id=cid,
+            accepted_concept_id=target,source_names=dict(chinese_name=source.get('chinese_name',''),
+                english_name=source.get('english_name',''),name=source.get('name','')),
+            accepted_node_id=target_memory[3],
+            duplicate_source_ids=list(source.get('source_ids',[])),
+            accepted_source_ids=list(planned[target].get('source_ids',[])),
+            reason=('accepted_chinese_concept_had_no_english_name; verified_current_source_name_completion'
+                    if cid in name_completions else
+                    'exact_normalized_chinese_and_english_names_match_prior_established_concept'),
+            name_completion=copy.deepcopy(name_completions.get(cid))))
+
+    for part in job.get('active_plans',[]):
+        has_uncommitted_node=any(item.get('id') in unit_ids for item in part.get('nodes',[]))
+        if has_uncommitted_node:
+            part['concepts']=[concept for concept in part.get('concepts',[])
+                               if concept.get('id') not in aliases]
+            for concept in part.get('concepts',[]):
+                concept['requires']=[mapped for cid in (concept.get('requires') or [])
+                    if (mapped:=aliases.get(cid,cid))!=concept.get('id')]
+                concept['requires']=list(dict.fromkeys(concept['requires']))
+        for item in part.get('nodes',[]):remap_node(item)
+    for item in job.get('writing_batches',[]):remap_node(item)
+    valid_ids={concept.get('id') for part in job.get('active_plans',[])
+               for concept in part.get('concepts',[]) if concept.get('id')}|accepted_ids
+    missing_target=next((target for target in aliases.values() if target not in valid_ids),None)
+    if missing_target:
+        raise ValueError('概念合并目标不在已接受知识或当前计划中：'+missing_target)
+    # Only inspect references this transaction was authorized to remap. An old
+    # accepted plan may retain a legacy prerequisite outside the current
+    # concept ledger; that unrelated history must not block this unit.
+    residuals=[]
+    for part in job.get('active_plans',[]):
+        if not any(item.get('id') in unit_ids for item in part.get('nodes',[])):continue
+        for concept in part.get('concepts',[]):
+            residuals.extend(('concept prerequisite '+concept.get('id',''),cid)
+                for cid in (concept.get('requires') or []) if cid in aliases)
+        for item in part.get('nodes',[]):
+            if item.get('id') not in unit_ids:continue
+            for field in ('requires_concepts','establishes_concepts'):
+                residuals.extend((field+' '+item.get('id',''),cid)
+                    for cid in (item.get(field) or []) if cid in aliases)
+            for section in item.get('section_outline') or []:
+                if section.get('id') not in unit_ids:continue
+                for field in ('requires_concepts','establishes_concepts'):
+                    residuals.extend((field+' '+section.get('id',''),cid)
+                        for cid in (section.get(field) or []) if cid in aliases)
+    for item in job.get('writing_batches',[]):
+        if item.get('id') not in unit_ids:continue
+        for field in ('requires_concepts','establishes_concepts'):
+            residuals.extend((field+' '+item.get('id',''),cid)
+                for cid in (item.get(field) or []) if cid in aliases)
+        for section in item.get('section_outline') or []:
+            if section.get('id') not in unit_ids:continue
+            for field in ('requires_concepts','establishes_concepts'):
+                residuals.extend((field+' '+section.get('id',''),cid)
+                    for cid in (section.get(field) or []) if cid in aliases)
+    if residuals:
+        where,cid=residuals[0]
+        raise ValueError('概念合并后受影响单元仍引用已移除的别名：'+cid+'（'+where+'）')
+    if job.get('source') and job.get('writing_batches'):
+        job['inventory'],job['plan']=legacy_artifacts(
+            job['active_plans'],job['source'],job['writing_batches'],
+            job.get('object_responsibilities') if is_core_chain(job) else None)
+    job.setdefault('short_rewrite_concept_coalescings',[]).extend(receipts)
+    if name_completions:
+        stored=job.setdefault('short_rewrite_name_completions',[])
+        existing={(row.get('unit_id'),row.get('source_concept_id')) for row in stored}
+        stored.extend(copy.deepcopy(row) for row in name_completions.values()
+                      if (row.get('unit_id'),row.get('source_concept_id')) not in existing)
+    return receipts
+
+
+def short_rewrite_name_completions(job,node):
+    """Return only this unit's verified naming additions for prompts and gates."""
+    result=[]
+    for row in job.get('short_rewrite_name_completions',[]):
+        if row.get('unit_id')!=node.get('id'):continue
+        result.append(dict(id=row['source_concept_id'],
+            accepted_concept_id=row['accepted_concept_id'],
+            chinese_name=row['chinese_name'],english_name=row['english_name'],
+            naming_status='verified',name_evidence=copy.deepcopy(row['name_evidence']),
+            source_ids=list(row['source_ids']),abbreviations=copy.deepcopy(row.get('abbreviations',[])),
+            requires_first_use_pair=bool(row.get('requires_first_use_pair')),
+            first_use_display=row.get('first_use_display',''),instruction=row['instruction']))
+    return result
 
 
 def validate_evidence_plan(plan, obligations, objects, assigned, resources=None):
@@ -85,8 +837,62 @@ def validate_evidence_plan(plan, obligations, objects, assigned, resources=None)
     return plan
 
 
-def repair_one_missing_json_object_closer(raw):
-    """Repair one missing `}` before `]`; never edit a JSON string or value."""
+def prune_reference_link_evidence(plan, reference_link_ids):
+    """Remove research receipts owned only by links kept as references."""
+    obligations={item['id']:item['source_id'] for item in plan.get('obligations',[])}
+    removed={gap['id'] for gap in plan.get('evidence_gaps',[])
+             if (gap['source_id'] in reference_link_ids and
+                 obligations.get(gap['obligation_id'])==gap['source_id'])}
+    if not removed:return plan,dict(gap_ids=[],resolution_gap_ids=[],binding_ids=[])
+    cleaned=copy.deepcopy(plan)
+    binding_ids=[item['id'] for item in cleaned.get('evidence_bindings',[])
+                 if item['gap_id'] in removed]
+    resolution_gap_ids=[item['gap_id'] for item in cleaned.get('evidence_resolutions',[])
+                        if item['gap_id'] in removed]
+    cleaned['evidence_gaps']=[item for item in cleaned['evidence_gaps']
+                              if item['id'] not in removed]
+    cleaned['evidence_resolutions']=[item for item in cleaned['evidence_resolutions']
+                                     if item['gap_id'] not in removed]
+    cleaned['evidence_bindings']=[item for item in cleaned['evidence_bindings']
+                                  if item['gap_id'] not in removed]
+    return cleaned,dict(gap_ids=sorted(removed),
+                        resolution_gap_ids=sorted(resolution_gap_ids),
+                        binding_ids=sorted(binding_ids))
+
+
+def downgrade_original_only_evidence_bindings(plan, source, assigned):
+    """Do not mistake an exact original quote for independently opened evidence."""
+    objects={obj['id']:obj for obj in source['objects'] if obj['id'] in assigned}
+    mistaken={binding['id']:binding for binding in plan.get('evidence_bindings',[])
+        if binding.get('id') and binding.get('resource_id') in objects
+        and exact_source_quote(binding.get('quote',''),
+            objects[binding['resource_id']].get('text',''))}
+    if not mistaken:
+        return plan,[]
+    plan=copy.deepcopy(plan)
+    plan['evidence_bindings']=[binding for binding in plan.get('evidence_bindings',[])
+        if binding.get('id') not in mistaken]
+    receipts=[]
+    for resolution in plan.get('evidence_resolutions',[]):
+        removed=[bid for bid in resolution.get('binding_ids',[]) if bid in mistaken]
+        if not removed:
+            continue
+        resolution['binding_ids']=[bid for bid in resolution['binding_ids'] if bid not in mistaken]
+        if resolution.get('status')=='resolved' and not resolution['binding_ids']:
+            resolution['status']='unresolved'
+            resolution['stop_reason']='原文引文不能代替独立外部证据；本轮外部查证未取得可核验引文'
+            resolution['error']='original_quote_misclassified_as_external_evidence'
+            for gap in plan.get('evidence_gaps',[]):
+                if gap.get('id')==resolution.get('gap_id'):
+                    gap['status']='unresolved'
+        receipts.append(dict(gap_id=resolution.get('gap_id'),binding_ids=removed,
+            source_ids=sorted({mistaken[bid]['resource_id'] for bid in removed}),
+            reason='exact_original_quote_is_not_external_evidence'))
+    return plan,receipts
+
+
+def repair_one_missing_json_object_closer(raw,allow_final_root=False):
+    """Repair one missing object closer at a structurally proven boundary."""
     stack=[];quoted=False;escaped=False
     for index,char in enumerate(raw):
         if quoted:
@@ -105,6 +911,13 @@ def repair_one_missing_json_object_closer(raw):
             if not stack or (char=='}' and stack[-1]!='{') or (char==']' and stack[-1]!='['):
                 return None
             stack.pop()
+    # A single absent final brace is safe only when the complete scan ends
+    # outside a string with exactly one unclosed root object and no arrays.
+    if allow_final_root and not quoted and not escaped and stack==['{']:
+        candidate=raw+'}'
+        try:json.loads(candidate)
+        except json.JSONDecodeError:return None
+        return candidate
     return None
 
 
@@ -158,6 +971,26 @@ def exact_source_quote(quote, source, pdf_wrap=False):
             words.append(part)
         matches=list(re.finditer(r'\s+'.join(words),source))
     return matches[0].group() if len(matches)==1 else None
+
+
+def exact_review_quote_fragment(quote, block):
+    """Keep a unique, near-complete exact quote when only framing words differ.
+
+    Dropping negation, numbers, or substantive words could change a review
+    finding, so only short deictic/punctuation edges may be removed.
+    """
+    if not isinstance(quote,str) or not isinstance(block,str) or len(quote)<20:
+        return None
+    from difflib import SequenceMatcher
+    match=SequenceMatcher(None,quote,block,autojunk=False).find_longest_match()
+    prefix=quote[:match.a];suffix=quote[match.a+match.size:]
+    allowed=set('这它其该此，。：；,. :;\t\r\n')
+    fragment=quote[match.a:match.a+match.size]
+    if (match.size>=20 and match.size>=len(quote)*.85
+            and len(prefix)<=2 and len(suffix)<=2
+            and set(prefix+suffix)<=allowed and block.count(fragment)==1):
+        return fragment
+    return None
 
 
 def rebind_link_finding_evidence(finding, guides, resources):
@@ -292,7 +1125,8 @@ def merge_adjacent_heading_only_nodes(plan, objects):
         heading,following=nodes[index:index+2]
         if (heading['source_ids'] and
                 all(objects.get(sid,{}).get('kind')=='heading' for sid in heading['source_ids']) and
-                heading['id'] in following['depends_on']):
+                following['source_ids'] and
+                not all(objects.get(sid,{}).get('kind')=='heading' for sid in following['source_ids'])):
             old_id=heading['id']
             following['source_ids']=list(dict.fromkeys(heading['source_ids']+following['source_ids']))
             following['obligation_ids']=list(dict.fromkeys(
@@ -339,6 +1173,57 @@ def retire_unanchored_abbreviations(plans, source):
     return removed
 
 
+def _without_markdown_link_destinations(markdown):
+    """Keep Markdown link labels while omitting their non-visible destinations."""
+    visible=[]
+    index=0
+    while index<len(markdown):
+        if markdown[index]!='[':
+            visible.append(markdown[index])
+            index+=1
+            continue
+        slashes=0
+        back=index-1
+        while back>=0 and markdown[back]=='\\':
+            slashes+=1
+            back-=1
+        if slashes%2:
+            visible.append(markdown[index])
+            index+=1
+            continue
+        depth=1
+        label_end=index+1
+        while label_end<len(markdown) and depth:
+            char=markdown[label_end]
+            if char=='\\':
+                label_end+=2
+                continue
+            if char=='[':depth+=1
+            elif char==']':depth-=1
+            label_end+=1
+        if depth or label_end>=len(markdown) or markdown[label_end]!='(':
+            visible.append(markdown[index])
+            index+=1
+            continue
+        destination_end=label_end+1
+        depth=1
+        while destination_end<len(markdown) and depth:
+            char=markdown[destination_end]
+            if char=='\\':
+                destination_end+=2
+                continue
+            if char=='(':depth+=1
+            elif char==')':depth-=1
+            destination_end+=1
+        if depth:
+            visible.append(markdown[index])
+            index+=1
+            continue
+        visible.append(markdown[index:label_end])
+        index=destination_end
+    return ''.join(visible)
+
+
 def overgrown_short_rewrite_glossary(draft, objects):
     """Catch a glossary detour in a short plain article before paid review."""
     originals=[obj for obj in objects if obj['kind'] in {'text','heading'}]
@@ -349,15 +1234,16 @@ def overgrown_short_rewrite_glossary(draft, objects):
     source_text='\n'.join(obj['text'] for obj in originals)
     if re.search(r'(?mi)^\s*(?:glossary|terminology|术语表|定义)\b',source_text):return False
     output=canonical(draft)
+    measured_output=_without_markdown_link_destinations(output)
     definitions=len(re.findall(r'(?m)^\s*[-*]\s+[^\n]{1,90}（[^\n]{1,90}）：',output))
     mixed=len(originals)!=len(objects)
     if not mixed:
-        return definitions>len(prose) and len(output)>source_chars*2.5
+        return definitions>len(prose) and len(measured_output)>source_chars*2.5
     code_lines=sum(len(obj['text'].splitlines()) for obj in objects if obj['kind']=='code')
     images=sum(obj['kind']=='image' for obj in objects)
     links=sum(obj['kind']=='link' for obj in objects)
     allowance=source_chars*2.5+code_lines*50+images*200+links*100
-    return definitions>=max(3,(len(prose)+1)//2) and len(output)>allowance
+    return definitions>=max(3,(len(prose)+1)//2) and len(measured_output)>allowance
 
 
 def carry_unchanged_findings(findings, previous_findings, patch, draft):
@@ -386,6 +1272,43 @@ def clear_resolved_format_issue(job, candidate, node_id):
         job.setdefault('resolved_quality_issues',[]).extend(dict(
             issue=item,reason='same_unit_format_replay_passed_after_deterministic_layout_normalization')
             for item in resolved)
+
+
+def retire_projected_document_info_gap_notes(job):
+    """Retire only heading-placement notes fixed by the reader's end-matter projection."""
+    from .media import reading_draft
+    issues=job.get('quality_issues') or []
+    if not issues or not job.get('draft'):return []
+    original=job['draft'].get('blocks') or []
+    blocks={block.get('id'):block for block in original}
+    try:
+        projected=reading_draft(dict(draft=job['draft'],inventory=job.get('inventory') or {}))
+    except (KeyError,TypeError,ValueError):
+        # A presentation projection must never become a new production gate.
+        # Keep the original issue when its end-matter move cannot be proven.
+        return []
+    projected_blocks=projected.get('blocks') or []
+    projected_ids=[block.get('id') for block in projected_blocks]
+    first_info=next((index for index,block in enumerate(projected_blocks)
+                     if block.get('kind')=='document_info'),len(projected_blocks))
+    if any(block.get('kind')!='document_info' for block in projected_blocks[first_info:]):
+        return []
+    kept=[];retired=[]
+    for issue in issues:
+        if (not all(marker in issue for marker in
+                    ('范围外缺口待核查：','editable_block_ids','标题之下'))):
+            kept.append(issue);continue
+        ids=re.findall(r'(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]*-b\d+)(?![A-Za-z0-9_-])',issue)
+        if (not ids or any(bid not in blocks or blocks[bid].get('kind')!='document_info'
+                            or bid not in projected_ids[first_info:] for bid in ids)):
+            kept.append(issue);continue
+        retired.append(dict(issue=issue,block_ids=list(dict.fromkeys(ids)),
+            reason='unchanged_document_info_projected_into_collapsed_end_matter',
+            draft_digest=digest(canonical(job['draft']).encode())))
+    if retired:
+        job['quality_issues']=kept
+        job.setdefault('resolved_quality_issues',[]).extend(retired)
+    return retired
 
 
 def checkpoint_format_clearable(point, unit, report):
@@ -521,6 +1444,8 @@ def initialize(job):
     job['joint_review_contract_version']=1
     job['link_contract_version']=1
     role_names=('active_plan','active_write','active_review','active_format','active_revision','active_patch','active_protocol','active_visual','rewrite_scope')
+    if is_core_chain(job):
+        role_names+=('active_integrity',)
     policy={name:(Path(__file__).parent/'roles'/f'{name}.md').read_text(encoding='utf8') for name in role_names}
     job.update(pipeline=pipeline, stage='active_index', teaching_version=0,
                active_plans=[], active_partition_index=0, unit_index=0,
@@ -529,6 +1454,8 @@ def initialize(job):
                content_patch_default=1, content_patch_hard_limit=2,
                format_patch_hard_limit=2,
                role_policy=policy,role_policy_digest=digest(policy))
+    if is_core_chain(job):
+        job.pop('delivery_state',None)
     return job
 
 
@@ -536,6 +1463,18 @@ def normalize_visual_card_lists(value):
     """Repair a schema-only scalar list without another paid model call"""
     result=copy.deepcopy(value)
     for card in result.get('cards',[]) if isinstance(result,dict) else []:
+        # Vision models occasionally use this transparent synonym even though
+        # the requested contract names the field ``limitations``.  Moving the
+        # supplied strings preserves every statement while avoiding a second
+        # paid call for a schema-only label mismatch.
+        extra_limitations=card.pop('limitations_note',[])
+        if isinstance(extra_limitations,str):
+            extra_limitations=[extra_limitations] if extra_limitations.strip() else []
+        if isinstance(extra_limitations,list):
+            card['limitations']=list(dict.fromkeys([
+                *(card.get('limitations') or []),
+                *(item for item in extra_limitations if isinstance(item,str) and item.strip()),
+            ]))
         for key in ('relationships','uncertainty','limitations','blocking_uncertainty'):
             item=card.get(key)
             if item is None:card[key]=[]
@@ -551,6 +1490,53 @@ def link_guides(job, source_ids):
     selected=set(source_ids)
     return [brief for part in job.get('active_plans',[]) for brief in part.get('link_briefs',[])
             if brief['source_id'] in selected]
+
+
+def writer_reference_scope(source, source_ids, responsibilities):
+    """Project existing reference decisions and label-only list items for Writer."""
+    selected=set(source_ids)
+    objects=source['objects']
+    reference_links={obj['id'] for obj in objects if obj['id'] in selected
+        and obj['kind']=='link' and not responsibilities.get(obj['id'],{}).get('explain',True)}
+    parent_ids={obj.get('parent_id') for obj in objects if obj['id'] in reference_links}
+    related_headings={'see also','related resources','further reading','references',
+                      '另见','参见','相关资源','延伸阅读','参考资料'}
+    in_related_resources=False
+    label_ids=set()
+    for obj in objects:
+        if obj['kind']=='heading':
+            in_related_resources=obj.get('text','').strip().rstrip(':：').casefold() in related_headings
+            continue
+        if not in_related_resources or obj['id'] not in selected or obj['kind']!='text':
+            continue
+        raw=obj.get('raw','').strip()
+        item=re.fullmatch(r'<li\b[^>]*>(.*?)</li>',raw,flags=re.S|re.I)
+        if not item or re.search(r'</?(?:p|ul|ol|table|div)\b',item.group(1),re.I):
+            continue
+        if obj['id'] in parent_ids or re.fullmatch(
+                r'\s*\{\{\s*jsxref\([^{}]+\)\s*\}\}\s*',item.group(1),re.I):
+            label_ids.add(obj['id'])
+    return sorted(reference_links),sorted(label_ids)
+
+
+def writer_reference_payload(job, source, source_ids, obligations, *, core_rewrite):
+    """A Reference is display coverage, never permission to explain its target."""
+    if not core_rewrite:
+        return dict(obligations=prompt_obligations(obligations),
+                    link_guides=link_guides(job,source_ids),
+                    object_responsibilities={sid:job['object_responsibilities'][sid]
+                        for sid in source_ids} if is_core_chain(job) else {})
+    roles=job['object_responsibilities']
+    reference_links,label_ids=writer_reference_scope(source,source_ids,roles)
+    projected_roles={sid:copy.deepcopy(roles[sid]) for sid in source_ids}
+    for sid in label_ids:projected_roles[sid]['explain']=False
+    return dict(
+        obligations=prompt_obligations(obligations,
+            reference_link_ids=reference_links,reference_label_ids=label_ids),
+        link_guides=[brief for brief in link_guides(job,source_ids)
+                     if brief['source_id'] not in reference_links],
+        object_responsibilities=projected_roles,
+        reference_link_ids=reference_links,reference_label_ids=label_ids)
 
 
 def reviewed_link_guides(job, source_ids, obligations, review_ids):
@@ -575,25 +1561,114 @@ def discard_known_plan_protocol_extras(raw):
     """Normalize harmless plan-shape omissions in a copy, preserving raw output."""
     cleaned=copy.deepcopy(raw);removed=[]
     result=cleaned.get('result') if isinstance(cleaned,dict) else None
-    for concept in result.get('concepts',[]) if isinstance(result,dict) else []:
+    if (isinstance(result,dict) and isinstance(result.get('cross_batch_risks'),list)
+            and isinstance(result.get('nodes'),list) and result['nodes']
+            and isinstance(result['nodes'][-1],dict)):
+        risks=result.pop('cross_batch_risks')
+        target=result['nodes'][-1]
+        target['cross_batch_risks']=list(dict.fromkeys(
+            list(target.get('cross_batch_risks') or [])+risks))
+        removed.append('result.cross_batch_risks')
+    concepts=result.get('concepts',[]) if isinstance(result,dict) else []
+    for concept in concepts if isinstance(concepts,list) else []:
+        if not isinstance(concept,dict):continue
         if 'requires' not in concept:
             removed.append(concept.get('id',''))
             concept['requires']=[]
         if 'naming_status_effective' in concept and 'naming_status' in concept:
             removed.append(concept.get('id',''))
             concept.pop('naming_status_effective',None)
-    for node in result.get('nodes',[]) if isinstance(result,dict) else []:
+    nodes=result.get('nodes',[]) if isinstance(result,dict) else []
+    if not isinstance(nodes,list) or any(not isinstance(node,dict) for node in nodes):
+        # Keep the malformed response intact so the ordinary schema-correction
+        # turn can request a real plan. A string node is not a plan to repair.
+        return cleaned,list(dict.fromkeys(removed))
+    for index,node in enumerate(nodes):
+        if 'transition_from' not in node:
+            node['transition_from']=(
+                '本文起点，无前置段落' if index==0 else
+                '承接上一单元“'+str(nodes[index-1].get('title','前文'))+'”')
+            removed.append(node.get('id',''))
+        if 'prepares_for' not in node:
+            node['prepares_for']=(
+                '为下一单元“'+str(nodes[index+1].get('title','后文'))+'”准备必要背景'
+                if index+1<len(nodes) else '本文在此结束')
+            removed.append(node.get('id',''))
         if node.get('explanation_placeholder')=='':
             removed.append(node.get('id',''))
             node.pop('explanation_placeholder',None)
-    return cleaned,removed
+        explanation=node.get('explanation')
+        if isinstance(explanation,dict) and explanation.get('section_outline')==[]:
+            removed.append(node.get('id',''))
+            explanation.pop('section_outline',None)
+    return cleaned,list(dict.fromkeys(removed))
+
+
+def normalize_plan_clarify_expansion(raw, resources, prior_link_decisions=()):
+    """Fix only the observed depth/expansion enum mix-up in a validation copy."""
+    result=raw.get('result') if isinstance(raw,dict) else None
+    nodes=result.get('nodes') if isinstance(result,dict) else None
+    if not isinstance(nodes,list) or not any(isinstance(node,dict) and
+            node.get('expansion')=='clarify' for node in nodes):
+        return raw,[]
+    cleaned=copy.deepcopy(raw)
+    result=cleaned['result']
+    bindings={item.get('id'):item for item in (result.get('evidence_bindings') or [])
+              if isinstance(item,dict) and item.get('id')}
+    resolved_ids={binding_id for item in (result.get('evidence_resolutions') or [])
+                  if isinstance(item,dict) and item.get('status')=='resolved'
+                  for binding_id in item.get('binding_ids',[])}
+    responsibilities={item.get('source_id'):item for item in
+        (result.get('object_responsibilities') or []) if isinstance(item,dict)}
+    decisions={item.get('source_id'):item for item in prior_link_decisions
+               if isinstance(item,dict)}
+    decisions.update({item.get('source_id'):item for item in
+        (cleaned.get('link_decisions') or []) if isinstance(item,dict)})
+    briefs={item.get('source_id'):item for item in (result.get('link_briefs') or [])
+            if isinstance(item,dict)}
+
+    def saved_fact_evidence(item):
+        if not isinstance(item,dict):return False
+        rid=item.get('resource_id')
+        entry=resources.state['entries'].get(rid,{})
+        quote=item.get('quote','')
+        return bool(entry.get('kind')=='external' and
+            entry.get('scope') not in {'name_evidence_excerpt','name_only'} and
+            quote and exact_source_quote(quote,resources.text(rid)))
+
+    receipts=[]
+    for node in result['nodes']:
+        if not isinstance(node,dict) or node.get('expansion')!='clarify':continue
+        obligation_ids=set(node.get('obligation_ids',[]))
+        fact_ids=[bid for bid in resolved_ids if bid in bindings and
+                  bindings[bid].get('obligation_id') in obligation_ids and
+                  saved_fact_evidence(bindings[bid])]
+        for sid in node.get('source_ids',[]):
+            brief=briefs.get(sid,{})
+            if (decisions.get(sid,{}).get('role')!='semantic_dependency' or
+                    not responsibilities.get(sid,{}).get('explain') or
+                    brief.get('role')!='content'):
+                continue
+            fact_ids.extend(item.get('resource_id','') for item in (brief.get('evidence') or [])
+                            if saved_fact_evidence(item))
+        fact_ids=list(dict.fromkeys(fact_ids))
+        replacement='verified_clarification' if fact_ids else 'source_only'
+        node['expansion']=replacement
+        receipts.append(dict(node_id=node.get('id',''),field='expansion',
+            original='clarify',normalized=replacement,
+            reason=('resolved fact-scoped external evidence bound to node'
+                    if fact_ids else 'no fact-scoped external evidence bound to node'),
+            has_fact_scoped_external_evidence=bool(fact_ids),evidence_ids=fact_ids))
+    return cleaned,receipts
 
 
 def discard_known_review_protocol_extras(raw):
     """Remove an empty duplicate explanation field from a validation copy."""
     cleaned=copy.deepcopy(raw);removed=[]
     result=cleaned.get('result') if isinstance(cleaned,dict) else None
-    for decision in result.get('format_decisions',[]) if isinstance(result,dict) else []:
+    decisions=result.get('format_decisions',[]) if isinstance(result,dict) else []
+    for decision in decisions if isinstance(decisions,list) else []:
+        if not isinstance(decision,dict):continue
         if decision.get('reason_note')=='' and decision.get('reason','').strip():
             removed.append(decision.get('candidate_id',''))
             decision.pop('reason_note',None)
@@ -680,6 +1755,35 @@ def compiled_term_format_proposal(draft, issues):
     return dict(document_digest=result['document_digest'],edits=edits)
 
 
+def _separate_authored_paragraphs_from_lists(markdown):
+    """Add Markdown's paragraph/list separator without changing other structures."""
+    lines=markdown.splitlines(keepends=True)
+    list_item=re.compile(r'^ {0,3}(?:[-+*]|\d{1,9}[.)])\s+')
+    prior_list_item=re.compile(r'^\s*(?:[-+*]|\d{1,9}[.)])\s+')
+    heading=re.compile(r'^ {0,3}#{1,6}(?:\s|$)')
+    quote=re.compile(r'^\s*>')
+    table_markup=re.compile(r'^\s*</?(?:table|thead|tbody|tfoot|tr|td|th)\b',re.I)
+    thematic_break=re.compile(r'^\s*(?:-{3,}|\*{3,}|_{3,})\s*$')
+    result=[]
+    for line in lines:
+        if result and list_item.match(line):
+            previous=result[-1].rstrip('\r\n')
+            # Only repair an unambiguous prose-to-list boundary. Indented
+            # continuation lines, headings, quotes, tables, rules, and lists
+            # already have their own Markdown structure.
+            if (previous and not previous[:1].isspace()
+                    and not prior_list_item.match(previous)
+                    and not heading.match(previous)
+                    and not quote.match(previous)
+                    and not table_markup.match(previous)
+                    and not thematic_break.match(previous)
+                    and '|' not in previous):
+                separator='\r\n' if result[-1].endswith('\r\n') else '\n'
+                result.append(separator)
+        result.append(line)
+    return ''.join(result)
+
+
 def normalize_authored_spacing(draft,inventory):
     changed=copy.deepcopy(draft)
     literals=protected_objects(inventory)
@@ -688,7 +1792,8 @@ def normalize_authored_spacing(draft,inventory):
         if re.search(r'(?m)^\s*(?:```|~~~)',block['markdown']):continue
         stripped=block|{'markdown':block['markdown'].strip('\r\n')}
         proposal,_=tighten_list_spacing({'blocks':[stripped]})
-        text=re.sub(r'\n{3,}', '\n\n',proposal['blocks'][0]['markdown'])
+        text=_separate_authored_paragraphs_from_lists(proposal['blocks'][0]['markdown'])
+        text=re.sub(r'\n{3,}', '\n\n',text)
         if all(block['markdown'].count(v)==text.count(v) for v in literals.values() if v):
             block['markdown']=text
     changed['blocks']=[block for block in changed['blocks'] if not (
@@ -892,33 +1997,83 @@ def prompt_resource_catalog(entries):
     return [{k:v for k,v in entry.items() if k not in storage_only} for entry in entries]
 
 
+def prompt_active_plan_catalog(entries, assigned_ids, opened_resources):
+    """Keep image references for source and currently opened pages only.
+
+    Completed planning partitions archive external resource metadata for audit
+    and later reuse. Their page image lists are useful only when that page is
+    part of the current source group or has been opened in the current planning
+    session; replaying every historical list bloats each later request.
+    """
+    current=set(assigned_ids)
+    opened={address.get('id') for item in opened_resources
+            for address in item.get('addresses',[]) if address.get('id')}
+    result=prompt_resource_catalog(entries)
+    for entry in result:
+        if (entry.get('kind')=='external' and entry.get('id') not in current
+                and entry.get('id') not in opened):
+            entry.pop('image_refs',None)
+    return result
+
+
 def preceding_plan_context(plans):
     """Carry cross-partition identities without replaying completed plans."""
-    concept_keys={'id','name','chinese_name','english_name','abbreviations','requires'}
-    node_keys={'id','title','requires_concepts','establishes_concepts','depends_on','prepares_for'}
+    # The complete prior plans remain in the server-side validator.  The model
+    # only needs compact identities plus the latest transition context; replaying
+    # every abbreviation record and dependency chain eventually exceeds a
+    # relay's stable request size on otherwise moderate documents.
+    concept_keys={'id','name','chinese_name','english_name','requires'}
+    node_keys={'id','title','requires_concepts','establishes_concepts'}
     return [dict(
         concepts=[{k:v for k,v in concept.items() if k in concept_keys}
                   for concept in plan.get('concepts',[])],
         nodes=[{k:v for k,v in node.items() if k in node_keys}
-               for node in plan.get('nodes',[])],
+               for node in plan.get('nodes',[])[-2:]],
     ) for plan in plans]
 
 
-def writer_node_context(node):
+def writer_node_context(node, *, core_rewrite=False):
     """Keep writer decisions while removing repeated batch-planning prose."""
     result=copy.deepcopy(node)
     section_keys={'id','title','heading_level','purpose','source_ids','obligation_ids',
                   'requires_concepts','establishes_concepts','explanation'}
     result['section_outline']=[{k:v for k,v in section.items() if k in section_keys}
-                               for section in result.get('section_outline',[])]
+                               for section in (result.get('section_outline') or [])]
+    if core_rewrite:
+        for item in [result,*result['section_outline']]:
+            if isinstance(item.get('explanation'),dict):
+                item['explanation'].pop('reasoning_steps',None)
     for key in ('depends_on','cross_batch_risks'):
         if not result.get(key):result.pop(key,None)
     return result
 
 
-def prompt_obligations(obligations):
+def writer_concepts_for_payload(concepts, *, core_rewrite):
+    """Keep planned identities without authorizing their draft definitions."""
+    result=copy.deepcopy(concepts)
+    if core_rewrite:
+        for concept in result:
+            concept.pop('definition',None)
+    return result
+
+
+def writer_reasoning_coverage(node, *, core_rewrite):
+    return {} if core_rewrite else {
+        'reasoning_step_coverage':list(node.get('explanation',{}).get('reasoning_steps',[]))}
+
+
+def prompt_obligations(obligations, *, reference_link_ids=(), reference_label_ids=()):
     """Use opened source text once; keep every planned semantic obligation."""
-    return [{k:v for k,v in obligation.items() if k!='quote'} for obligation in obligations]
+    links=set(reference_link_ids);labels=set(reference_label_ids)
+    result=[]
+    for obligation in obligations:
+        projected={k:v for k,v in obligation.items() if k!='quote'}
+        if obligation['source_id'] in links:
+            projected['meaning']='Preserve this original reference label and URL in place; the link itself covers this obligation, without describing its destination.'
+        elif obligation['source_id'] in labels:
+            projected['meaning']='Present only this source-provided related-resource label and its original link where present; no term definition or target summary is authorized.'
+        result.append(projected)
+    return result
 
 
 def rebind_single_source_spans(value,source,assigned):
@@ -980,14 +2135,28 @@ def strip_editorial_link_limits(value):
     return result,removed
 
 
-def missing_catalogued_numeronyms(source, assigned, concepts):
-    """Catch evidence-backed names such as i18n before prose is written."""
+def missing_catalogued_numeronyms(source, assigned, concepts, responsibilities=None):
+    """Check names that the reader may see in authored rewrite prose."""
     from .terminology import CATALOG
     known={entry['abbr'].casefold() for entry in CATALOG if re.fullmatch(
         r'[A-Za-z][0-9]{1,2}[A-Za-z]',entry.get('abbr',''))}
     objects={obj['id']:obj for obj in source['objects']}
-    used={match.group().casefold() for sid in assigned if objects[sid]['kind'] in
-        {'text','heading','link'} for match in re.finditer(
+    def needs_name_plan(sid):
+        obj=objects[sid]
+        if obj['kind'] not in {'text','heading','link'}:
+            return False
+        if responsibilities is None:
+            return True
+        duty=responsibilities.get(sid)
+        if duty is None:
+            return True
+        if not duty['present'] and not duty['explain']:
+            return False
+        # A preserved reference label is not an authored explanation of its
+        # destination, even when the label itself is displayed.
+        return obj['kind']!='link' or duty['explain']
+    used={match.group().casefold() for sid in assigned if needs_name_plan(sid)
+        for match in re.finditer(
             r'(?<![A-Za-z0-9])[A-Za-z][0-9]{1,2}[A-Za-z](?![A-Za-z0-9])',
             objects[sid].get('text',''))}
     declared={a['short'].casefold() for concept in concepts for a in concept['abbreviations']}
@@ -1145,9 +2314,31 @@ def missing_concept_names(concepts, draft):
         names += [v for a in concept['abbreviations']
                   for v in (a['short'],a['chinese'],a['english'])]
         absent=[name for name in names if name.casefold() not in text]
-        if absent:missing.append(dict(concept_id=concept['id'],names=absent,
-                                       chinese_name=concept['chinese_name'],
-                                       source_ids=concept.get('source_ids',[])))
+        first_use_missing=False
+        if concept.get('requires_first_use_pair'):
+            chinese=concept.get('chinese_name','').strip()
+            authored=[block for block in draft.get('blocks',[])
+                      if block['kind'] not in {'source','object','document_info'}
+                      and not block.get('embedded_object_ids') and chinese in block['markdown']]
+            if not authored or authored[0]['markdown'].count(chinese)!=1:
+                first_use_missing=True
+            else:
+                markdown=authored[0]['markdown'];name_start=markdown.index(chinese)
+                name_end=name_start+len(chinese)
+                paren=re.match(r'\s*（([^（）()]*)）',markdown[name_end:])
+                inside=paren.group(1).strip() if paren else ''
+                english=concept.get('english_name','').strip()
+                before=markdown[:name_start]
+                shorts=[item.get('short','').strip() for item in concept.get('abbreviations',[])
+                        if item.get('short','').strip()]
+                abbreviation_prefix=(' '.join(shorts)+' ') if shorts else ''
+                has_prefix=(not abbreviation_prefix or before.casefold().endswith(abbreviation_prefix.casefold()))
+                first_use_missing=(not has_prefix or inside!=english)
+        if absent or first_use_missing:
+            reported=absent or [concept.get('first_use_display') or concept['english_name']]
+            missing.append(dict(concept_id=concept['id'],names=reported,
+                chinese_name=concept['chinese_name'],source_ids=concept.get('source_ids',[]),
+                first_use_missing=first_use_missing))
     return missing
 
 
@@ -1158,8 +2349,10 @@ def insert_verified_name_at_unique_first_use(draft, delta, concepts):
     for concept in concepts:
         chinese=concept.get('chinese_name','').strip()
         english=concept.get('english_name','').strip()
+        is_completion=bool(concept.get('requires_first_use_pair'))
         if (concept.get('naming_status')!='verified' or not chinese or not english or
-                english.casefold() in existing or not re.search(r'[\u3400-\u9fff]',chinese)):
+                (not is_completion and english.casefold() in existing) or
+                not re.search(r'[\u3400-\u9fff]',chinese)):
             continue
         matches=[block for block in draft['blocks']
                  if block['kind'] not in {'source','object','document_info'}
@@ -1168,16 +2361,46 @@ def insert_verified_name_at_unique_first_use(draft, delta, concepts):
         if not matches:continue
         block=matches[0]
         if block['markdown'].count(chinese)!=1:continue
-        offset=block['markdown'].index(chinese)+len(chinese)
-        if block['markdown'][offset:offset+1]=='（':continue
-        replacement=chinese+'（'+english+'）'
-        block['markdown']=block['markdown'].replace(chinese,replacement,1)
+        name_start=block['markdown'].index(chinese)
+        name_end=name_start+len(chinese)
+        if is_completion:
+            abbreviations=[item.get('short','').strip() for item in concept.get('abbreviations',[])
+                           if item.get('short','').strip()]
+            markdown=block['markdown']
+            paren=re.match(r'\s*[（(]([^（）()]*)[）)]',markdown[name_end:])
+            if paren and paren.group(1).strip()!=english:continue
+            if re.match(r'\s*[（(]',markdown[name_end:]) and not paren:continue
+            abbreviation_prefix=(' '.join(abbreviations)+' ') if abbreviations else ''
+            before=markdown[:name_start]
+            has_prefix=bool(abbreviation_prefix and
+                before.casefold().endswith(abbreviation_prefix.casefold()))
+            existing_prefix=before[-len(abbreviation_prefix):] if has_prefix else ''
+            if (has_prefix and paren and paren.group(1).strip()==english
+                    and paren.group(0).strip().startswith('（')):
+                continue
+            previous=markdown[name_start-1] if name_start else ''
+            tight_openers='([{（［｛<〈《「『【“‘*_`'
+            inserted_prefix=(' ' if previous and not previous.isspace() and previous not in tight_openers else '')+abbreviation_prefix
+            if paren:
+                old_suffix=paren.group(0)
+            else:
+                old_suffix=''
+            start=name_start-len(existing_prefix)
+            end=name_end+len(old_suffix)
+            old=markdown[start:end]
+            replacement=(existing_prefix or inserted_prefix)+chinese+'（'+english+'）'
+            block['markdown']=markdown[:start]+replacement+markdown[end:]
+        else:
+            if block['markdown'][name_end:name_end+1]=='（':continue
+            replacement=chinese+'（'+english+'）'
+            old=chinese
+            block['markdown']=block['markdown'].replace(old,replacement,1)
         for evidence in delta.get('concept_evidence',[]):
-            if (evidence['block_id']==block['id'] and chinese in evidence['output_quote']
-                    and english not in evidence['output_quote']):
-                evidence['output_quote']=evidence['output_quote'].replace(chinese,replacement,1)
+            if (evidence['block_id']==block['id'] and old in evidence['output_quote']):
+                evidence['output_quote']=evidence['output_quote'].replace(old,replacement,1)
         receipts.append(dict(concept_id=concept['id'],block_id=block['id'],
-                             operation='insert_verified_english_name_at_unique_first_use'))
+            operation=('complete_verified_name_and_abbreviations_at_unique_first_use'
+                       if is_completion else 'insert_verified_english_name_at_unique_first_use')))
         existing=canonical(draft).casefold()
     return receipts
 
@@ -1236,21 +2459,46 @@ def retire_refuted_formal_concepts(job,candidate):
 
 def normalize_local_proposal(proposal,draft,literals):
     """Keep an otherwise useful repair when a model includes an invalid edit."""
-    blocks={b['id']:b['markdown'] for b in draft['blocks']}
+    literals=tuple(literals or ())
+    blocks={b['id']:b for b in draft['blocks']}
     normalized=[];rejected=[]
     for edit in proposal['edits']:
         old,new=edit['old_text'],edit['new_text']
         if old==new:
             rejected.append(dict(block_id=edit['block_id'],reason='no_change'))
             continue
+        if not old:
+            rejected.append(dict(block_id=edit['block_id'],reason='empty_patch_target'))
+            continue
+        block=blocks.get(edit['block_id'],{})
+        before=block.get('markdown','')
         if any(literal and literal in old and literal not in new for literal in literals):
             rejected.append(dict(block_id=edit['block_id'],reason='protected_original_changed'))
+            continue
+        spans=_protected_literal_spans(before,literals)
+        start=0;overlaps=False
+        while old:
+            start=before.find(old,start)
+            if start<0:break
+            end=start+len(old)
+            if any(start<literal_end and end>literal_start
+                   for literal_start,literal_end in spans):
+                overlaps=True
+                break
+            start+=1
+        if overlaps:
+            rejected.append(dict(block_id=edit['block_id'],reason='protected_literal_overlap'))
+            continue
+        if (block.get('kind')=='object'
+                and _has_authored_object_text(block,literals)
+                and (_HYBRID_OBJECT_MARKUP.search(old)
+                     or _HYBRID_OBJECT_MARKUP.search(new))):
+            rejected.append(dict(block_id=edit['block_id'],reason='protected_object_markup_edit'))
             continue
         inline_code=re.findall(r'(?<!`)`[^`\n]+`(?!`)',old)
         if any(new.count(code)<old.count(code) for code in set(inline_code)):
             rejected.append(dict(block_id=edit['block_id'],reason='authored_inline_code_removed'))
             continue
-        before=blocks.get(edit['block_id'],'')
         if '\n' not in old or before.count(old)!=1:
             normalized.append(edit);continue
         lines=[line for line in old.split('\n') if line]
@@ -1339,12 +2587,53 @@ def apply_heading_repairs(result,expected,repairs):
 
 def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=6500,
                   require_spans=False,resources=None,require_link_briefs=False,archived_ids=(),
-                  concept_limit=7):
+                  concept_limit=7,require_object_responsibilities=False,
+                  classified_link_decisions=None,default_reference_links=False):
     from .production import bind_evidence_layout
     value=bind_evidence_layout(value,source)
+    # Some structured-output relays append nullable ``*_dummy`` placeholders
+    # while satisfying a large nested schema.  A null placeholder carries no
+    # user or source content, so remove only that exact transport artifact
+    # before strict validation; every non-null or normally named field remains
+    # subject to the schema and correction workflow.
+    def strip_null_dummy_fields(item):
+        if isinstance(item,dict):
+            return {key:strip_null_dummy_fields(child) for key,child in item.items()
+                    if not (key.endswith('_dummy') and child is None)}
+        if isinstance(item,list):return [strip_null_dummy_fields(child) for child in item]
+        return item
+    value=strip_null_dummy_fields(value)
     plan = A.CompositionPlan.model_validate(value).model_dump()
     objects = {o['id']: o for o in source['objects']}
     assigned = set(assigned)
+    if default_reference_links:
+        for responsibility in plan['object_responsibilities']:
+            if (responsibility['source_id'] in assigned and
+                    objects[responsibility['source_id']]['kind']=='link'):
+                responsibility['explain']=False
+    if require_object_responsibilities:
+        decisions=plan['object_responsibilities']
+        if len(decisions)!=len(assigned) or {item['source_id'] for item in decisions}!=assigned:
+            raise ValueError('每个当前原对象必须有一次独立的正文展示与解释判断')
+    reference_link_ids={item['source_id'] for item in plan.get('object_responsibilities',[])
+        if item['source_id'] in assigned and not item['explain']
+        and objects[item['source_id']]['kind']=='link'} if require_object_responsibilities else set()
+    if default_reference_links:
+        reference_link_ids.update(sid for sid in assigned if objects[sid]['kind']=='link')
+        plan,_=prune_reference_link_evidence(plan,reference_link_ids)
+    if classified_link_decisions is not None:
+        responsibilities={item['source_id']:item for item in plan['object_responsibilities']}
+        gaps=plan['evidence_gaps']
+        for sid,decision in classified_link_decisions.items():
+            if sid not in assigned:continue
+            expected=decision['role']=='semantic_dependency'
+            if responsibilities[sid]['explain']!=expected:
+                raise ValueError('最终链接职责与取材前的分类不一致：'+sid)
+        for sid in assigned:
+            obj=objects[sid]
+            if obj['kind']!='link' or not responsibilities[sid]['explain']:continue
+            if not any(gap['source_id']==sid and gap['missing'].strip() for gap in gaps):
+                raise ValueError('语义依赖链接必须声明当前原文缺失的具体意义：'+sid)
     archived=set(archived_ids)-assigned
     if archived:
         from .visual_sources import decorative_resource
@@ -1369,7 +2658,9 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
             concept['source_ids']=[sid for sid in concept['source_ids'] if sid not in archived]
     merge_adjacent_heading_only_nodes(plan,objects)
     from urllib.parse import unquote,urlsplit
-    current_page=urlsplit(source.get('source_url',''))
+    # Uploaded PDF/DOCX/Markdown sources store source_url=None. urlsplit(None)
+    # returns byte fields, which cannot be compared with parsed text links.
+    current_page=urlsplit(source.get('source_url') or '')
     # Article bylines often expose the same author profile twice: an empty
     # avatar anchor and a labelled author-name anchor.  A profile URL in this
     # exact duplicate shape is source metadata, not a knowledge link whose
@@ -1398,6 +2689,7 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
             and '/figure[' in obj.get('locator','')
             and bool(re.search(r'\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)',decoded_target)))
         path=target.path.rstrip('/').rsplit('/',1)[-1].lower()
+        path_stem=path.rsplit('.',1)[0]
         label=obj.get('text','').strip().lower()
         same_page_anchor=(target.hostname==current_page.hostname and
             target.path.rstrip('/')==current_page.path.rstrip('/') and bool(target.fragment))
@@ -1415,14 +2707,23 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
             and any(word in label for word in ('home','index','tips','目录','主页'))):
             brief.update(role='navigation',topic='',connection='',destination='',
                          limitation='',evidence=[],unavailable_reason='')
-        if ((path in {'donate','donation','contribute','contributing','contact','privacy','terms','license'}
-             or path.startswith('donat')) and
-            any(word in label for word in ('donat','contribut','contact','privacy','terms','license'))):
+        if ((path_stem in {'donate','donation','contribute','contributing','contact','privacy','terms','license'}
+             or path_stem.startswith('donat') or target.fragment.lower() in {'feedback','contact'}) and
+            any(word in label for word in ('donat','contribut','contact','privacy','terms','license',
+                                            'feedback','report an error','report error'))):
             brief.update(role='administrative',topic='',connection='',destination='',
                          limitation='',evidence=[],unavailable_reason='')
         if 'site-comments' in target.path and any(word in label for word in ('comment','feedback','意见')):
             brief.update(role='administrative',topic='',connection='',destination='',
                          limitation='',evidence=[],unavailable_reason='')
+        if (brief['source_id'] in reference_link_ids and
+                brief['role'] in {'content','navigation'} and
+                obj.get('source_scope') not in {'site_chrome','source_metadata'} and
+                not same_page_anchor):
+            brief.update(role='content',topic=obj.get('text','').strip() or obj.get('target',''),
+                         connection='原文提供这一参考入口，保留链接文字与地址',
+                         destination='',limitation='',evidence=[],unavailable_reason='')
+            continue
         if (brief['role']=='navigation' and obj.get('source_scope') not in
                 {'site_chrome','source_metadata'} and not same_page_anchor and not (
                 target.hostname==current_page.hostname and
@@ -1430,6 +2731,20 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
                 any(word in label for word in ('home','index','tips','目录','主页')))):
             resource_id=(resources.state.get('url_index',{}).get(
                 canonical_url(obj.get('target',''))) if resources else None)
+            unavailable=next((item for item in reversed(resources.state.get('reads',[]))
+                if item.get('status')=='unavailable' and
+                canonical_url(item.get('url',''))==canonical_url(obj.get('target',''))),None) if resources else None
+            # Repair a mistaken navigation classification by reading the actual
+            # destination once.  This is a bounded, evidence-producing fallback
+            # and avoids either aborting the document or inventing an explanation
+            # from the anchor label alone.
+            if resources and not resource_id and not unavailable and obj.get('target'):
+                resources.execute({'kind':'page','url':obj['target']})
+                resource_id=resources.state.get('url_index',{}).get(
+                    canonical_url(obj['target']))
+                unavailable=next((item for item in reversed(resources.state.get('reads',[]))
+                    if item.get('status')=='unavailable' and
+                    canonical_url(item.get('url',''))==canonical_url(obj.get('target',''))),None)
             entry=resources.state.get('entries',{}).get(resource_id,{}) if resource_id else {}
             if entry.get('kind')=='external':
                 evidence=resources.text(resource_id).strip()
@@ -1441,16 +2756,13 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
                         destination='；'.join(lines[:3])[:500],limitation=brief.get('limitation',''),
                         evidence=[dict(resource_id=resource_id,quote=quote)],unavailable_reason='')
                     continue
-            unavailable=next((item for item in reversed(resources.state.get('reads',[]))
-                if item.get('status')=='unavailable' and
-                canonical_url(item.get('url',''))==canonical_url(obj.get('target',''))),None) if resources else None
             if unavailable:
                 brief.update(role='content',topic=obj.get('text','').strip() or obj.get('target',''),
                     connection='原文在当前位置提供该内容链接，链接文字与地址均需保留',
                     destination='',limitation='',evidence=[],
                     unavailable_reason=unavailable.get('reason','目标页未取得'))
                 continue
-            raise ValueError('正文知识链接不能仅按导航链接跳过目标内容：'+brief['source_id'])
+            raise ValueError('正文知识链接自动读取后仍缺少可核对结果：'+brief['source_id'])
     obligations = {o['id']: o for o in plan['obligations']}
     validate_evidence_plan(plan, obligations, objects, assigned, resources)
     spans={s['id']:s for s in source_spans(source,assigned)}
@@ -1480,6 +2792,30 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
     if require_link_briefs:
         link_ids={sid for sid in assigned if objects[sid]['kind']=='link'}
         briefs=plan['link_briefs']
+        # Do not make a model citation slip fatal to the whole document.  For
+        # each content link, fetch its literal destination once when necessary,
+        # then bind the brief to bytes from that exact page.  The later semantic
+        # reviewer still checks the destination explanation itself.
+        if resources:
+            for brief in briefs:
+                if (brief.get('role')!='content' or
+                        brief.get('source_id') in reference_link_ids):continue
+                obj=objects.get(brief.get('source_id'),{})
+                target=obj.get('target','')
+                if not target:continue
+                valid=bool(brief.get('evidence')) and all(
+                    (entry:=resources.state['entries'].get(item.get('resource_id')))
+                    and entry.get('kind')=='external'
+                    and (entry.get('parent_page_url') or entry.get('original_url'))==target
+                    and exact_source_quote(item.get('quote',''),resources.text(item['resource_id']))
+                    for item in brief['evidence'])
+                prior_failure=any(row.get('kind')=='page' and row.get('url')==target
+                                  and row.get('status')=='unavailable'
+                                  for row in resources.state.get('reads',[]))
+                if not valid and not prior_failure:
+                    resources.execute({'kind':'page','url':target})
+            bind_prefetched_link_evidence(plan,source,resources,[{'source_id':sid} for sid in link_ids])
+            briefs=plan['link_briefs']
         # Site navigation, footer links and author metadata have a verifiable
         # DOM role. Keep them in the source inventory, but do not spend a model
         # turn asking for invented destination explanations.
@@ -1487,25 +2823,106 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
         for sid in sorted(link_ids-planned_ids):
             item=objects[sid];scope=item.get('source_scope');target=item.get('target','')
             parsed=urlsplit(target);path=parsed.path.casefold()
+            path_stem=path.rstrip('/').rsplit('/',1)[-1].rsplit('.',1)[0]
             image_wrapper=(not item.get('text','').strip() and
                 (parsed.hostname or '').casefold().endswith('substackcdn.com') or (not item.get('text','').strip() and
                  path.endswith(('.png','.jpg','.jpeg','.gif','.webp','.svg'))))
             duplicate_empty=(not item.get('text','').strip() and any(
                 objects[other].get('target')==target and objects[other].get('text','').strip()
                 for other in link_ids if other!=sid))
-            if scope in {'site_chrome','source_metadata'} or image_wrapper or duplicate_empty:
+            administrative_link=(path_stem in {'donate','donation','contribute','contributing',
+                'contact','privacy','terms','license'} or parsed.fragment.casefold() in {'feedback','contact'})
+            if scope in {'site_chrome','source_metadata'} or image_wrapper or duplicate_empty or administrative_link:
                 briefs.append(dict(source_id=sid,
-                    role='administrative' if scope=='source_metadata' or image_wrapper else 'navigation',
+                    role='administrative' if scope=='source_metadata' or image_wrapper or administrative_link else 'navigation',
                     topic='',connection='',destination='',limitation='',evidence=[],
                     unavailable_reason=''))
+                continue
+            same_page=(parsed.hostname==current_page.hostname and
+                parsed.path.rstrip('/')==current_page.path.rstrip('/') and bool(parsed.fragment))
+            if same_page or not target:
+                briefs.append(dict(source_id=sid,role='navigation',topic='',connection='',
+                    destination='',limitation='',evidence=[],unavailable_reason=''))
+                continue
+            if sid in reference_link_ids:
+                briefs.append(dict(source_id=sid,role='content',
+                    topic=item.get('text','').strip() or target,
+                    connection='原文提供这一参考入口，保留链接文字与地址',
+                    destination='',limitation='',evidence=[],unavailable_reason=''))
+                continue
+            if resources and parsed.scheme in {'http','https'}:
+                resource_id=resources.state.get('url_index',{}).get(canonical_url(target))
+                failure=next((row for row in reversed(resources.state.get('reads',[]))
+                    if row.get('kind')=='page' and row.get('url')==target
+                    and row.get('status')=='unavailable'),None)
+                if not resource_id and not failure:
+                    resources.execute({'kind':'page','url':target})
+                    resource_id=resources.state.get('url_index',{}).get(canonical_url(target))
+                    failure=next((row for row in reversed(resources.state.get('reads',[]))
+                        if row.get('kind')=='page' and row.get('url')==target
+                        and row.get('status')=='unavailable'),None)
+                entry=resources.state.get('entries',{}).get(resource_id,{}) if resource_id else {}
+                text=resources.text(resource_id).strip() if entry.get('kind')=='external' else ''
+                if text:
+                    quote=text[:min(700,len(text))]
+                    lines=[line.strip() for line in quote.splitlines() if line.strip()]
+                    briefs.append(dict(source_id=sid,role='content',
+                        topic=item.get('text','').strip() or lines[0],
+                        connection='原文在当前位置提供该链接，用于补充当前表述所依据的目标内容',
+                        destination='；'.join(lines[:3])[:500],limitation='',
+                        evidence=[dict(resource_id=resource_id,quote=quote)],unavailable_reason=''))
+                    continue
+                if failure:
+                    briefs.append(dict(source_id=sid,role='content',
+                        topic=item.get('text','').strip() or target,
+                        connection='原文在当前位置提供该内容链接，链接文字与地址均需保留',
+                        destination='',limitation='',evidence=[],
+                        unavailable_reason=failure.get('reason','目标页未取得')))
         unique([item['source_id'] for item in briefs], '链接解释责任')
         if {item['source_id'] for item in briefs}!=link_ids:
             raise ValueError('每个原文链接都需要明确内容或导航职责')
         for brief in briefs:
             if brief['role']!='content':continue
+            if brief['source_id'] in reference_link_ids:continue
+            obj=objects[brief['source_id']]
+            target=obj.get('target','')
+            if (not brief.get('evidence') and not brief.get('unavailable_reason')
+                    and resources and target):
+                resource_id=resources.state.get('url_index',{}).get(canonical_url(target))
+                failure=next((row for row in reversed(resources.state.get('reads',[]))
+                    if row.get('kind')=='page' and row.get('url')==target
+                    and row.get('status')=='unavailable'),None)
+                if not resource_id and not failure:
+                    resources.execute({'kind':'page','url':target})
+                    resource_id=resources.state.get('url_index',{}).get(canonical_url(target))
+                    failure=next((row for row in reversed(resources.state.get('reads',[]))
+                        if row.get('kind')=='page' and row.get('url')==target
+                        and row.get('status')=='unavailable'),None)
+                entry=resources.state.get('entries',{}).get(resource_id,{}) if resource_id else {}
+                text=resources.text(resource_id).strip() if entry.get('kind')=='external' else ''
+                if text:
+                    quote=text[:min(700,len(text))]
+                    brief['evidence']=[dict(resource_id=resource_id,quote=quote)]
+                    if not brief.get('destination','').strip():
+                        brief['destination']='；'.join(
+                            line.strip() for line in quote.splitlines() if line.strip())[:500]
+                elif failure:
+                    brief['unavailable_reason']=failure.get('reason','目标页未取得')
+            if not brief['topic'].strip():
+                brief['topic']=obj.get('text','').strip() or obj.get('target','')
+            if not brief['connection'].strip():
+                brief['connection']='原文在当前位置提供该内容链接，链接文字与地址均需保留'
+            if not brief['destination'].strip() and brief.get('evidence') and resources:
+                excerpts=[]
+                for item in brief['evidence']:
+                    entry=resources.state.get('entries',{}).get(item.get('resource_id'),{})
+                    if entry.get('kind')=='external' and exact_source_quote(
+                            item.get('quote',''),resources.text(item['resource_id'])):
+                        excerpts.extend(line.strip() for line in item['quote'].splitlines()
+                                        if line.strip())
+                if excerpts:brief['destination']='；'.join(excerpts[:3])[:500]
             if not all(brief[k].strip() for k in ('topic','connection')):
                 raise ValueError('内容链接缺少主题、当前位置关联或目标内容：'+brief['source_id'])
-            target=objects[brief['source_id']].get('target','')
             if brief['unavailable_reason']:
                 failures=[r for r in resources.state['reads']
                           if r.get('kind')=='page' and r.get('url')==target
@@ -1535,18 +2952,31 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
                     for item in brief['evidence']):
                     raise ValueError('目标页主要内容在图片中，规划前须读取图片：'+brief['source_id'])
     nodes = plan['nodes']
-    claimed=set();dropped={};kept=[]
+    claimed=set();obligation_owners={};dropped={};kept=[]
     for node in nodes:
         unique_obligations=[fid for fid in node['obligation_ids'] if fid not in claimed]
         if unique_obligations!=node['obligation_ids']:
             if not unique_obligations and node['establishes_concepts']:
-                raise ValueError('重复义务节点仍承担新概念，不能自动删除：'+node['id'])
+                # A planner may add a summary node for obligations that were
+                # already assigned while placing a new concept on that empty
+                # summary.  Preserve the concept by moving it to the existing
+                # owner of the same source obligation, then remove only the
+                # redundant structural node.
+                owner=next((obligation_owners.get(fid) for fid in node['obligation_ids']
+                            if obligation_owners.get(fid)),None)
+                if owner:
+                    owner['requires_concepts']=list(dict.fromkeys(
+                        owner['requires_concepts']+node['requires_concepts']))
+                    owner['establishes_concepts']=list(dict.fromkeys(
+                        owner['establishes_concepts']+node['establishes_concepts']))
+                    node['establishes_concepts']=[]
             node['obligation_ids']=unique_obligations
             node['source_ids']=list(dict.fromkeys(obligations[fid]['source_id'] for fid in unique_obligations))
         if not node['obligation_ids']:
             dropped[node['id']]=list(node['depends_on'])
             continue
         claimed.update(node['obligation_ids']);kept.append(node)
+        obligation_owners.update({fid:node for fid in node['obligation_ids']})
     if dropped:
         def live_dependencies(items):
             result=[];pending=list(items);visited=set()
@@ -1597,8 +3027,10 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
             raise ValueError('节点引用了未分配的来源或义务')
         if {obligations[f]['source_id'] for f in node['obligation_ids']} != set(node['source_ids']):
             raise ValueError('节点原对象与义务来源不一致')
-        if all(objects[s]['kind']=='heading' for s in node['source_ids']):
-            raise ValueError('单独标题不能消耗一个写作单元，应与实际正文一起安排')
+        # A source partition may end immediately after its heading. Keep that
+        # source obligation here; writing_batches joins it to the next part's
+        # content before any writer call instead of asking the planner to
+        # invent body text inside the wrong partition.
         # A planning title is an internal routing label.  The writer still
         # receives the full Chinese writing policy, so an English-only label
         # must not prevent an otherwise complete source plan from running.
@@ -1634,7 +3066,10 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
         raise ValueError('存在没有分配到正文的义务或原对象')
     if set(concepts) != established:
         raise ValueError('存在未安排首次解释的概念')
-    missing_numeronyms=missing_catalogued_numeronyms(source,assigned,plan['concepts'])
+    name_responsibilities=({item['source_id']:item for item in plan['object_responsibilities']}
+        if mode=='rewrite' and require_object_responsibilities else None)
+    missing_numeronyms=missing_catalogued_numeronyms(
+        source,assigned,plan['concepts'],name_responsibilities)
     if missing_numeronyms:
         raise ValueError('原文名称内部的缩写缺少已查证全称规划：'+', '.join(missing_numeronyms))
     if mode == 'rewrite' and plan['contract']['depth'] == 'progressive':
@@ -1644,8 +3079,28 @@ def validate_plan(value, source, assigned, prior=(), mode='rewrite', node_limit=
     return plan
 
 
-def writing_batches(plans, source, limit=6500, concept_limit=10, object_limit=20):
+def writing_batches(plans, source, limit=6500, concept_limit=10, object_limit=20,
+                    present_source_ids=None):
     """Keep the section plan while scheduling adjacent sections in bounded calls."""
+    objects={obj['id']:obj for obj in source['objects']}
+    sections=copy.deepcopy([n for p in plans for n in p['nodes']])
+    if present_source_ids is not None:
+        present=set(present_source_ids)
+        fact_source={f['id']:f['source_id'] for p in plans for f in p['obligations']}
+        for node in sections:
+            node['source_ids']=[sid for sid in node['source_ids'] if sid in present]
+            node['obligation_ids']=[fid for fid in node['obligation_ids']
+                                    if fact_source[fid] in present]
+        sections=[node for node in sections if node['source_ids'] and node['obligation_ids']]
+        if not sections:
+            raise ValueError('改写计划没有保留可呈现的正文信息')
+    merge_adjacent_heading_only_nodes({'nodes':sections},objects)
+    if len(sections)>1 and sections[-1]['source_ids'] and all(
+            objects[sid]['kind']=='heading' for sid in sections[-1]['source_ids']):
+        trailing=sections.pop();previous=sections[-1]
+        for key in ('source_ids','obligation_ids','establishes_concepts','requires_concepts'):
+            previous[key]=list(dict.fromkeys(previous[key]+trailing[key]))
+        previous['prepares_for']=trailing['prepares_for']
     spans={s['id']:s for s in source_spans(source,[o['id'] for o in source['objects']])}
     facts={f['id']:f for p in plans for f in p['obligations']}
     batches=[];current=[];used=set();size=0
@@ -1659,7 +3114,7 @@ def writing_batches(plans, source, limit=6500, concept_limit=10, object_limit=20
         node['depends_on']=[batches[-1]['id']] if batches else []
         node['prepares_for']=current[-1]['prepares_for']
         batches.append(node)
-    for node in [n for p in plans for n in p['nodes']]:
+    for node in sections:
         selected={s for fid in node['obligation_ids'] for s in facts[fid].get('source_span_ids',[])}
         extra=sum(spans[s]['end']-spans[s]['start'] for s in selected-used)
         if not selected:extra=sum(len(facts[f]['quote']) for f in node['obligation_ids'])
@@ -1674,9 +3129,14 @@ def writing_batches(plans, source, limit=6500, concept_limit=10, object_limit=20
     return batches
 
 
-def legacy_artifacts(plans, source, execution_nodes=None):
+def legacy_artifacts(plans, source, execution_nodes=None, responsibilities=None):
     facts = [f for part in plans for f in part['obligations']]
+    if responsibilities is not None:
+        present={sid for sid,role in responsibilities.items() if role['present']}
+        facts=[f for f in facts if f['source_id'] in present]
     inv = copy.deepcopy(source)
+    if responsibilities is not None:
+        inv['object_responsibilities']=copy.deepcopy(responsibilities)
     inv['obligations'] = [dict(id=f['id'], object_id=f['source_id'], statement=f['meaning'],
                               conditions=f['conditions'], quantities=f['quantities'],
                               negations=f['negations'], status='unreviewed') for f in facts]
@@ -1684,9 +3144,10 @@ def legacy_artifacts(plans, source, execution_nodes=None):
     inv['inventory_review'] = None
     inv = freeze(inv)
     nodes = execution_nodes or [n for p in plans for n in p['nodes']]
+    visible_facts={fact['id'] for fact in facts}
     plan = Plan.model_validate(dict(title=nodes[0]['title'], objective=plans[0]['contract']['purpose'],
         research_gaps=[], units=[dict(id=n['id'], title=n['title'], objective=n['purpose'],
-            obligation_ids=n['obligation_ids'], prerequisites=n['requires_concepts'],
+            obligation_ids=[fid for fid in n['obligation_ids'] if fid in visible_facts], prerequisites=n['requires_concepts'],
             stages=n['explanation']['reasoning_steps'] or [n['purpose']], object_ids=n['source_ids'],
             proof_questions=[], follows_units=n['depends_on'], bridge_reason=n['transition_from'],
             entry_knowledge=[n['explanation']['known_start']], reader_question=n['explanation']['obstacle'])
@@ -1694,16 +3155,245 @@ def legacy_artifacts(plans, source, execution_nodes=None):
     return inv, plan
 
 
-def validate_written(value, node, inventory, bundle, prior, source_obligations=(),concepts=()):
+def planned_object_responsibilities(plans, source):
+    """Freeze one preservation, presentation and explanation decision per source object."""
+    roles={obj['id']:dict(preserve=True,present=False,explain=False)
+           for obj in source['objects']}
+    for part in plans:
+        for item in part.get('object_responsibilities',[]):
+            roles[item['source_id']].update(present=item['present'],explain=item['explain'])
+    for obj in source['objects']:
+        if obj.get('source_scope') in {'site_chrome','source_metadata','layout_decorative'}:
+            roles[obj['id']].update(present=False,explain=False)
+    return roles
+
+
+def integrity_result(job, findings, *, reviewed_source_ids=(), reviewed_block_ids=(),
+                     review_attempted=True):
+    """One article-level verdict; a missing review is unknown, never passed."""
+    rows=copy.deepcopy(findings)
+    expected_sources={sid for group in job.get('active_groups',[]) for sid in group}
+    expected_blocks={block['id'] for block in job['draft']['blocks']}
+    if (not review_attempted or not expected_sources<=set(reviewed_source_ids)
+            or not expected_blocks<=set(reviewed_block_ids)):
+        rows.append(dict(invariant='I4',verdict='UNKNOWN',block_id='',source_id='',
+                         output_quote='',source_quote='',problem='整稿与原件的语义核对范围尚未完整确认',
+                         required_change=''))
+        rows.append(dict(invariant='I3',verdict='UNKNOWN',block_id='',source_id='',
+                         output_quote='',source_quote='',problem='新增事实的来源核对范围尚未完整确认',
+                         required_change=''))
+    checks={}
+    for invariant in ('I1','I2','I3','I4','I5'):
+        related=[row for row in rows if row['invariant']==invariant]
+        verdict=('FAIL' if any(row['verdict']=='FAIL' for row in related) else
+                 'UNKNOWN' if related else 'PASS')
+        checks[invariant]=verdict
+    overall=('FAIL' if 'FAIL' in checks.values() else
+             'UNKNOWN' if 'UNKNOWN' in checks.values() else 'PASS')
+    return dict(verdict=overall,invariants=checks,findings=rows,
+                draft_digest=digest(canonical(job['draft']).encode()),
+                source_digest=job['source_digest'],review_scope='whole_candidate',
+                reviewed_source_ids=list(reviewed_source_ids),
+                reviewed_block_ids=list(reviewed_block_ids))
+
+
+def integrity_allowed_evidence(job,store):
+    """Only fact-scoped saved evidence can support an added article claim."""
+    saved=job.get('external_resources',{})
+    allowed=[]
+    def include(item,scope):
+        rid=item.get('resource_id','')
+        quote=item.get('quote','')
+        entry=saved.get(rid,{})
+        if not entry or not entry.get('blob') or not quote:
+            return
+        try:
+            saved_text=store.read_blob(entry['blob']).decode()
+        except (OSError,UnicodeError):
+            return
+        if quote not in saved_text:return
+        row=dict(id=item.get('id') or scope+'-'+digest([rid,quote])[:16],
+                 resource_id=rid,quote=quote,scope=scope)
+        if row not in allowed:allowed.append(row)
+    for part in job.get('active_plans',[]):
+        for binding in part.get('evidence_bindings',[]):
+            include(binding,'verified_fact')
+        for brief in part.get('link_briefs',[]):
+            if not job.get('object_responsibilities',{}).get(brief['source_id'],{}).get('explain'):
+                continue
+            for evidence in brief.get('evidence',[]):include(evidence,'semantic_dependency')
+        for concept in part.get('concepts',[]):
+            for evidence in concept.get('name_evidence',[]):include(evidence,'name_only')
+    return allowed
+
+
+def validate_integrity_review(value, draft, source, allowed_evidence, *,
+                              whole_candidate=True, protected_literals=()):
+    """Validate the one review's explicit I3 provenance receipt and findings."""
+    review=A.IntegrityReview.model_validate(value).model_dump()
+    blocks={block['id']:block['markdown'] for block in draft['blocks']}
+    sources={obj['id']:obj.get('text','') for obj in source['objects']}
+    if whole_candidate:
+        expected=patchable_block_ids(draft,protected_literals)
+        assessments=review['i3_block_assessments']
+        assessed=[item['block_id'] for item in assessments]
+        if len(assessed)!=len(set(assessed)) or set(assessed)!=expected:
+            raise ValueError('I3 正文块来源核对回执必须恰好覆盖全部作者正文块')
+        claims_by_block={bid:[] for bid in expected}
+        for claim in review['added_fact_claims']:
+            if claim['block_id'] not in claims_by_block:
+                raise ValueError('I3 新增事实必须属于已核对的作者正文块')
+            claims_by_block[claim['block_id']].append(claim)
+        for item in assessments:
+            has_claim=bool(claims_by_block[item['block_id']])
+            if (item['status']=='ADDED_FACTS_PRESENT')!=has_claim:
+                raise ValueError('I3 正文块新增事实声明与实际 claim 不一致：'+item['block_id'])
+        review['i3_provenance_checked']=True
+    evidence={}
+    for row in allowed_evidence:
+        if row['id'] not in evidence or evidence[row['id']]['scope']=='name_only':
+            evidence[row['id']]=row
+    for issue in review['findings']:
+        if (issue['block_id'] and (issue['block_id'] not in blocks or
+                (issue['output_quote'] and issue['output_quote'] not in blocks[issue['block_id']]))):
+            raise ValueError('整稿意见没有准确指向候选正文')
+        if (issue['source_id'] and (issue['source_id'] not in sources or
+                (issue['source_quote'] and issue['source_quote'] not in sources[issue['source_id']]))):
+            raise ValueError('整稿意见没有准确指向保存的原文')
+    for claim in review['added_fact_claims']:
+        if claim['block_id'] not in blocks or claim['output_quote'] not in blocks[claim['block_id']]:
+            raise ValueError('新增事实引文没有准确指向候选正文')
+        if claim['support']=='SOURCE_SUPPORTED':
+            if (not claim['source_quote'] or claim['source_id'] not in sources or
+                    claim['source_quote'] not in sources[claim['source_id']]):
+                raise ValueError('新增事实的原件支持没有可核对的原文引文')
+        elif claim['support']=='EXTERNAL_SUPPORTED':
+            row=evidence.get(claim['evidence_id'])
+            if not row or row['scope']=='name_only':
+                raise ValueError('外部事实没有可用的本任务事实证据；名称查证不授权机制事实')
+        else:
+            if not any(item['invariant']=='I3' and item['verdict']=='FAIL'
+                    and item['block_id']==claim['block_id']
+                    and item['output_quote']==claim['output_quote']
+                    for item in review['findings']):
+                review['findings'].append(dict(invariant='I3',verdict='FAIL',
+                    block_id=claim['block_id'],source_id='',
+                    output_quote=claim['output_quote'],source_quote='',
+                    problem='候选稿新增的事实缺少原件或允许的外部证据',
+                    required_change='删除或收窄这项无依据的新增事实'))
+    return review
+
+
+def compile_integrity_review(value, draft, source, allowed_evidence, *,
+                             protected_literals=()):
+    """Keep grounded findings from one review; incomplete receipts become UNKNOWN."""
+    blocks={block['id']:block['markdown'] for block in draft['blocks']}
+    sources={obj['id']:obj.get('text','') for obj in source['objects']}
+    expected=patchable_block_ids(draft,protected_literals)
+    review=value.get('result',value) if isinstance(value,dict) else {}
+    if not isinstance(review,dict):review={}
+    findings=[]
+    def unknown(block_id,problem):
+        findings.append(dict(invariant='I3',verdict='UNKNOWN',block_id=block_id,
+            source_id='',output_quote='',source_quote='',problem=problem,
+            required_change=''))
+    def bound(block_id,quote):
+        return bool(block_id in blocks and quote and quote in blocks[block_id])
+    for raw in review.get('findings',[]) if isinstance(review.get('findings'),list) else []:
+        try:
+            issue=A.IntegrityFinding.model_validate(raw).model_dump()
+        except (ValueError,TypeError):
+            unknown('','整稿审核包含无法解析的意见')
+            continue
+        if (issue['block_id'] and (issue['block_id'] not in blocks or
+                issue['output_quote'] and not bound(issue['block_id'],issue['output_quote']))
+                or issue['source_id'] and (issue['source_id'] not in sources or
+                issue['source_quote'] and issue['source_quote'] not in sources[issue['source_id']])):
+            findings.append(dict(invariant=issue['invariant'],verdict='UNKNOWN',
+                block_id=issue['block_id'] if issue['block_id'] in blocks else '',
+                source_id='',output_quote='',source_quote='',
+                problem='审核意见无法绑定到保存的正文或原件',required_change=''))
+        else:findings.append(issue)
+    evidence={row['id']:row for row in allowed_evidence if row.get('id')}
+    claims_by_block={bid:[] for bid in expected}
+    raw_claims=review.get('added_fact_claims',[])
+    if not isinstance(raw_claims,list):
+        raw_claims=[];unknown('','新增事实回执无法解析')
+    claims=[]
+    for raw in raw_claims:
+        try:claim=A.AddedFactClaim.model_validate(raw).model_dump()
+        except (ValueError,TypeError):
+            unknown(raw.get('block_id','') if isinstance(raw,dict) else '',
+                    '新增事实回执无法解析')
+            continue
+        bid=claim['block_id']
+        if not bound(bid,claim['output_quote']) or bid not in expected:
+            unknown(bid if bid in blocks else '',
+                    '新增事实引文无法绑定到作者正文块')
+            continue
+        claims.append(claim);claims_by_block[bid].append(claim)
+        if claim['support']=='UNSUPPORTED':
+            if not any(row['invariant']=='I3' and row['verdict']=='FAIL'
+                    and row['block_id']==bid and row['output_quote']==claim['output_quote']
+                    for row in findings):
+                findings.append(dict(invariant='I3',verdict='FAIL',block_id=bid,
+                    source_id='',output_quote=claim['output_quote'],source_quote='',
+                    problem='候选稿新增的事实缺少原件或允许的外部证据',
+                    required_change='删除或收窄这项无依据的新增事实'))
+        elif claim['support']=='SOURCE_SUPPORTED':
+            if (not claim['source_quote'] or claim['source_id'] not in sources or
+                    claim['source_quote'] not in sources[claim['source_id']]):
+                unknown(bid,'原件支持声明无法核验')
+        elif (claim['evidence_id'] not in evidence or
+              evidence[claim['evidence_id']].get('scope')=='name_only'):
+            unknown(bid,'外部支持声明无法绑定到允许的事实证据')
+    assessments={};duplicate=set()
+    raw_assessments=review.get('i3_block_assessments',[])
+    if not isinstance(raw_assessments,list):
+        raw_assessments=[];unknown('','正文块来源核对回执无法解析')
+    for raw in raw_assessments:
+        try:item=A.I3BlockAssessment.model_validate(raw).model_dump()
+        except (ValueError,TypeError):
+            unknown(raw.get('block_id','') if isinstance(raw,dict) else '',
+                    '正文块来源核对回执无法解析')
+            continue
+        bid=item['block_id']
+        if bid not in expected:
+            unknown('','来源核对回执指向非作者正文块')
+        elif bid in assessments:duplicate.add(bid)
+        else:assessments[bid]=item
+    for bid in sorted(expected):
+        item=assessments.get(bid)
+        if bid in duplicate or item is None:
+            unknown(bid,'作者正文块的来源核对回执缺失或重复')
+        elif (item['status']=='ADDED_FACTS_PRESENT')!=bool(claims_by_block[bid]):
+            unknown(bid,'正文块新增事实声明与实际 claim 不一致')
+    checked_sources=review.get('checked_source_ids',[])
+    checked_blocks=review.get('checked_block_ids',[])
+    if not isinstance(checked_sources,list):checked_sources=[]
+    if not isinstance(checked_blocks,list):checked_blocks=[]
+    return dict(checked_source_ids=[sid for sid in checked_sources if sid in sources],
+        checked_block_ids=[bid for bid in checked_blocks if bid in blocks],
+        findings=findings,added_fact_claims=claims,
+        i3_block_assessments=list(assessments.values()),
+        i3_provenance_checked=bool(expected<=set(assessments) and not duplicate
+            and not any(row['invariant']=='I3' and row['verdict']=='UNKNOWN'
+                        for row in findings)))
+
+
+def validate_written(value, node, inventory, bundle, prior, source_obligations=(),concepts=(),
+                     name_completions=()):
     body = A.WrittenUnit.model_validate(value).model_dump()
     sources={o['id']:o for o in inventory['objects']}
     literals=protected_objects(inventory)
+    object_roles=inventory.get('object_responsibilities')
     fact_quotes={f['id']:f for f in source_obligations}
-    blocks=[]
+    blocks=[];block_id_repairs={}
     for raw in body['blocks']:
         prefixes=[node['id']]+[n['id'] for n in node.get('section_outline',[])]
         if not any(raw['id'].startswith(prefix+'-') for prefix in prefixes):
-            raise ValueError('段落身份缺少单元前缀')
+            submitted=raw['id'];raw['id']=node['id']+'-'+submitted
+            block_id_repairs[submitted]=raw['id']
         if not set(raw['source_ids'])<=set(node['source_ids']):
             raise ValueError('正文引用了当前单元之外的原文')
         embedded=[]
@@ -1716,7 +3406,8 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
                 # literal: remove a mistaken marker while keeping the actual
                 # Chinese explanation and immutable original in the archive.
                 return ''
-            if sid not in literals or sid not in node['source_ids']:
+            if (sid not in literals or sid not in node['source_ids'] or
+                    (object_roles is not None and not object_roles[sid]['present'])):
                 raise ValueError('原对象插入标记不存在，或把普通文字当作原文搬移')
             embedded.append(sid)
             return literals[sid]
@@ -1744,6 +3435,7 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
     # belongs; missing hand-written markup must never discard its original bytes
     for sid in node['source_ids']:
         if sid not in literals:continue
+        if object_roles is not None and not object_roles[sid]['present']:continue
         if any(sid in b.get('embedded_object_ids',[]) for b in prior['blocks']+blocks):continue
         obj=sources[sid];literal=literals[sid]
         placed=dict(id=node['id']+'-source-'+sid,unit_id=node['id'],
@@ -1768,11 +3460,12 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
             previous['evidence']+= [e for e in block['evidence'] if e not in previous['evidence']]
         else:merged.append(block)
     for binding in body['coverage']+body['knowledge_delta']['concept_evidence']:
+        binding['block_id']=block_id_repairs.get(binding['block_id'],binding['block_id'])
         binding['block_id']=aliases.get(binding['block_id'],binding['block_id'])
     draft={'blocks':merged}
     draft=planned_heading_depth(draft,node.get('heading_level',2),inventory)
     name_alignments=insert_verified_name_at_unique_first_use(
-        draft,body['knowledge_delta'],concepts)
+        draft,body['knowledge_delta'],list(concepts)+list(name_completions))
     if name_alignments:body['knowledge_delta']['name_alignments']=name_alignments
     draft=normalize_authored_periods(draft,inventory)
     normalized_blocks={b['id']:b for b in draft['blocks']}
@@ -1785,18 +3478,19 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
         raise ValueError('写作把其他单元的事实声明为已经覆盖')
     # The visual model supplies image semantics. This check only makes sure the
     # writer retained the original pixels and placed a source-bound explanation
-    all_blocks=prior['blocks']+draft['blocks']
-    for sid in node['source_ids']:
-        obj=sources[sid]
-        if (obj.get('kind') not in {'image','media'} or obj.get('source_scope') in
-                {'site_chrome','source_metadata','layout_decorative'}):
-            continue
-        if not any(sid in block.get('embedded_object_ids',[]) for block in all_blocks):
-            raise ValueError('正文非文字材料没有保留原始对象：'+sid)
-        if not any(block.get('kind')=='explanation'
-                   and sid in {item.get('source_id') for item in block.get('evidence',[])}
-                   and block.get('markdown','').strip() for block in all_blocks):
-            raise ValueError('正文非文字材料缺少与原对象绑定的说明：'+sid)
+    if object_roles is None:
+        all_blocks=prior['blocks']+draft['blocks']
+        for sid in node['source_ids']:
+            obj=sources[sid]
+            if (obj.get('kind') not in {'image','media'} or obj.get('source_scope') in
+                    {'site_chrome','source_metadata','layout_decorative'}):
+                continue
+            if not any(sid in block.get('embedded_object_ids',[]) for block in all_blocks):
+                raise ValueError('正文非文字材料没有保留原始对象：'+sid)
+            if not any(block.get('kind')=='explanation'
+                       and sid in {item.get('source_id') for item in block.get('evidence',[])}
+                       and block.get('markdown','').strip() for block in all_blocks):
+                raise ValueError('正文非文字材料缺少与原对象绑定的说明：'+sid)
     subset = inventory | {'obligations': [o for o in inventory['obligations'] if o['id'] in allowed],
                           'objects': [o for o in inventory['objects'] if o['id'] in node['source_ids']]}
     findings = inspect_draft(subset, draft, prior_draft=prior)
@@ -1814,9 +3508,13 @@ def validate_written(value, node, inventory, bundle, prior, source_obligations=(
         coverage.append(dict(obligation_id=fid,block_id=block['id'],output_quote=block['markdown']))
     delta = body['knowledge_delta']
     align_reported_concept_ids(delta,node['establishes_concepts'])
-    if (set(delta['established_concepts']) != set(node['establishes_concepts'])
-            or set(delta['explained_obligations']) != allowed or delta['unresolved_prerequisites']):
-        raise ValueError('实际知识增量与规划不符，或仍有未解决的前提')
+    # The node and compiler-derived coverage are authoritative for these
+    # routing fields.  A writer's stale bookkeeping must not discard prose
+    # that already covers the required obligations; the independent review
+    # still checks whether the prose actually explains them.
+    delta['established_concepts']=list(node['establishes_concepts'])
+    delta['explained_obligations']=list(node['obligation_ids'])
+    delta['unresolved_prerequisites']=[]
     unique([c['concept_id'] for c in delta['concept_evidence']], '概念正文证据')
     if not {c['concept_id'] for c in delta['concept_evidence']} <= set(node['establishes_concepts']):
         raise ValueError('概念记忆引用了未安排的概念')
@@ -1838,6 +3536,37 @@ class ActiveComposition:
         if type(limit) is not int or not 1<=limit<=4:
             raise ValueError('主动编排的定向修订上限必须为一至四，不能重置历史或无限循环')
         self.config=self.config|{'active_revision_limit':min(limit,2)}
+
+    def review_integrity_once(self, job, key, payload, draft, source, allowed_evidence,
+                              protected_literals=()):
+        """One whole-candidate Provider request, with no protocol correction call."""
+        if key in job['results']:
+            raw=job['results'][key]
+        else:
+            if self.queue.cancelled(job['id'],self.owner):
+                raise Conflict('任务已取消')
+            outcome=Provider(self.store,self.config).generate(
+                job['project'],'active_integrity',payload,
+                A.IntegrityReview.model_json_schema(),job,key,
+                lambda:self.queue.cancelled(job['id'],self.owner))
+            if outcome.status=='UNKNOWN':
+                raise Uncertain(str(outcome.error))
+            if outcome.status=='KNOWN_FAILURE':
+                if not isinstance(outcome.error,json.JSONDecodeError):
+                    raise outcome.error
+                raw={}
+            else:raw=outcome.value
+            job['results'][key]=raw
+            job.pop('pending',None)
+            self.store.put_job(job)
+        return compile_integrity_review(raw,draft,source,allowed_evidence,
+                                        protected_literals=protected_literals)
+
+    @staticmethod
+    def unavailable_media(job, source_ids):
+        selected=set(source_ids)
+        return [item for item in job.get('material_acquisition_limits',[])
+                if item['object_id'] in selected]
 
     def commit_candidate(self, job, node, candidate):
         """Commit one useful writer result without another blocking review loop."""
@@ -1871,14 +3600,62 @@ class ActiveComposition:
         job['unit_index']+=1
         job.pop('active_candidate',None)
         nodes=job.get('writing_batches') or [n for p in job['active_plans'] for n in p['nodes']]
-        job['stage']='active_write' if job['unit_index']<len(nodes) else 'active_deliver'
+        job['stage']='active_write' if job['unit_index']<len(nodes) else (
+            'active_integrity' if is_core_chain(job) else 'active_deliver')
         return 'queued'
+
+    def deterministic_integrity_findings(self, job):
+        """Check source identity, saved bytes and a usable export before model review."""
+        def finding(invariant, problem, source_id=''):
+            return dict(invariant=invariant,verdict='FAIL',block_id='',source_id=source_id,
+                        output_quote='',source_quote='',problem=problem,required_change='')
+        rows=[]
+        project=self.store.get(job['project'])
+        if (project['revision']!=job['base_revision'] or
+                project['inventory']['digest']!=job['source_digest']):
+            rows.append(finding('I1','用户指定的原件版本与当前生成基线不一致'))
+        resource_ids={item['id'] for item in job['inventory']['resources']}
+        for obj in job['inventory']['objects']:
+            if obj.get('resource_id') and obj['resource_id'] not in resource_ids:
+                rows.append(finding('I2','原对象引用的资源没有保存在资源清单',obj['id']))
+        for item in job['inventory']['originals']+job['inventory']['resources']:
+            try:
+                self.store.read_blob(item.get('sha256') or item['id'])
+            except (FileNotFoundError,KeyError,OSError):
+                rows.append(finding('I2','原件或资源字节无法读回',item.get('id','')))
+        for card in job.get('visual_cards',[]):
+            role=job.get('object_responsibilities',{}).get(card['source_id'],{})
+            if role.get('explain') and card.get('blocking_uncertainty'):
+                rows.append(dict(invariant='I4',verdict='UNKNOWN',block_id='',
+                    source_id=card['source_id'],output_quote='',source_quote='',
+                    problem='理解正文所需的原图细节尚无法辨认',required_change=''))
+        structural=inspect_draft(job['inventory'],job['draft'],job['plan'])
+        for issue in structural:
+            invariant='I2' if issue['code'] in {'resource','protected_object','embedded_bytes'} else 'I5'
+            rows.append(finding(invariant,issue['message']))
+        if not structural:
+            try:
+                from io import BytesIO
+                import zipfile
+                from .export import export_zip
+                candidate=project|dict(inventory=job['inventory'],plan=job['plan'],
+                    draft=job['draft'],revision=job['base_revision']+1,
+                    production={'pipeline':job['pipeline'],'core_chain_version':1,
+                                'publication_status':'Candidate'},
+                    review=None,accepted_revision=None)
+                archive=export_zip(self.store,candidate,release=False)
+                with zipfile.ZipFile(BytesIO(archive)) as package:
+                    if package.testzip() or 'material.html' not in package.namelist():
+                        raise ValueError('阅读包字节损坏或缺少正文')
+            except (ValueError,KeyError,OSError,Conflict,zipfile.BadZipFile) as error:
+                rows.append(finding('I5','候选正文或阅读包无法正常使用：'+str(error)[:180]))
+        return rows
 
     def call(self, job, key, role, payload, schema):
         if key in job['results']:
             return job['results'][key]
         if key in job.get('active_invalid_json', {}):
-            fixed=repair_one_missing_json_object_closer(job['active_invalid_json'][key])
+            fixed=repair_one_missing_json_object_closer(job['active_invalid_json'][key],allow_final_root=True)
             if fixed:
                 try:
                     value=json.loads(fixed)
@@ -1900,9 +3677,20 @@ class ActiveComposition:
             return result
         if self.queue.cancelled(job['id'], self.owner):
             raise Conflict('任务已取消')
-        if (self.config.get('job_timeout',0)>0 and job.get('started') and
-                time.time()-job['started']>=self.config['job_timeout']):
-            raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
+        if is_core_chain(job):
+            outcome=Provider(self.store,self.config).generate(
+                job['project'],role,payload,schema.model_json_schema(),job,key,
+                lambda: self.queue.cancelled(job['id'],self.owner))
+            if outcome.status=='SUCCESS':
+                job['results'][key]=outcome.value
+                job.pop('pending',None)
+                self.store.put_job(job)
+                return outcome.value
+            if outcome.status=='UNKNOWN':
+                raise Uncertain(str(outcome.error))
+            if isinstance(outcome.error,json.JSONDecodeError):
+                return self.repair_json(job,key,role,payload,schema)
+            raise outcome.error
         if job.get('pending'):
             if job['pending'] != key:
                 raise Conflict('恢复阶段与已提交请求不一致')
@@ -1917,19 +3705,106 @@ class ActiveComposition:
             self.store.put_job(job)
             cfg = self.config | self.config.get('role_providers', {}).get(role, {})
             call_role=role
-            if key in job.get('transport_fallback_steps',{}):
+            recovery=job.get('transport_recovery_routes',{}).get(key)
+            if recovery:
+                if recovery.get('status')!='queued' or recovery.get('attempts'):
+                    raise Uncertain('该步骤的备用线路恢复请求已尝试，不会重复派发')
+                provider_id=recovery.get('provider_id')
+                from .providers import apply_route_override
+                recovery_version=recovery.get('recovery_protocol_version')
+                if recovery_version in {'kuafu-opencode-go-third-v1',
+                                        'kuafu-opencode-go-thinking-disabled-v1',
+                                        'kuafu-opencode-go-pro-escalation-v1'}:
+                    fallback=(self.config.get('fallback_providers') or {}).get(role)
+                    fallback_cfg=apply_route_override(cfg,fallback or {})
+                    from urllib.parse import urlsplit
+                    credential=(fallback_cfg.get('api_key') or
+                        (self.config.get('provider_credentials') or {}).get(provider_id))
+                    if (not isinstance(fallback,dict) or fallback_cfg.get('provider_id')!=provider_id
+                            or fallback_cfg.get('enabled') is False or not credential
+                            or fallback_cfg.get('provider')!='openai-compatible'
+                            or urlsplit(str(fallback_cfg.get('base_url') or '')).hostname!='opencode.ai'
+                            or fallback_cfg.get('protocol','chat_completions')!=recovery.get('protocol')):
+                        recovery.update(status='failed',error='configured_opencode_go_route_unavailable')
+                        self.store.put_job(job)
+                        raise Uncertain('已选 OpenCode Go 备用线路不可用，保留原调用记录，不重复派发')
+                    cfg=apply_route_override(cfg,fallback_cfg|{
+                        'provider_id':provider_id,'api_key':credential,'backup_provider_id':None,
+                        'quota_fallback':None,'kuafu_fallback_roles':[]})
+                    if recovery_version=='kuafu-opencode-go-pro-escalation-v1':
+                        if recovery.get('model')!='deepseek-v4-pro':
+                            recovery.update(status='failed',error='unsupported_go_escalation_model')
+                            self.store.put_job(job)
+                            raise Uncertain('Go 升级模型不在本次明确支持范围，保留原调用记录，不重复派发')
+                        cfg['model']='deepseek-v4-pro'
+                        # Remove effort hints at both levels: OpenCode Go may
+                        # otherwise inherit one from the provider configuration.
+                        provider_options=dict(cfg.get('provider_options') or {})
+                        provider_options.pop('reasoning_effort',None)
+                        cfg['provider_options']=provider_options
+                    call_role=role+'__fallback'
+                    role_options=dict(cfg.get('role_options') or {})
+                    selected_options=dict(role_options.get(call_role) or {})
+                    if recovery_version=='kuafu-opencode-go-pro-escalation-v1':
+                        selected_options.pop('reasoning_effort',None)
+                    selected_options['thinking']={'type':'disabled'}
+                    role_options[call_role]=selected_options
+                    cfg['role_options']=role_options
+                else:
+                    raw=(self.config.get('provider_routes') or {}).get(provider_id)
+                    credential=(self.config.get('provider_credentials') or {}).get(provider_id)
+                    if (not isinstance(raw,dict) or not credential or raw.get('enabled') is False
+                            or raw.get('provider')!='openai-compatible'
+                            or raw.get('protocol')!=recovery.get('protocol')):
+                        recovery.update(status='failed',error='configured_route_unavailable')
+                        self.store.put_job(job)
+                        raise Uncertain('已选备用线路不可用，保留已记录的调用，不重复派发')
+                    cfg=apply_route_override(cfg,dict(raw)|{
+                        'provider_id':provider_id,'api_key':credential,'backup_provider_id':None})
+                    call_role=role
+                if recovery_version=='kuafu-responses-sse-v1':
+                    # This retry is permitted only after the saved 52x gateway page
+                    # was confirmed to contain no model artifact.
+                    cfg['kuafu_responses_streaming']=True
+                recovery.update(status='dispatching',attempts=1,started_at=time.time())
+                self.store.put_job(job)
+            # A transport fallback belongs to the exact logical step that
+            # failed. An earlier uncertain writer call must not contaminate
+            # later units of the same role.
+            escalation = next((state for session_key,state in
+                job.get('active_glossary_quality_escalations',{}).items()
+                if not recovery and key.startswith(session_key+'-turn-') and state.get('status')=='queued'
+                and state.get('role')==role),None)
+            fresh_turn_retry = next((state for session_key,state in
+                job.get('active_glossary_quality_retries',{}).items()
+                if not recovery and key.startswith(session_key+'-turn-') and state.get('status')=='queued'
+                and state.get('role')==role),None)
+            exclusive_quality_attempt=escalation or fresh_turn_retry
+            if (fresh_turn_retry and cfg.get('provider_id')!=fresh_turn_retry.get('primary_provider_id')):
+                fresh_turn_retry.update(status='failed',error='configured_primary_route_changed',
+                                        finished_at=time.time())
+                self.store.put_job(job)
+                raise Uncertain('短篇改写质量重试的主线路已变化，未发送新请求')
+            if exclusive_quality_attempt:
+                # Claim before dispatch so a restart or uncertain result cannot
+                # grant another primary-provider attempt.
+                exclusive_quality_attempt.update(status='dispatching',attempts=1,
+                    started_at=time.time(),attempt_step=key)
+                # Both bounded quality attempts use the configured primary route
+                # without provider-side or application-level fallback.
+                cfg['backup_provider_id']=None
+                cfg['quota_fallback']=None
+                cfg['kuafu_fallback_roles']=[]
+                self.store.put_job(job)
+            if not recovery and not exclusive_quality_attempt and key in job.get('transport_fallback_steps',{}):
                 fallback=self.config.get('fallback_providers',{}).get(role,{})
                 if fallback:
-                    cfg |= fallback
+                    from .providers import apply_route_override
+                    cfg=apply_route_override(cfg,fallback)
                     call_role=role+'__fallback'
             if role == 'active_visual' and role not in self.config.get('role_providers', {}):
                 cfg |= self.config.get('role_providers', {}).get('visual_extract', {})
             cfg=apply_stream_timeout(cfg)
-            if self.config.get('job_timeout',0)>0 and job.get('started'):
-                remaining=self.config['job_timeout']-(time.time()-job['started'])
-                if remaining<=0:
-                    raise Conflict('本篇已达到处理时间上限，已保存全部完成结果')
-                cfg['call_timeout']=min(float(cfg.get('call_timeout',90)),remaining)
             cfg['deadline_at']=time.time()+float(cfg.get('call_timeout',90))
             cfg['role_providers'] = {}
             before = len(job['calls'])
@@ -1937,12 +3812,48 @@ class ActiveComposition:
                 value = Provider(self.store, cfg).call(job['project'], call_role, payload,
                     schema.model_json_schema(), job, lambda: self.queue.cancelled(job['id'], self.owner))
             except json.JSONDecodeError:
+                if exclusive_quality_attempt:
+                    exclusive_quality_attempt.update(status='failed',error='invalid_json',finished_at=time.time())
+                    self.store.put_job(job)
+                if recovery:
+                    recovery.update(status='failed',attempt_call_id=(job['calls'][-1].get('id') if len(job['calls'])>before else None),
+                                    error='invalid_json')
+                    self.store.put_job(job)
                 return self.repair_json(job,key,role,payload,schema)
-            except Exception:
+            except Exception as error:
+                if exclusive_quality_attempt:
+                    exclusive_quality_attempt.update(status='failed',error_type=type(error).__name__,
+                                                     finished_at=time.time())
+                    self.store.put_job(job)
+                if recovery:
+                    recovery.update(status='failed',attempt_call_id=(job['calls'][-1].get('id') if len(job['calls'])>before else None),
+                                    error_type=type(error).__name__)
+                    self.store.put_job(job)
                 if len(job['calls']) == before:
                     job.pop('pending', None)
                     self.store.put_job(job)
                 raise
+            if recovery:
+                recovered_call=job['calls'][-1]
+                recovery.update(status='completed',attempt_call_id=recovered_call.get('id'),
+                                completed_at=time.time())
+                job.setdefault('route_switches',[]).append(dict(
+                    role=role,from_provider_id=recovery.get('original_provider_id'),
+                    to_provider_id=provider_id,reason=('kuafu_responses_versioned_stream_retry'
+                        if recovery.get('recovery_protocol_version')=='kuafu-responses-sse-v1'
+                        else 'go_reasoning_exhaustion_thinking_disabled_retry'
+                        if recovery.get('recovery_protocol_version')=='kuafu-opencode-go-thinking-disabled-v1'
+                        else 'go_reasoning_exhaustion_pro_escalation'
+                        if recovery.get('recovery_protocol_version')=='kuafu-opencode-go-pro-escalation-v1'
+                        else 'kuafu_pair_failure_opencode_go_third_route'
+                        if recovery.get('recovery_protocol_version')=='kuafu-opencode-go-third-v1'
+                        else 'kuafu_route_after_go_reasoning_exhaustion'),
+                    original_call_id=recovery.get('original_call_id'),
+                    exhausted_fallback_call_id=recovery.get('exhausted_fallback_call_id'),
+                    recovery_call_id=recovered_call.get('id')))
+            if exclusive_quality_attempt:
+                exclusive_quality_attempt.update(status='completed',
+                    attempt_call_id=job['calls'][-1].get('id'),completed_at=time.time())
         job['results'][key] = value
         job.pop('pending', None)
         self.store.put_job(job)
@@ -1951,12 +3862,28 @@ class ActiveComposition:
     def repair_json(self,job,key,role,payload,schema):
         if role=='active_protocol':
             raise ValueError('返回格式修正一次后仍不是有效数据，原响应已保存')
+        if is_core_chain(job):
+            text=Provider(self.store,self.config).saved_complete_text(job)
+            job.setdefault('active_invalid_json',{})[key]=text
+            job.pop('pending',None)
+            self.store.put_job(job)
+            return self.call(job,key,role,payload,schema)
         call=job['calls'][-1]
-        if call.get('finish_reason') not in {'stop','tool_calls'} or not call.get('response_blob'):
+        if not call.get('response_blob'):
             raise Uncertain('未取得完整响应，不重发未知请求')
         response=json.loads(self.store.read_blob(call['response_blob']))
-        message=response['choices'][0]['message']
-        text=message.get('content') or message['tool_calls'][0]['function']['arguments']
+        if call.get('protocol')=='responses':
+            if response.get('status') not in {'completed','complete','succeeded'}:
+                raise Uncertain('Responses 原响应未完整结束，不修复部分正文')
+            from .providers import _responses_text
+            text=_responses_text(response)
+        else:
+            if call.get('finish_reason') not in {'stop','tool_calls'}:
+                raise Uncertain('未取得完整响应，不重发未知请求')
+            message=response['choices'][0]['message']
+            text=message.get('content') or message['tool_calls'][0]['function']['arguments']
+        if not isinstance(text,str) or not text:
+            raise ValueError('完整响应中没有可修复的 JSON 正文')
         job.setdefault('active_invalid_json',{})[key]=text
         job.pop('pending',None)
         self.store.put_job(job)
@@ -1965,6 +3892,12 @@ class ActiveComposition:
     def turn(self, job, key, role, schema, source, ids, payload, validate):
         sessions = job.setdefault('active_sessions', {})
         session = sessions.setdefault(key, {'round': 0, 'corrections': 0})
+        if role=='active_plan':
+            _mark_split_recovery_started(job,key)
+            if is_core_chain(job) and job.get('transformation_mode')=='rewrite':
+                session['link_decisions']={item['source_id']:dict(
+                    source_id=item['source_id'],role='reference',missing='',source_quote='')
+                    for item in plan_link_context(source,ids)}
         session.setdefault('declared_gap_ids', [])
         configured_search_routes=(self.config.get('search_routes') or
                                   self.config.get('search_providers') or
@@ -1996,9 +3929,12 @@ class ActiveComposition:
                           abbreviation=term.get('abbr'),english_name=term['en'],note=term['note'])
             resources.read(rid)
         if (role=='active_plan' and job.get('link_contract_version')
+                and not is_core_chain(job)
                 and not session.get('direct_link_prefetch_complete')):
             from urllib.parse import urlsplit
-            current=urlsplit(source.get('source_url',''))
+            # Uploaded documents have source_url=None; urlsplit(None) returns
+            # bytes fields that cannot be compared with the parsed link strings.
+            current=urlsplit(source.get('source_url') or '')
             seen=set()
             for obj in source['objects']:
                 if obj['id'] not in ids or obj['kind']!='link':continue
@@ -2052,9 +3988,20 @@ class ActiveComposition:
             if role=='active_plan':
                 catalog=[entry for entry in catalog if entry['id'] in ids
                          or entry.get('kind')=='external' or entry['id'].startswith('term-')]
-            request = payload | dict(catalog=prompt_resource_catalog(catalog), opened_resources=resources.context(),
+            opened_resources=resources.context()
+            prompt_catalog=(prompt_active_plan_catalog(catalog,ids,opened_resources)
+                           if role=='active_plan' else prompt_resource_catalog(catalog))
+            request = payload | dict(catalog=prompt_catalog, opened_resources=opened_resources,
                                      previous_action_results=session.get('action_results', []),
                                      action_history=session.get('action_history', []))
+            if role=='active_plan':
+                request['declared_evidence_gaps']=copy.deepcopy(
+                    session.get('declared_evidence_gaps',[]))
+                if is_core_chain(job):
+                    request['prior_link_decisions']=list(session.get('link_decisions',{}).values())
+                    request['link_context']=plan_link_context(source,ids)
+                    request['link_classification_required']=bool(
+                        request['link_context'] and not session.get('link_decisions'))
             if session.get('correction'):
                 request['protocol_correction'] = session['correction']
                 if role in {'active_write','active_review'} and session.get('previous_invalid_result'):
@@ -2066,14 +4013,40 @@ class ActiveComposition:
                         if role=='active_write' else
                         'Return the complete corrected review. Change only invalid quotations or bindings, '
                         'preserve every valid finding and checked obligation, and do not rewrite the draft')
-            raw = self.call(job, key + '-turn-' + str(session['round']), role, request, A.Turn[schema])
             try:
+                raw = self.call(job, key + '-turn-' + str(session['round']), role, request,
+                                A.Turn[schema])
+            except Exception as error:
+                _mark_split_recovery_failed(job,key,error)
+                if _split_recovery_marker(job,key) is not None:
+                    self.store.put_job(job)
+                raise
+            try:
+                if (role=='active_plan' and is_core_chain(job)
+                        and job.get('transformation_mode')=='rewrite'):
+                    raw,reference_receipt=normalize_rewrite_reference_turn(raw,source,ids)
+                    if reference_receipt:
+                        job.setdefault('plan_protocol_normalizations',[]).append(dict(
+                            step=key,turn=session['round'],**reference_receipt))
+                if (role=='active_plan' and is_core_chain(job)
+                        and request['link_classification_required']):
+                    raw,classification_receipt=normalize_first_plan_link_classification(
+                        raw,source,ids)
+                    if classification_receipt:
+                        job.setdefault('plan_protocol_normalizations',[]).append(dict(
+                            step=key,turn=session['round'],**classification_receipt))
                 if is_v2(job) and role=='active_plan':
                     checked_raw,removed_extras=discard_known_plan_protocol_extras(raw)
                 elif is_v2(job) and role=='active_review':
                     checked_raw,removed_extras=discard_known_review_protocol_extras(raw)
                 else:
                     checked_raw,removed_extras=raw,[]
+                if role=='active_plan' and is_core_chain(job):
+                    checked_raw,normalizations=normalize_plan_clarify_expansion(
+                        checked_raw,resources,session.get('link_decisions',{}).values())
+                    if normalizations:
+                        job.setdefault('plan_protocol_normalizations',[]).extend(
+                            dict(step=key,**receipt) for receipt in normalizations)
                 if removed_extras:
                     job.setdefault('nonblocking_protocol_notes',[]).append(dict(
                         step=key,reason=('redundant naming_status_effective removed from validation copy'
@@ -2081,6 +4054,20 @@ class ActiveComposition:
                         object_ids=removed_extras))
                 response = A.Turn[schema].model_validate(checked_raw).model_dump()
                 response,reused=discard_redundant_reads_with_result(response,resources)
+                if role=='active_plan' and is_core_chain(job):
+                    pending_classification=bool(request['link_classification_required'])
+                    link_decisions=authorize_plan_link_actions(
+                        response,source,ids,session.get('link_decisions',{}))
+                    if pending_classification:
+                        expected={item['source_id'] for item in request['link_context']}
+                        if set(link_decisions)!=expected:
+                            raise ValueError('首次规划必须先给当前分组每个原文链接判定职责')
+                    session['link_decisions']=link_decisions
+                    self.store.put_job(job)
+                    if response['result'] is None and not response['actions'] and not response['gaps']:
+                        session['round']+=1
+                        session.pop('correction',None)
+                        continue
                 if reused:
                     session.setdefault('redundant_result_reads',[]).append(dict(
                         turn=session['round'],resource_ids=reused,
@@ -2089,32 +4076,104 @@ class ActiveComposition:
                     if response['result'] is not None or not response['gaps']:
                         raise ValueError('读取动作必须说明缺口，不能同时提交结果')
                     session['action_results'] = []
-                    for action in response['actions']:
+                    gap_declarations=_turn_gap_declarations(response['gaps'])
+                    if is_v2(job) and role=='active_plan':
+                        gap_declarations=_restore_reused_gap_declarations(
+                            gap_declarations,session.get('declared_evidence_gaps',[]))
+                    response_gap_ids={item['id'] for item in gap_declarations}
+                    source_objects={obj['id']:obj for obj in source['objects']}
+                    source_binding_receipt_ids={}
+                    for action_index,action in enumerate(response['actions']):
                         if is_v2(job) and action['kind'] in {'search','page','image'}:
                             gap_id=action.get('gap_id','')
-                            if role!='active_plan' or not gap_id or gap_id not in response['gaps']:
+                            if role!='active_plan' or not gap_id or gap_id not in response_gap_ids:
                                 raise ValueError('v2 外部检索必须绑定当前 Turn 明确声明的 EvidenceGap')
+                            matching_gaps=[item for item in gap_declarations if item['id']==gap_id]
+                            if len(matching_gaps)!=1:
+                                raise ValueError('当前 Turn 的 EvidenceGap ID 重复，不能安全对齐来源')
+                            gap_texts=[item['text'] for item in matching_gaps]
                             source_id=action.get('source_id','')
-                            source_objects={obj['id']:obj for obj in source['objects']}
                             source_obj=source_objects.get(source_id)
+                            if source_id and (not source_obj or source_id not in ids):
+                                raise ValueError('v2 外部检索必须绑定当前分组的原文义务来源')
+                            if source_id:
+                                _,alignment=_infer_external_action_source(
+                                    action,gap_texts,source_objects,ids)
+                                conflicting_hints=[hint for hint in alignment.get('methods',[])
+                                                   if source_id not in hint.get('source_ids',[])]
+                                if conflicting_hints:
+                                    raise ValueError('v2 外部检索 source_id 与当前缺口的独立来源线索冲突')
+                            if not source_id:
+                                inferred_id,alignment=_infer_external_action_source(
+                                    action,gap_texts,source_objects,ids)
+                                if not inferred_id:
+                                    detail='证据不足或存在歧义'
+                                    if alignment.get('reason')=='gap_source_outside_assigned_group':
+                                        detail='缺口提及的来源不属于当前分组'
+                                    raise ValueError('v2 外部检索必须绑定当前分组的原文义务来源（'+detail+'）')
+                                source_id=inferred_id
+                                action['source_id']=source_id
+                                receipt_id=digest(dict(step=key,turn=session['round'],
+                                    action_index=action_index,gap_id=gap_id,source_id=source_id,
+                                    alignment=alignment))[:24]
+                                receipt=dict(id=receipt_id,step=key,turn=session['round'],
+                                    action_index=action_index,gap_id=gap_id,gap_texts=gap_texts,
+                                    query=action.get('query',''),source_id=source_id,
+                                    operation='deterministic_current_group_source_alignment',
+                                    alignment=alignment)
+                                receipts=session.setdefault('source_binding_receipts',[])
+                                if not any(item.get('id')==receipt_id for item in receipts):
+                                    receipts.append(receipt)
+                                source_binding_receipt_ids[action_index]=receipt_id
+                                source_obj=source_objects.get(source_id)
                             if not source_obj or source_id not in ids:
                                 raise ValueError('v2 外部检索必须绑定当前分组的原文义务来源')
-                            if action['kind']=='search' and source_obj.get('kind')=='link' and source_obj.get('target'):
-                                raise ValueError('已有直接 URL 时必须优先读取目标页，不能先搜索')
+                            name_lookup=_name_lookup_requested(gap_texts,action.get('query',''))
+                            direct_target_saved=_direct_link_target_saved(resources,source_obj)
+                            if (action['kind']=='search' and source_obj.get('kind')=='link'
+                                    and source_obj.get('target')):
+                                if not direct_target_saved:
+                                    raise ValueError('已有直接 URL 时必须先读取并保存目标页，不能先搜索')
+                                if not name_lookup:
+                                    raise ValueError('直接目标已读取后只允许为当前缺口查找补充正式名称')
                             if action['kind']=='page' and source_obj.get('target'):
                                 if canonical_url(action.get('url','')) != canonical_url(source_obj['target']):
-                                    raise ValueError('直接 URL 证据必须先读取该原文链接目标')
+                                    if not direct_target_saved:
+                                        raise ValueError('直接 URL 证据必须先读取并保存该原文链接目标')
+                                    if not name_lookup:
+                                        raise ValueError('补充名称来源必须对应当前缺口的正式名称查证')
                             if gap_id not in session['declared_gap_ids']:
                                 session['declared_gap_ids'].append(gap_id)
+                            declaration=matching_gaps[0]
+                            saved_declarations=session.setdefault('declared_evidence_gaps',[])
+                            saved=next((item for item in saved_declarations
+                                        if item.get('id')==gap_id),None)
+                            record=dict(id=gap_id,text=declaration['text'],
+                                        description=declaration['description'],source_id=source_id)
+                            if saved and any(saved.get(field)!=record[field]
+                                             for field in ('text','source_id')):
+                                raise ValueError('同一 EvidenceGap ID 的声明或来源发生变化：'+gap_id)
+                            if not saved:
+                                saved_declarations.append(record)
                         if is_v2(job) and action['kind'] in {'search','page','image'}:
                             counts=session.setdefault('external_action_counts',{'search':0,'open':0})
                             counter='search' if action['kind']=='search' else 'open'
                             limit=int(self.config.get('evidence_query_limit',2) if counter=='search'
                                       else self.config.get('evidence_open_limit',4))
                             if counts[counter]>=max(0,limit):
-                                raise ValueError('v2 证据动作达到当前设置上限：'+counter)
-                            counts[counter]+=1
-                        item=resources.execute(action)
+                                # Keep the action and its gap visible to the next
+                                # planning turn, but never issue a request beyond
+                                # the configured budget or mislabel it as evidence.
+                                item=dict(status='unavailable',complete=False,
+                                    evidence_status='unavailable_limit',
+                                    reason='v2 evidence action limit reached; no request sent',
+                                    gap_id=action.get('gap_id',''),source_id=action.get('source_id',''),
+                                    action=copy.deepcopy(action))
+                            else:
+                                counts[counter]+=1
+                                item=resources.execute(action)
+                        else:
+                            item=resources.execute(action)
                         if item.get('visual_evidence_required'):
                             visual_id=item['id']
                             page=dict(id=visual_id,kind='image',resource_id=item['sha256'],
@@ -2139,11 +4198,28 @@ class ActiveComposition:
                                 uncertainty=card.uncertainty,limitations=card.limitations)
                         session['action_results'].append(item)
                     session.setdefault('action_history',[]).extend(
-                        dict(action=a,result=r) for a,r in zip(response['actions'],session['action_results']))
+                        dict(action=a,result=r,source_binding_receipt=source_binding_receipt_ids.get(index))
+                        for index,(a,r) in enumerate(zip(response['actions'],session['action_results'])))
                     session['round'] += 1
                     session.pop('correction', None)
                     continue
-                if (response['result'] is None or response['gaps'] or
+                patch_gap_notes=[]
+                if role=='active_patch' and response['result'] is not None and response['gaps']:
+                    # A local repair may find issues in blocks it was not allowed
+                    # to edit. Preserve those notes, but accept them only when
+                    # each note explicitly points to known, non-editable blocks.
+                    draft=payload.get('original_draft') or {}
+                    known_block_ids={block.get('id','') for block in draft.get('blocks',[])
+                                     if block.get('id')}
+                    editable_block_ids=set(payload.get('editable_block_ids',[]))
+                    for note in response['gaps']:
+                        mentioned={block_id for block_id in known_block_ids
+                            if re.search(r'(?<![A-Za-z0-9_-])'+re.escape(block_id)+
+                                         r'(?![A-Za-z0-9_-])',note)}
+                        if not mentioned or mentioned & editable_block_ids:
+                            raise ValueError('局部补丁缺口未能证明位于可编辑范围之外：'+note)
+                        patch_gap_notes.append(note)
+                if (response['result'] is None or (response['gaps'] and not patch_gap_notes) or
                         (not response['ready_reason'].strip() and not is_v2(job))):
                     raise ValueError('资料未齐全，不能提交结果')
                 if is_v2(job) and not response['ready_reason'].strip():
@@ -2152,8 +4228,10 @@ class ActiveComposition:
                 if is_v2(job) and role=='active_plan':
                     returned_gap_ids={gap['id'] for gap in response['result'].get('evidence_gaps',[])}
                     declared_gap_ids=set(session.get('declared_gap_ids',[]))
-                    if not declared_gap_ids <= returned_gap_ids:
-                        raise ValueError('规划没有保存本轮声明的 EvidenceGap')
+                    missing_gap_ids=sorted(declared_gap_ids-returned_gap_ids)
+                    if missing_gap_ids:
+                        raise ValueError('\u89c4\u5212\u6ca1\u6709\u4fdd\u5b58\u672c\u8f6e\u58f0\u660e\u7684 EvidenceGap ID\uff1a'+
+                                         '、'.join(missing_gap_ids))
                 if not all(resources.fully_read(sid) for sid in ids):
                     raise ValueError('当前来源仍有未读取部分')
                 if role=='active_write' and job.get('archived_layout_source_ids'):
@@ -2235,10 +4313,21 @@ class ActiveComposition:
                         job.setdefault('external_citation_scoping',[]).extend(
                             dict(step=key,**repair) for repair in repairs)
                 value = validate(response['result'], resources)
+                if patch_gap_notes:
+                    note=dict(step=key,reason='局部补丁已通过事务校验；范围外缺口保留待核查',
+                              gaps=copy.deepcopy(patch_gap_notes))
+                    if note not in job.setdefault('nonblocking_protocol_notes',[]):
+                        job['nonblocking_protocol_notes'].append(note)
+                    for gap in patch_gap_notes:
+                        quality_note=f'{key}：范围外缺口待核查：{gap}'
+                        if quality_note not in job.setdefault('quality_issues',[]):
+                            job['quality_issues'].append(quality_note)
                 session['resources'] = resources.state
                 job.setdefault('external_resources', {}).update({k: v for k, v in resources.state['entries'].items()
                                                                  if v['kind'] == 'external'})
                 session['complete'] = True
+                if role=='active_plan':
+                    _mark_split_recovery_completed(job,key)
                 self.store.put_job(job)
                 return value
             except (ValueError, KeyError) as error:
@@ -2270,8 +4359,28 @@ class ActiveComposition:
                 correction_limit=(max(1,min(2,int(self.config.get('max_plan_repairs',2))))
                                   if role=='active_plan' else
                                   max(1,min(2,int(self.config.get('active_structure_correction_limit',2)))))
-                if session['corrections'] >= correction_limit:
+                glossary_error = (
+                    role=='active_write'
+                    and '短篇普通改写被扩成术语表' in str(error)
+                )
+                glossary_extra = (glossary_error and
+                    not session.get('short_rewrite_glossary_repair_used') and
+                    session['corrections'] >= correction_limit)
+                if session['corrections'] >= correction_limit and not glossary_extra:
+                    _mark_split_recovery_failed(job,key,error)
+                    if _split_recovery_marker(job,key) is not None:
+                        self.store.put_job(job)
                     raise ValueError('当前阶段结构修正后仍不成立：' + str(error)) from error
+                if glossary_extra:
+                    # This error class gets one narrowly scoped extra writer
+                    # correction. It consumes the existing round budget and is
+                    # recorded before dispatch so a restart cannot grant another.
+                    prior_memory=bounded_established_memory(job)
+                    session['short_rewrite_glossary_repair_used'] = True
+                    session['short_rewrite_glossary_repair'] = dict(
+                        source_ids=list(payload.get('node',{}).get('source_ids',[])),
+                        knowledge_memory_digest=digest(prior_memory),
+                        attempt=session['corrections']+1)
                 session['corrections'] += 1
                 if role in {'active_write','active_review'} and isinstance(raw,dict) and isinstance(raw.get('result'),dict):
                     session['previous_invalid_result']=raw['result']
@@ -2281,6 +4390,7 @@ class ActiveComposition:
                 # error is sufficient for the planner to regenerate it.
                 job.setdefault('active_correction_receipts',[]).append(dict(
                     step=key,role=role,error=str(error),received_digest=digest(raw)))
+                gap_policy=(missing_evidence_gap_policy(error) if role=='active_plan' else None)
                 session['correction'] = dict(error=str(error),
                     instruction=('Every finding and link assessment must quote an exact substring of the '
                         'named block after compilation. Recheck block IDs and copy the existing characters; '
@@ -2314,13 +4424,40 @@ class ActiveComposition:
                         'Keep the existing findings, checked obligations and format decisions; do not rewrite the article'
                         if role=='active_review' and '核对遗漏知识链接' in str(error)
                         else 'Correct only this invalid artifact; preserve all valid content and bindings')
-                if role=='active_write' and '标题照搬了未解释的英文' in str(error):
+                if gap_policy:
+                    session['correction']['instruction']=gap_policy['instruction']
+                if glossary_error:
+                    scope_node=payload.get('node',{})
+                    session['correction']['scope']={
+                        'current_node':dict(id=scope_node.get('id'),title=scope_node.get('title'),
+                                            source_ids=list(scope_node.get('source_ids',[]))),
+                        'already_established_memory':dict(
+                            required_prerequisites=payload.get('established_memory',[]),
+                            prior_concept_anchors=bounded_established_memory(job)),
+                        'current_link_roles':payload.get('link_guides',[]),
+                    }
+                    session['correction']['instruction']=(
+                        'This is a short ordinary rewrite, not a glossary or a new lesson. Return one complete '
+                        'corrected WrittenUnit that follows the current node source boundary and link roles. '
+                        'Treat source obligations, the concept ledger and reasoning steps as coverage constraints, '
+                        'not as requests for one definition or heading per item; keep the reasoning order and write '
+                        'ordinary concise prose with necessary link explanations inline. Reserve a formal definition '
+                        'list for a genuinely central new technical concept the reader cannot otherwise follow. '
+                        'Use established_memory to treat concepts already explained in earlier units as known: '
+                        'do not define them again or turn linked names into extra glossary entries. Keep only a '
+                        'definition that the current source segment truly needs; otherwise explain terms briefly '
+                        'in the article flow. Preserve every exception, contrast, qualification, date, name, '
+                        'source obligation, link, and already-correct material from previous_invalid_result. '
+                        'Correct any factual misstatement against the current node obligations and opened source. '
+                        'Keep the original article purpose and order, and remove only repetitive definition detours.')
+                elif role=='active_write' and '标题照搬了未解释的英文' in str(error):
                     session['correction']['instruction']=(
                         'Rewrite every displayed heading as natural Chinese. Preserve necessary official '
                         'English names in parentheses at first use and explain unfamiliar abbreviations; do '
                         'not leave any heading as an unexplained copy of the English source title. Preserve '
                         'all body content, source bindings, images and factual qualifications')
-                elif role=='active_write' and '正文图片缺少与原图绑定的说明' in str(error):
+                elif role=='active_write' and any(message in str(error) for message in (
+                        '正文图片缺少与原图绑定的说明','正文非文字材料缺少与原对象绑定的说明')):
                     session['correction']['instruction']=(
                         'Add a concise explanatory block immediately after each named source image. Bind '
                         'that block to the same source_id and state only what the saved visual card, caption '
@@ -2358,6 +4495,15 @@ class ActiveComposition:
 
     def step(self, job):
         stage = job['stage']
+        if job.get('pipeline') in {PIPELINE, PIPELINE_V2}:
+            version = job.get('core_chain_version')
+            if version not in {0, 1}:
+                raise Conflict('内部错误：任务缺少明确的新旧主链版本标记')
+            if version == 1 and (job.get('pipeline') != PIPELINE_V2 or
+                    stage in {'active_review', 'active_revision', 'active_format'}):
+                raise Conflict('内部错误：新版任务禁止进入旧逐批审核或修补流程')
+            if version == 0 and stage in {'active_integrity', 'active_integrity_repair'}:
+                raise Conflict('内部错误：旧任务禁止进入新版整稿审核流程')
         if stage in {'active_write','active_deliver'}:
             for point in job.get('active_checkpoints',[]):
                 if not point.get('unresolved_format'):continue
@@ -2400,6 +4546,7 @@ class ActiveComposition:
             source = resolve_word_structures(self.store, classify_layout_tables(
                 classify_web_chrome(self.store,classify_inert_markup(job['source']))))
             source = classify_transparent(self.store, source)
+            source = classify_transparent_svg_placeholders(source)
             from .materials import require_complete_web_materials
             require_complete_web_materials(source)
             for original in source.get('originals', []):
@@ -2407,9 +4554,7 @@ class ActiveComposition:
             for resource in source.get('resources', []):
                 self.store.read_blob(resource.get('sha256', resource['id']))
             job['source'] = source
-            job['visual_count']=sum(o['kind'] in {'image','page','media'} and bool(o.get('resource_id'))
-                and not o.get('visual_classification') and o.get('source_scope') not in
-                {'site_chrome','source_metadata'} for o in source['objects'])
+            job['visual_count']=sum(_needs_active_visual_card(o) for o in source['objects'])
             job['stage'] = 'active_visual'
             return 'queued'
         source = job['source']
@@ -2419,9 +4564,7 @@ class ActiveComposition:
             source=classify_web_chrome(self.store,source)
             job['source']=source
             done = {card['source_id'] for card in job['visual_cards']}
-            pending = [o for o in source['objects'] if o['kind'] in {'image','page','media'}
-                       and o.get('resource_id') and not o.get('visual_classification')
-                       and o.get('source_scope') not in {'site_chrome','source_metadata'}
+            pending = [o for o in source['objects'] if _needs_active_visual_card(o)
                        and o['id'] not in done]
             if pending:
                 visual_batch_size=(self.config.get('active_v2_visual_batch_size',6) if is_v2(job) else 3)
@@ -2443,9 +4586,21 @@ class ActiveComposition:
                         detail = A.VisualCards.model_validate(normalize_visual_card_lists(self.call(job, key+'-detail-'+page['id'], 'active_visual',
                             dict(pages=[page], previous_card=card,
                                  _image_resources=image_resources(self.store, [page], source, [page['id']])), A.VisualCards))).model_dump()
-                        if [c['source_id'] for c in detail['cards']] != [page['id']] or detail['cards'][0]['blocking_uncertainty']:
-                            raise ValueError('图像仍有无法确定的内容，原图与识别结果已保存')
+                        if [c['source_id'] for c in detail['cards']] != [page['id']]:
+                            raise ValueError('图像局部修复没有准确对应原对象')
                         card = detail['cards'][0]
+                        if card['blocking_uncertainty']:
+                            # A genuinely unreadable glyph or cropped region is
+                            # a local limitation, not a reason to discard the
+                            # whole document.  Keep the original image and the
+                            # model's explicit uncertainty for the writer and
+                            # final reviewer, then continue with every readable
+                            # part of the material.
+                            card['limitations']=list(dict.fromkeys(
+                                card.get('limitations',[])+card['blocking_uncertainty']))
+                            card['uncertainty']=list(dict.fromkeys(
+                                card.get('uncertainty',[])+card['blocking_uncertainty']))
+                            card['blocking_uncertainty']=[]
                     page['original_extracted_text'] = page.get('text', '')
                     page['text'] = card['source_text'] or card['visible_content']
                     page['visual_card'] = card
@@ -2455,10 +4610,23 @@ class ActiveComposition:
                 source['unknown'] = [g for g in source.get('unknown', []) if g['object_id'] not in visited]
                 return 'queued'
             active_ids={o['id'] for o in source['objects'] if o.get('source_scope') not in
-                {'site_chrome','source_metadata'}}
+                {'site_chrome','source_metadata','layout_decorative'}}
             unresolved=[g for g in source.get('unknown',[]) if g['object_id'] in active_ids]
-            if unresolved:
-                raise ValueError('原件正文仍有无法读取的对象，尚未开始改写：' + json.dumps(unresolved, ensure_ascii=False))
+            by_id={o['id']:o for o in source['objects']}
+            missing_media=[g for g in unresolved if
+                (by_id.get(g['object_id'],{}).get('kind') in {'image','media'}
+                 and by_id.get(g['object_id'],{}).get('target'))]
+            blocking=[g for g in unresolved if g not in missing_media]
+            if missing_media:
+                # The original URL, label, locator and bytes of the uploaded
+                # document are still present. A blocked remote image must be
+                # disclosed as unavailable, not treated as a readable image or
+                # allowed to discard the rest of an otherwise complete text.
+                job['material_acquisition_limits']=[dict(
+                    object_id=g['object_id'],target=by_id[g['object_id']]['target'],
+                    reason=g['reason']) for g in missing_media]
+            if blocking:
+                raise ValueError('原件正文仍有无法读取的对象，尚未开始改写：' + json.dumps(blocking, ensure_ascii=False))
             from .visual_sources import decorative_resource
             job['archived_layout_source_ids']=[o['id'] for o in source['objects'] if decorative_resource(o)]
             plan_chars=(self.config.get('active_v2_plan_source_chars',9000) if is_v2(job)
@@ -2468,6 +4636,8 @@ class ActiveComposition:
             job['active_groups'] = [[o['id'] for o in group] for group in inventory_groups(
                 [o for o in source['objects'] if not decorative_resource(o)],
                 plan_chars,plan_objects)]
+            job['active_group_prefixes']=['p'+str(index+1)
+                                          for index in range(len(job['active_groups']))]
             if not job['active_groups']:raise ValueError('原件仅含已存档的排版资源，没有可改写正文')
             job['active_partition_count']=len(job['active_groups'])
             job['web_chrome_scope_version']=2
@@ -2487,6 +4657,8 @@ class ActiveComposition:
                     [o for o in source['objects'] if not decorative_resource(o)],
                     self.config.get('active_plan_source_chars',12000),
                     self.config.get('active_plan_source_objects',10))]
+                job['active_group_prefixes']=['p'+str(index+1)
+                                              for index in range(len(job['active_groups']))]
                 job['active_partition_count']=len(job['active_groups'])
                 job['web_chrome_scope_version']=2
             index = job['active_partition_index']
@@ -2494,28 +4666,39 @@ class ActiveComposition:
                 retired=retire_unanchored_abbreviations(job['active_plans'],source)
                 if retired:job.setdefault('unanchored_formal_concepts',[]).extend(retired)
                 job['unanchored_abbreviations_checked']=True
+                responsibilities=(planned_object_responsibilities(job['active_plans'],source)
+                                  if is_core_chain(job) else None)
+                if responsibilities is not None:
+                    job['object_responsibilities']=responsibilities
                 job['writing_batches']=writing_batches(job['active_plans'],source,
-                    node_chars,self.config.get('active_node_concept_limit',10),node_objects)
+                    node_chars,self.config.get('active_node_concept_limit',10),node_objects,
+                    {sid for sid,role in responsibilities.items() if role['present']}
+                    if responsibilities is not None else None)
                 if is_v2(job):
                     job['cross_batch_review_required']=any(
                         bool(node.get('cross_batch_risks'))
                         for part in job['active_plans'] for node in part.get('nodes',[]))
                 job['inventory'],job['plan']=legacy_artifacts(
-                    job['active_plans'],source,job['writing_batches'])
+                    job['active_plans'],source,job['writing_batches'],responsibilities)
                 job['draft']={'blocks':[]}
                 job['stage']='active_write'
                 return 'queued'
             ids = job['active_groups'][index]
-            prefix = 'p' + str(index+1)
+            prefixes=job.get('active_group_prefixes') or []
+            prefix=(prefixes[index] if index<len(prefixes) and prefixes[index]
+                    else 'p' + str(index+1))
             prior = job['active_plans']
             payload = dict(goal=job['goal'], task_mode=job['transformation_mode'], assigned_source_ids=ids,
+                object_responsibility_decisions_required=is_core_chain(job),
                 **plan_document_preview(source,ids,job['active_groups'][:index]),
                 source_spans=prompt_source_spans(source,ids),
                 partition_prefix=prefix, node_source_char_limit=node_chars,
                 node_concept_limit=self.config.get('active_node_concept_limit',10),
                 immutable_contract=prior[0]['contract'] if prior else None,
                 preceding_plans=preceding_plan_context(prior),
-                visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in ids])
+                visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in ids],
+                unavailable_original_media=self.unavailable_media(job,ids),
+                unavailable_media_rule='An unavailable original image has an exact URL and label but no readable pixels. Preserve that reference and disclose the limitation; never describe unseen image content as observed.')
             def validate_planning(value,resources):
                 links={obj['id'] for obj in source['objects']
                        if obj['id'] in ids and obj['kind']=='link'}
@@ -2527,12 +4710,35 @@ class ActiveComposition:
                 if editorial:job.setdefault('editorial_link_limits_removed',[]).extend(editorial)
                 value,repairs=rebind_single_source_spans(value,source,ids)
                 if repairs:job.setdefault('source_span_alignments',[]).extend(repairs)
+                value,evidence_repairs=downgrade_original_only_evidence_bindings(value,source,ids)
+                if evidence_repairs:
+                    recorded=job.setdefault('original_evidence_downgrades',[])
+                    for receipt in evidence_repairs:
+                        item=dict(partition=prefix,**receipt)
+                        if item not in recorded:recorded.append(item)
+                original_gap_ids={item['id'] for item in value.get('evidence_gaps',[])}
+                original_resolution_ids={item['gap_id'] for item in value.get('evidence_resolutions',[])}
+                original_binding_ids={item['id'] for item in value.get('evidence_bindings',[])}
                 plan=validate_plan(value|({'contract':prior[0]['contract']} if prior else {}),source,ids,prior,
                     job['transformation_mode'],node_chars,
                     require_spans=True,resources=resources,
                     require_link_briefs=bool(job.get('link_contract_version')),
                     archived_ids=job.get('archived_layout_source_ids',[]),
-                    concept_limit=self.config.get('active_node_concept_limit',10))
+                    concept_limit=self.config.get('active_node_concept_limit',10),
+                    require_object_responsibilities=is_core_chain(job),
+                    classified_link_decisions=(job.get('active_sessions',{}).get('active-plan-'+prefix,{})
+                        .get('link_decisions',{}) if is_core_chain(job) else None),
+                    default_reference_links=(is_core_chain(job) and
+                        job['transformation_mode']=='rewrite'))
+                if is_core_chain(job) and job['transformation_mode']=='rewrite':
+                    receipt=dict(partition=prefix,
+                        gap_ids=sorted(original_gap_ids-{item['id'] for item in plan['evidence_gaps']}),
+                        resolution_gap_ids=sorted(original_resolution_ids-
+                            {item['gap_id'] for item in plan['evidence_resolutions']}),
+                        binding_ids=sorted(original_binding_ids-
+                            {item['id'] for item in plan['evidence_bindings']}))
+                    if receipt['gap_ids']:
+                        job.setdefault('reference_link_gap_prunes',[]).append(receipt)
                 # Drop a proposed formal acronym that the cited original never
                 # uses before checking its name. A model may otherwise spend its
                 # entire evidence budget proving an unnecessary added glossary
@@ -2541,22 +4747,44 @@ class ActiveComposition:
                 if retired:
                     job.setdefault('unanchored_formal_concepts',[]).extend(retired)
                 return validate_names(plan,resources,allow_unverified_downgrade=is_v2(job)) if job.get('naming_contract_version') else plan
-            result = self.turn(job, 'active-plan-'+prefix, 'active_plan', A.CompositionPart if prior else A.CompositionPlan, source, ids, payload,validate_planning)
+            context_recovery=next((item for item in job.get('active_plan_context_recoveries',[])
+                                   if item.get('recovery_prefix')==prefix and item.get('status')=='queued'),None)
+            if context_recovery:
+                context_recovery.update(status='dispatched',dispatched_at=time.time())
+                self.store.put_job(job)
+            try:
+                result = self.turn(job, 'active-plan-'+prefix, 'active_plan', A.CompositionPart if prior else A.CompositionPlan, source, ids, payload,validate_planning)
+            except Exception as error:
+                if context_recovery:
+                    context_recovery.update(status='failed',error_type=type(error).__name__,failed_at=time.time())
+                    self.store.put_job(job)
+                raise
             job['active_plans'].append(result)
             job['active_partition_index'] += 1
+            for recovery in job.get('active_plan_context_recoveries',[]):
+                if recovery.get('recovery_prefix')==prefix and recovery.get('status') in {'queued','dispatched','failed'}:
+                    recovery.update(status='completed',completed_at=time.time())
+                    recovery.pop('error_type',None)
+                    recovery.pop('failed_at',None)
             if job['active_partition_index'] == len(job['active_groups']):
                 retired=retire_unanchored_abbreviations(job['active_plans'],source)
                 if retired:job.setdefault('unanchored_formal_concepts',[]).extend(retired)
                 job['unanchored_abbreviations_checked']=True
+                responsibilities=(planned_object_responsibilities(job['active_plans'],source)
+                                  if is_core_chain(job) else None)
+                if responsibilities is not None:
+                    job['object_responsibilities']=responsibilities
                 job['writing_batches']=writing_batches(job['active_plans'],source,
                     node_chars,
                     self.config.get('active_node_concept_limit',10),
-                    node_objects)
+                    node_objects,
+                    {sid for sid,role in responsibilities.items() if role['present']}
+                    if responsibilities is not None else None)
                 if is_v2(job):
                     job['cross_batch_review_required']=any(
                         bool(node.get('cross_batch_risks'))
                         for part in job['active_plans'] for node in part.get('nodes',[]))
-                job['inventory'], job['plan'] = legacy_artifacts(job['active_plans'], source,job['writing_batches'])
+                job['inventory'], job['plan'] = legacy_artifacts(job['active_plans'], source,job['writing_batches'],responsibilities)
                 job['draft'] = {'blocks': []}
                 job['stage'] = 'active_write'
             return 'queued'
@@ -2573,39 +4801,83 @@ class ActiveComposition:
                         if cid not in retired_ids]
                     node['requires_concepts']=[cid for cid in node['requires_concepts']
                         if cid not in retired_ids]
-                job['inventory'],job['plan']=legacy_artifacts(job['active_plans'],source,job['writing_batches'])
+                job['inventory'],job['plan']=legacy_artifacts(job['active_plans'],source,job['writing_batches'],
+                    job.get('object_responsibilities') if is_core_chain(job) else None)
             job['unanchored_abbreviations_checked']=True
         nodes = job.get('writing_batches') or [n for p in job['active_plans'] for n in p['nodes']]
         if stage == 'active_write':
             node = nodes[job['unit_index']]
+            core_rewrite=is_core_chain(job) and job['transformation_mode']=='rewrite'
+            if is_core_chain(job):
+                # The planner accounts for archived objects, but only
+                # presentation obligations belong in the reader's draft.
+                presented={item['id'] for part in job['active_plans']
+                           for item in part['obligations']
+                           if job['object_responsibilities'][item['source_id']]['present']}
+                node=copy.deepcopy(node)
+                node['obligation_ids']=[fid for fid in node['obligation_ids'] if fid in presented]
+                for section in node.get('section_outline',[]):
+                    section['obligation_ids']=[fid for fid in section['obligation_ids'] if fid in presented]
             job['current_unit_id'] = node['id']
+            current_objects=[obj for obj in source['objects'] if obj['id'] in node['source_ids']]
+            coalesce_current_short_rewrite_concepts(job,node,current_objects)
+            name_completions=short_rewrite_name_completions(job,node)
             obligations = [o for p in job['active_plans'] for o in p['obligations'] if o['id'] in node['obligation_ids']]
             risk_context=(bounded_prior_context(job['draft']['blocks'])
                           if is_v2(job) and node.get('cross_batch_risks') else [])
-            payload = dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')), node=writer_node_context(node), obligations=prompt_obligations(obligations),
+            current_concepts=[c for p in job['active_plans'] for c in p['concepts']
+                              if c['id'] in node['requires_concepts']+node['establishes_concepts']]
+            payload = dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')), node=writer_node_context(node,core_rewrite=core_rewrite),
+                **writer_reference_payload(job,source,node['source_ids'],obligations,
+                    core_rewrite=core_rewrite),
                 obligation_source_rule='Resolve each obligation through source_id and source_span_ids in opened_resources.',
+                writing_coverage_rule=(('Source obligations are the factual coverage constraints. The concept ledger tracks identity '
+                    'and continuity. Planner reasoning steps are internal scratchpad, not sentences, claims, explanations, '
+                    'or checklist items that must separately appear in the article. '
+                    'Explain source code only when the explanation adds understanding beyond its visible comments and output. '
+                    'For any name_completion, add only the verified Chinese-English pair at its first supported mention '
+                    'without restating its definition or creating a term entry.') if core_rewrite else
+                    'Treat source obligations, the concept_ledger and reasoning_step_coverage as coverage constraints. '
+                    'Reasoning steps guide the source-faithful order and checks; they are not separate definition or heading requests. '
+                    'Write a short plain rewrite as ordinary prose, explain a necessary link briefly inline according to its link role, '
+                    'and reserve a formal definition list for a genuinely central new technical concept. '
+                    'For any name_completion, the Chinese concept has already been explained; add only the verified Chinese-English '
+                    'pair at its first supported mention in this unit, without restating its definition or creating a term entry.'),
+                concept_ledger=dict(required_concept_ids=list(node['requires_concepts']),
+                                    newly_established_concept_ids=list(node['establishes_concepts']),
+                                    name_completion_ids=[item['id'] for item in name_completions]),
+                name_completions=name_completions,
+                **writer_reasoning_coverage(node,core_rewrite=core_rewrite),
                 displayed_heading_rule=('Every displayed heading must contain natural Chinese. Keep necessary official '
                     'English names in parentheses after the Chinese wording; never copy an English-only source heading.'),
                 source_binding_rule=('Every authored block source_ids entry must come only from node.source_ids. Prior-tail '
                     'context is for transitions and must never be rebound as evidence for this batch.'),
-                link_guides=link_guides(job,node['source_ids']),
                 protected_object_catalog=[dict(source_id=sid,kind=next(o['kind'] for o in source['objects'] if o['id']==sid),
-                    insert_marker='{{source:'+sid+'}}') for sid in protected_objects(job['inventory']) if sid in node['source_ids']],
-                composition_instructions='section_outline is the original planned order inside this writing batch, not separate API calls. Keep consecutive list items inside one block. Source metadata belongs in unchanged, collapsed end matter, never a prose tour of HTML scripts. Insert each required protected object by its given marker; source_ids alone is an evidence mapping, not a displayed object.',
+                    insert_marker='{{source:'+sid+'}}') for sid in protected_objects(job['inventory'])
+                    if sid in node['source_ids'] and (not is_core_chain(job)
+                        or job['object_responsibilities'][sid]['present'])],
+                composition_instructions=('section_outline is the original planned order inside this writing batch, not separate API calls. Keep consecutive list items inside one block. Archived source metadata does not belong in the reader article. Insert each required protected object by its given marker; source_ids alone is an evidence mapping, not a displayed object. For unavailable_original_media, preserve the source URL and label and say that the pixels could not be retrieved; never infer the visual content. '
+                    'For object_responsibilities, preserve is handled by the archive; present selects what belongs in the article; explain requests explanation only when needed to follow the author. Do not create prose about a preserved but unpresented object. '
+                    'For reference_link_ids, the original link label and target fulfill coverage; do not describe or infer the destination. For reference_label_ids, the related-resource label itself fulfills coverage even if the saved plan requested explanation. Do not expand a label into a term definition or account of the target.'
+                    if is_core_chain(job) else
+                    'section_outline is the original planned order inside this writing batch, not separate API calls. Keep consecutive list items inside one block. Source metadata belongs in unchanged, collapsed end matter, never a prose tour of HTML scripts. Insert each required protected object by its given marker; source_ids alone is an evidence mapping, not a displayed object. For unavailable_original_media, preserve the source URL and label and say that the pixels could not be retrieved; never infer the visual content.'),
                 global_spine=[dict(id=n['id'], title=n['title'], purpose=n['purpose']) for n in nodes],
-                concepts=[c for p in job['active_plans'] for c in p['concepts']
-                          if c['id'] in node['requires_concepts']+node['establishes_concepts']],
+                concepts=writer_concepts_for_payload(current_concepts,
+                    core_rewrite=is_core_chain(job) and job['transformation_mode']=='rewrite'),
                 established_memory=[dict(node_id=m['node_id'],draft_digest=m['draft_digest'],resource_id=m.get('resource_id'),
                     established=[c for c in m['established'] if c['id'] in node['requires_concepts']])
                     for m in job['knowledge_memory'] if any(c['id'] in node['requires_concepts'] for c in m['established'])],
                 previous_final_tail=[b['markdown'] for b in job['draft']['blocks'][-2:]],
                 risk_review_context=risk_context,
                 already_placed_source_ids=list({sid for b in job['draft']['blocks'] for sid in b.get('embedded_object_ids',[])}),
-                next_node=nodes[job['unit_index']+1] if job['unit_index']+1<len(nodes) else None,
-                visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in node['source_ids']])
+                next_node=(writer_node_context(nodes[job['unit_index']+1],core_rewrite=True)
+                    if core_rewrite and job['unit_index']+1<len(nodes) else
+                    nodes[job['unit_index']+1] if job['unit_index']+1<len(nodes) else None),
+                visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job['visual_cards'] if c['source_id'] in node['source_ids']],
+                unavailable_original_media=self.unavailable_media(job,node['source_ids']))
             def validate(value, resources):
                 result=validate_written(value, node, job['inventory'], bundle, job['draft'],
-                    obligations,payload['concepts'])
+                    obligations,payload['concepts'],payload['name_completions'])
                 if (job['transformation_mode']=='rewrite' and overgrown_short_rewrite_glossary(
                         result[0],[obj for obj in source['objects'] if obj['id'] in node['source_ids']])):
                     raise ValueError('短篇普通改写被扩成术语表：只为不可缺少的专业概念保留正式定义，日常词自然解释，保持原文主线')
@@ -2617,11 +4889,16 @@ class ActiveComposition:
             job['active_candidate'] = dict(draft=draft, coverage=coverage, delta=delta, rounds=0,
                 patch_limit=patch_limit,
                 missing_concept_names=missing_concept_names(
-                    [c for c in payload['concepts'] if c['id'] in node['establishes_concepts']],draft))
+                    [c for c in payload['concepts'] if c['id'] in node['establishes_concepts']]
+                    +payload['name_completions'],draft))
+            if is_core_chain(job):
+                return self.commit_candidate(job,node,job['active_candidate'])
             job['stage'] = 'active_review'
             return 'queued'
         if stage=='active_review':
             node=nodes[job['unit_index']];candidate=job['active_candidate']
+            post_patch_review=bool(is_v2(job) and candidate.get('post_patch_review_required'))
+            name_completions=short_rewrite_name_completions(job,node)
             draft=normalize_authored_spacing(candidate['draft'],job['inventory'])
             if canonical(draft)!=canonical(candidate['draft']):
                 candidate.setdefault('layout_normalizations',[]).append(dict(
@@ -2664,6 +4941,13 @@ class ActiveComposition:
                         result.setdefault('output_quote_alignments',[]).append(dict(
                             submitted_block_id=prior,actual_block_id=row['block_id'],
                             operation='exact_existing_text_rebind'))
+                    elif current:
+                        fragment=exact_review_quote_fragment(row['output_quote'],current['markdown'])
+                        if fragment:
+                            row['output_quote']=fragment
+                            result.setdefault('output_quote_alignments',[]).append(dict(
+                                actual_block_id=current['id'],operation='unique_exact_review_fragment',
+                                reviewer_quote_was_not_verbatim=True))
                 for finding in result['findings']:
                     block=blocks.get(finding['block_id'])
                     if not block or finding['output_quote'] in block['markdown']:continue
@@ -2729,7 +5013,24 @@ class ActiveComposition:
                         sid=finding['source_id']
                         external=resources.state['entries'].get(sid,{}) if resources else {}
                         if sid not in node['source_ids'] and external.get('kind')!='external':
-                            raise ValueError('核对意见引用了其他单元的原文')
+                            matches=[(other_id,quote) for other_id in node['source_ids']
+                                     if other_id in objects
+                                     if (quote:=exact_source_quote(finding['source_quote'],
+                                         objects[other_id]['text'],objects[other_id]['kind']=='page')) is not None]
+                            if len(matches)==1:
+                                submitted_sid=sid
+                                finding['source_id'],finding['source_quote']=matches[0]
+                                sid=finding['source_id']
+                                result.setdefault('source_quote_alignments',[]).append(dict(
+                                    submitted_source_id=submitted_sid,
+                                    actual_source_id=sid,
+                                    operation='exact_in_scope_original_object_rebind'))
+                            else:
+                                finding['_ignore_cross_unit']=True
+                                result.setdefault('ignored_cross_unit_findings',[]).append(dict(
+                                    block_id=finding['block_id'],submitted_source_id=sid,
+                                    reason='review finding cited a source outside the current writing unit'))
+                                continue
                         original=sid in node['source_ids']
                         texts=(objects[sid]['text'],literals.get(sid,'')) if original else (resources.text(sid),)
                         pdf_wrap=original and objects[sid]['kind']=='page'
@@ -2764,18 +5065,36 @@ class ActiveComposition:
                                     submitted_source_id=sid,actual_source_id=finding['source_id'],
                                     operation='unique_near_exact_original_object_rebind',
                                     reviewer_quote_was_not_verbatim=True))
+                        if exact is None and original and objects[finding['source_id']]['text']:
+                            # The finding already names an in-scope immutable
+                            # source object.  A paraphrased evidence snippet is
+                            # a protocol defect, not a reason to discard the
+                            # whole generated article.  Bind the finding to the
+                            # complete stored object so the later patch remains
+                            # source-grounded without inventing a quotation.
+                            exact=objects[finding['source_id']]['text']
+                            result.setdefault('source_quote_alignments',[]).append(dict(
+                                submitted_source_id=sid,actual_source_id=finding['source_id'],
+                                operation='complete_original_object_evidence_fallback',
+                                reviewer_quote_was_not_verbatim=True))
                         if exact is None:raise ValueError('核对意见未准确引用当前原文')
                         if exact!=finding['source_quote']:
                             result.setdefault('source_quote_alignments',[]).append(dict(source_id=sid,
                                 submitted_quote=finding['source_quote'],actual_quote=exact,
                                 operation='source_pdf_wrap_alignment' if pdf_wrap else 'source_whitespace_only'))
                             finding['source_quote']=exact
+                result['findings']=[finding for finding in result['findings']
+                                    if not finding.pop('_ignore_cross_unit',False)]
+                retarget_protected_findings(
+                    result,draft,protected_objects(job['inventory']).values())
                 # Deterministic omissions enter the same bounded local repair
                 # transaction as semantic findings, instead of paying for a
                 # second full writer response to discover one absent name.
+                expected_concepts=[c for part in job['active_plans'] for c in part['concepts']
+                                   if c['id'] in node['establishes_concepts']]
+                completion_ids={item['id'] for item in name_completions}
                 for omission in missing_concept_names(
-                    [c for part in job['active_plans'] for c in part['concepts']
-                     if c['id'] in node['establishes_concepts']],draft):
+                    expected_concepts+name_completions,draft):
                     sid=next((sid for sid in omission['source_ids'] if sid in node['source_ids']),None)
                     if not sid:continue
                     block=next((b for b in draft['blocks'] if any(
@@ -2785,10 +5104,16 @@ class ActiveComposition:
                     quote=next((line for line in block['markdown'].splitlines()
                                 if omission['chinese_name'] in line),block['markdown'].splitlines()[0])
                     if any(f['block_id']==block['id'] and '术语' in f['problem'] for f in result['findings']):continue
+                    is_name_completion=omission['concept_id'] in completion_ids
                     result['findings'].append(dict(block_id=block['id'],output_quote=quote,
                         source_id=sid,source_quote=objects[sid]['text'],
                         problem='已查证术语在实际正文中缺少名称：'+', '.join(omission['names']),
-                        required_change='仅在本术语首次定义处补齐已查证的中英文名称和缩写展开，保持原句主张及其余正文不变'))
+                        required_change=('只在本单元首次出现处按要求排成“'+
+                            next((item.get('first_use_display','') for item in name_completions
+                                  if item['id']==omission['concept_id']), '缩写 中文名（英文名）')+
+                            '”：缩写置于中文名称前，全角括号内只放英文名；不重讲此前已接受的定义，'
+                            '保持原句主张及其余正文不变' if is_name_completion else
+                            '仅在本术语首次定义处补齐已查证的中英文名称和缩写展开，保持原句主张及其余正文不变')))
                 # A collapsed facsimile is an original reference, not a new
                 # teaching diagram whose immutable bytes a writer should edit
                 references={b['id'] for b in draft['blocks'] if b['kind']=='document_info'
@@ -2800,7 +5125,8 @@ class ActiveComposition:
                 # separately prevents changing the protected source object.
                 def reference_only(f):
                     return f['block_id'] in references
-                result['protected_reference_notes']=[f for f in result['findings'] if reference_only(f)]
+                result.setdefault('protected_reference_notes',[]).extend(
+                    f for f in result['findings'] if reference_only(f))
                 result['findings']=[f for f in result['findings'] if not reference_only(f)]
                 for issue in confirmed_format_issues(format_issues,result,bool(job.get('joint_review_contract_version'))):
                     if any(f['block_id']==issue['block_id'] and issue['output_quote'] in f['output_quote'] for f in result['findings']):continue
@@ -2835,10 +5161,13 @@ class ActiveComposition:
                     concepts=[c for part in job['active_plans'] for c in part['concepts'] if c['id'] in node['establishes_concepts']+node['requires_concepts']],
                     missing_concept_names=missing_concept_names(
                         [c for part in job['active_plans'] for c in part['concepts']
-                         if c['id'] in node['establishes_concepts']],draft),
+                         if c['id'] in node['establishes_concepts']]+name_completions,draft),
+                    name_completions=name_completions,
                     format_preflight=review_format_context(format_issues),
                     format_decisions_required=bool(job.get('joint_review_contract_version')),
                     visual_cards=visual_cards,
+                    unavailable_original_media=self.unavailable_media(job,node['source_ids']),
+                    unavailable_media_review_rule='Flag any assertion that describes unavailable image pixels as observed; preserve the original URL and the explicit limitation.',
                     review_obligation_ids=sorted(review_ids),
                     exact_revision=candidate.get('last_patch'),
                     protected_originals=protected_objects(job['inventory']),
@@ -2850,9 +5179,11 @@ class ActiveComposition:
             record=dict(draft_digest=digest(canonical(draft).encode()),**result)
             reviews=candidate.setdefault('content_reviews',[])
             if not reviews or reviews[-1]!=record:reviews.append(record)
+            if post_patch_review:candidate.pop('post_patch_review_required',None)
             if result['findings']:
                 candidate['content_findings']=result['findings']
-                if patch_rounds(candidate)>=candidate.get('patch_limit',2) or round_>=self.config.get('active_revision_limit',2):
+                if (post_patch_review or patch_rounds(candidate)>=candidate.get('patch_limit',2)
+                        or round_>=self.config.get('active_revision_limit',2)):
                     candidate['unresolved_content_findings']=result['findings']
                     job.setdefault('quality_issues',[]).extend(
                         node['id']+' / '+f['block_id']+'：'+f['problem'] for f in result['findings'])
@@ -2869,10 +5200,24 @@ class ActiveComposition:
         if stage == 'active_format':
             from .review_context import editable_lines,line_proposal
             node = nodes[job['unit_index']]
+            name_completions=short_rewrite_name_completions(job,node)
             candidate = job['active_candidate']
             reject_empty_claimed_blocks(candidate['draft'])
             retire_refuted_formal_concepts(job,candidate)
             if is_v2(job):
+                # Resume v2 candidates saved by earlier workers immediately
+                # after active_patch. Those checkpoints used active_format as
+                # the next stage and never recorded the required post-patch
+                # review, so compare exact draft digests before committing.
+                patch=candidate.get('last_patch')
+                candidate_digest=digest(canonical(candidate['draft']).encode())
+                reviewed_digests={record.get('draft_digest')
+                    for record in candidate.get('content_reviews',[])}
+                if (patch and patch.get('after')==candidate_digest
+                        and candidate_digest not in reviewed_digests):
+                    candidate['post_patch_review_required']=True
+                    job['stage']='active_review'
+                    return 'queued'
                 # V2 records unresolved findings on the checkpoint and commits
                 # the current candidate.  No format/content gate may prevent
                 # the remaining units or the final delivery from being built.
@@ -2977,7 +5322,7 @@ class ActiveComposition:
             clear_resolved_format_issue(job,candidate,node['id'])
             candidate['draft'] = draft
             concept_presence([c for part in job['active_plans'] for c in part['concepts']
-                              if c['id'] in node['establishes_concepts']], draft)
+                              if c['id'] in node['establishes_concepts']]+name_completions, draft)
             blocks = {b['id']: b for b in draft['blocks']}
             for binding in candidate['coverage']:
                 if binding['output_quote'] not in blocks[binding['block_id']]['markdown']:
@@ -3052,7 +5397,22 @@ class ActiveComposition:
                 previous=candidate['draft'];attempt=len(candidate.get('patch_history',[]))
                 if attempt>=self.config.get('active_revision_limit',4):
                     raise ValueError('当前单元精确修订仍未解决问题，原文、补丁与意见均已保留')
-                allowed=set(candidate['revision_blocks'])
+                literals=protected_objects(job['inventory']).values()
+                retarget_protected_findings(candidate['revision_issues'],previous,literals)
+                candidate['revision_blocks']=list(dict.fromkeys(
+                    finding['block_id'] for finding in candidate['revision_issues'].get('findings',[])))
+                allowed=set(candidate['revision_blocks']) & patchable_block_ids(previous,literals)
+                if not allowed:
+                    candidate['unresolved_revision']=copy.deepcopy(candidate['revision_issues'])
+                    candidate.setdefault('protected_patch_notes',[]).append(dict(
+                        reason='no_authored_patch_target_after_protected_material_filter',
+                        original_block_ids=list(candidate['revision_blocks'])))
+                    quality_note=(node['id']+'：修订意见涉及受保护材料，未找到同源解释段落；原材料保持不变，意见已保留')
+                    if quality_note not in job.setdefault('quality_issues',[]):
+                        job['quality_issues'].append(quality_note)
+                    job['stage']='active_format'
+                    self.store.put_job(job)
+                    return 'queued'
                 def validate_patch(value,resources):
                     proposal=LocalRepair.model_validate(value).model_dump()
                     proposal,rejected=normalize_local_proposal(
@@ -3104,14 +5464,48 @@ class ActiveComposition:
                         self.store.put_job(job)
                         raise ValueError(str(error)) from error
                     return changed,proposal
-                changed,proposal=self.turn(job,'active-patch-'+node['id']+'-'+str(attempt)+'-'+digest([canonical(previous),writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal',''))])[:16],'active_patch',LocalRepair,
-                    source,node['source_ids'],dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')),node=node,
+                patch_key='active-patch-'+node['id']+'-'+str(attempt)+'-'+digest([canonical(previous),writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal',''))])[:16]
+                marker=next((item for item in candidate.get('unknown_patch_continuations',[])
+                    if item.get('original_step_key','').startswith(patch_key+'-turn-')),None)
+                if marker:
+                    patch_key=marker['continuation_session_key']
+                    if marker.get('status')=='queued':
+                        marker['status']='dispatching'
+                        marker['dispatch_started_at']=time.time()
+                        self.store.put_job(job)
+                patch_payload=dict(contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal','')),node=node,
                         document_digest=digest(canonical(previous).encode()),original_draft=previous,
                         editable_block_ids=sorted(allowed),issues=candidate['revision_issues'],
+                        protected_literal_spans=[dict(block_id=block['id'],start=start,end=end)
+                            for block in previous['blocks'] if block['id'] in allowed
+                            for start,end in _protected_literal_spans(block['markdown'],literals)],
+                        patch_scope_note=('只修改 issues 所指的作者文字。protected_literal_spans 是相对各 block markdown 的零起始字符区间，'
+                            '必须保持原样；混合 object 块只允许改这些区间之外的作者图注文字。source、document_info 和纯 object 块不可编辑。'),
                         link_guides=link_guides(job,node['source_ids']),
                         visual_cards=[{k:v for k,v in c.items() if k!='source_text'} for c in job.get('visual_cards',[]) if c['source_id'] in node['source_ids']],
                         obligations=[f for part in job['active_plans'] for f in part['obligations'] if f['id'] in node['obligation_ids']],
-                        previous_final_tail=[b['markdown'] for b in job['draft']['blocks'][-2:]]),validate_patch)
+                        previous_final_tail=[b['markdown'] for b in job['draft']['blocks'][-2:]])
+                if marker:
+                    patch_payload['continuation_note']=(
+                        '上一轮 active_patch 的 Responses SSE 在截止时间后没有完整回执。不得假设该请求未执行，也不得重放原步骤。'
+                        '本次是唯一的新步骤续接；原稿、证据、材料对象及未知费用记录保持不变。只修改 issues 所指的作者文字，'
+                        'protected_literal_spans 内的内容必须保持原样；混合 object 块只允许修改这些区间外的作者图注，'
+                        'source、document_info 和纯 object 块不可编辑。')
+                    patch_payload['prior_unknown_step_key']=marker['original_step_key']
+                try:
+                    changed,proposal=self.turn(job,patch_key,'active_patch',LocalRepair,
+                        source,node['source_ids'],patch_payload,validate_patch)
+                except Exception:
+                    if marker:
+                        marker['status']='continuation_interrupted_or_rejected'
+                        marker['finished_at']=time.time()
+                        self.store.put_job(job)
+                    raise
+                if marker:
+                    marker['status']='completed'
+                    marker['finished_at']=time.time()
+                    marker['result_digest']=digest(canonical(proposal).encode())
+                    self.store.put_job(job)
                 candidate.setdefault('patch_history',[]).append(dict(before=proposal['document_digest'],
                     after=digest(canonical(changed).encode()),edits=proposal['edits']))
                 candidate['last_patch']=candidate['patch_history'][-1]
@@ -3122,7 +5516,8 @@ class ActiveComposition:
                 # Keep optional small quotations only if still exact after edits.
                 candidate['delta']['concept_evidence']=[e for e in candidate['delta'].get('concept_evidence',[])
                     if e['output_quote'] in blocks[e['block_id']]['markdown']]
-                job['stage']='active_format' if is_v2(job) else 'active_review'
+                if is_v2(job):candidate['post_patch_review_required']=True
+                job['stage']='active_review'
                 return 'queued'
             revision_count=len(candidate.get('revision_history',[]))
             if revision_count>=self.config.get('active_revision_limit',4):raise ValueError('当前单元定向修订仍未解决问题，已保存候选与具体意见')
@@ -3164,8 +5559,134 @@ class ActiveComposition:
                 revision_done=True,dismissed=[])
             job['stage']='active_format' if is_v2(job) else ('active_review' if candidate.get('content_findings') else 'active_format')
             return 'queued'
-        if stage == 'active_deliver':
+        if stage == 'active_integrity' and is_core_chain(job):
             reject_empty_claimed_blocks(job['draft'])
+            deterministic=self.deterministic_integrity_findings(job)
+            if any(row['verdict']=='FAIL' and row['invariant'] in {'I1','I2','I5'}
+                   for row in deterministic):
+                job['integrity_result']=integrity_result(job,deterministic,review_attempted=False)
+                job['stage']='active_deliver'
+                return 'queued'
+            source_ids=list(dict.fromkeys(sid for group in job['active_groups'] for sid in group))
+            block_ids=[block['id'] for block in job['draft']['blocks']]
+            obligations=[item for part in job['active_plans'] for item in part['obligations']
+                         if job['object_responsibilities'][item['source_id']]['present']]
+            payload=dict(actual_draft=job['draft'],source_identity=dict(
+                    original_names=[item['name'] for item in job['inventory']['originals']],
+                    source_digest=job['source_digest']),
+                object_responsibilities=job['object_responsibilities'],
+                obligations=obligations,
+                external_evidence=integrity_allowed_evidence(job,self.store),
+                frozen_source_objects=[obj for obj in source['objects']
+                                       if obj['id'] in source_ids],
+                visual_cards=[{k:v for k,v in card.items() if k!='source_text'}
+                              for card in job.get('visual_cards',[])],
+                review_scope='whole_candidate',
+                required_source_ids=source_ids,required_block_ids=block_ids)
+            payload['required_i3_block_ids']=sorted(patchable_block_ids(
+                job['draft'],protected_objects(job['inventory']).values()))
+            review=self.review_integrity_once(job,
+                'active-integrity-'+digest(canonical(job['draft']).encode())[:16],
+                payload,job['draft'],source,payload['external_evidence'],
+                protected_literals=protected_objects(job['inventory']).values())
+            job['integrity_result']=integrity_result(job,deterministic+review['findings'],
+                reviewed_source_ids=review['checked_source_ids'],
+                reviewed_block_ids=review['checked_block_ids'])
+            failures=[item for item in job['integrity_result']['findings']
+                      if item['verdict']=='FAIL']
+            editable=patchable_block_ids(job['draft'],protected_objects(job['inventory']).values())
+            if (failures and all(item['invariant'] in {'I3','I4'} and
+                    item['block_id'] in editable and item['required_change'] for item in failures)):
+                job['stage']='active_integrity_repair'
+            else:
+                job['stage']='active_deliver'
+            return 'queued'
+        if stage == 'active_integrity_repair' and is_core_chain(job):
+            from .production_contracts import LocalRepair
+            previous=copy.deepcopy(job['draft'])
+            original=job['integrity_result']
+            failures=[item for item in original['findings'] if item['verdict']=='FAIL']
+            allowed={item['block_id'] for item in failures}
+            protected=tuple(protected_objects(job['inventory']).values())
+            key='active-integrity-repair-'+original['draft_digest'][:16]
+            def validate_repair(value,resources):
+                proposal=LocalRepair.model_validate(value).model_dump()
+                proposal,rejected=normalize_local_proposal(proposal,previous,protected)
+                if rejected:job.setdefault('rejected_integrity_edits',[]).extend(rejected)
+                if not proposal['edits']:
+                    raise ValueError('整稿修复没有可安全提交的局部改动')
+                changed=repair(bundle,previous,proposal,allowed,
+                    self.store.root/'production'/job['id']/('integrity-repair-'+original['draft_digest'][:12]))
+                for literal in protected:
+                    if literal and canonical(previous).count(literal)!=canonical(changed).count(literal):
+                        raise ValueError('整稿修复改变了原件对象')
+                untouched={block['id']:block for block in previous['blocks']
+                           if block['id'] not in allowed}
+                if any(next((row for row in changed['blocks'] if row['id']==bid),None)!=block
+                       for bid,block in untouched.items()):
+                    raise ValueError('整稿修复改变了未命中的段落')
+                return changed,proposal
+            try:
+                changed,proposal=self.turn(job,key,'active_patch',LocalRepair,source,
+                    list(dict.fromkeys(item['source_id'] for item in failures if item['source_id'])),
+                    dict(original_draft=previous,document_digest=original['draft_digest'],
+                         editable_block_ids=sorted(allowed),issues=failures,
+                         repair_scope='one focused transaction for the complete candidate'),
+                    validate_repair)
+            except (ValueError,Conflict) as error:
+                job['integrity_result']['repair_note']=str(error)[:240]
+                job['stage']='active_deliver'
+                return 'queued'
+            job['draft']=changed
+            job['integrity_repair']=dict(before=original['draft_digest'],
+                after=digest(canonical(changed).encode()),edits=proposal['edits'])
+            affected_sources=list(dict.fromkeys(sid for block in changed['blocks']
+                if block['id'] in allowed for sid in [e['source_id'] for e in block['evidence']]))
+            affected_blocks=[block for block in changed['blocks'] if block['id'] in allowed]
+            confirmation_payload=dict(review_scope='changed_blocks_only',
+                actual_draft={'blocks':affected_blocks},
+                prior_findings=failures,exact_repair=job['integrity_repair'],
+                required_source_ids=affected_sources,
+                required_block_ids=sorted(allowed))
+            try:
+                confirmation=self.turn(job,'active-integrity-confirm-'+job['integrity_repair']['after'][:16],
+                    'active_integrity',A.IntegrityReview,source,affected_sources,
+                    confirmation_payload,lambda value,resources:
+                        A.IntegrityReview.model_validate(value).model_dump())
+                confirmed=(set(allowed)<=set(confirmation['checked_block_ids']) and
+                           set(affected_sources)<=set(confirmation['checked_source_ids']))
+                remaining=[item for item in original['findings'] if item['verdict']!='FAIL']
+                remaining+=confirmation['findings']
+                if not confirmed:
+                    remaining.append(dict(invariant='I4',verdict='UNKNOWN',block_id='',source_id='',
+                        output_quote='',source_quote='',problem='局部修复的影响范围尚未完整复核',
+                        required_change=''))
+            except (ValueError,Conflict) as error:
+                remaining=[item for item in original['findings'] if item['verdict']!='FAIL']
+                remaining.append(dict(invariant='I4',verdict='UNKNOWN',block_id='',source_id='',
+                    output_quote='',source_quote='',problem='局部修复后的语义复核未完成：'+str(error)[:160],
+                    required_change=''))
+            remaining+=self.deterministic_integrity_findings(job)
+            job['integrity_result']=integrity_result(job,remaining,
+                reviewed_source_ids=original['reviewed_source_ids'],
+                reviewed_block_ids=original['reviewed_block_ids'])
+            job['stage']='active_deliver'
+            return 'queued'
+        if stage == 'active_deliver':
+            if is_core_chain(job):
+                result=job.get('integrity_result')
+                if not result or result['draft_digest']!=digest(canonical(job['draft']).encode()):
+                    raise ValueError('整稿完整性结论缺失或不属于当前候选版本')
+                job['publication_status']='Verified' if result['verdict']=='PASS' else 'Candidate'
+                job['delivery_checks']=dict(source_digest=job['source_snapshot_digest'],
+                    compiled_inventory_digest=job['inventory']['digest'],
+                    draft_digest=result['draft_digest'],
+                    integrity_verdict=result['verdict'],
+                    publication_status=job['publication_status'])
+                self.store.put_job(job)
+                return 'completed'
+            reject_empty_claimed_blocks(job['draft'])
+            retire_projected_document_info_gap_notes(job)
             findings = inspect_draft(job['inventory'], job['draft'], job['plan'])
             if findings and not is_v2(job):
                 raise ValueError('交付结构检查失败：'+json.dumps(findings, ensure_ascii=False))

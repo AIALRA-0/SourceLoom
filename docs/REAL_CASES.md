@@ -2,15 +2,17 @@
 
 以下为经过人工修订的历史样章，未通过本轮完整自动生产验收；最新自动草稿与实际失败见 [真实试验记录](../reports/AUTOMATIC_TRIAL.md)
 
-直接打开 [完整案例入口](https://sourceloom.aialra.online/examples/real/)，登录后点击任何一份材料，即可阅读改写正文，无须先理解工作台的内部步骤
+具体输出记录只保存在私有工作区，因此本页说明输入来源、许可与验收边界，不公开材料页地址。
+
+如有工作台权限，可从 [SourceLoom 主页](https://sourceloom.aialra.online/) 登录后访问相应材料；公开仓库不包含这些材料记录标识
 
 ## 1 三份材料
 
 | 实际输入 | 最终输出 |
 | --- | --- |
-| PLOS 的 4 页学术方法文章《Ten Simple Rules for Reproducible Computational Research》PDF，保留全部十条规则、出版声明及 25 项参考文献 | [阅读论文改写](https://sourceloom.aialra.online/examples/real/paper.html) |
-| MDN 的完整盒模型网页正文，包含原图、代码、表格与运行示例 | [阅读网页改写](https://sourceloom.aialra.online/examples/real/web.html) |
-| Rust 官方教程第 4.1 节完整 Markdown，展开同一版本中的代码引用并保留五幅原图 | [阅读 Markdown 改写](https://sourceloom.aialra.online/examples/real/rust.html) |
+| PLOS 的 4 页学术方法文章《Ten Simple Rules for Reproducible Computational Research》PDF，保留全部十条规则、出版声明及 25 项参考文献 | 阅读论文改写（仅保存在私有工作区） |
+| MDN 的完整盒模型网页正文，包含原图、代码、表格与运行示例 | 阅读网页改写（仅保存在私有工作区） |
+| Rust 官方教程第 4.1 节完整 Markdown，展开同一版本中的代码引用并保留五幅原图 | 阅读 Markdown 改写（仅保存在私有工作区） |
 
 每份提供连续阅读、原文阅读、原文与成稿对照、最终 PDF、改写 Markdown，以及包含原件与资源的压缩包
 

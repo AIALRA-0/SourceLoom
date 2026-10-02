@@ -14,5 +14,9 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - run: python -m pip install '.[test]'
+      - run: node --test frontend/*.test.js
       - run: python scripts/verify.py

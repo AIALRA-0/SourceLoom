@@ -5,6 +5,7 @@ import re
 import asyncio
 import time
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 import httpx
 
@@ -14,6 +15,7 @@ from .provider_settings import normalize_protocol, route_from_config
 
 
 ROUTER_WEB_MAX_PROMPT_CHARACTERS = 4_000
+_TIMING_PROCESS_ID = identity()
 
 
 def stage_codex_images(store, work, image_resources):
@@ -257,6 +259,35 @@ class ReasoningExhausted(ValueError):
     """A fully received billed response spent its entire output on reasoning."""
 
 
+class RouteUnavailable(Uncertain):
+    """A route failed definitively enough to try its configured backup once."""
+
+
+@dataclass(frozen=True)
+class ProviderResult:
+    status: str
+    value: object = None
+    error: Exception | None = None
+
+
+def logical_request_id(job, step_key):
+    """A stable business-call identity independent of transport attempts."""
+    if not job.get('id') or not step_key:
+        raise ValueError('模型逻辑调用缺少任务或步骤身份')
+    return str(job['id']) + ':' + str(step_key)
+
+
+def _has_unresolved_delivery(job, request_id):
+    """A dispatched call without a confirmed terminal result stays unknown."""
+    return any(
+        call.get('logical_request_id') == request_id
+        and call.get('dispatch_started')
+        and call.get('dispatch_state') != 'confirmed_not_sent'
+        and call.get('status') in {'submitted', 'uncertain', 'unavailable'}
+        for call in job.get('calls', [])
+    )
+
+
 def reasoning_exhausted(body):
     choice=body.get('choices',[{}])[0]
     message=choice.get('message',{})
@@ -329,17 +360,21 @@ def post_stream_before_deadline(url,headers,body,deadline):
     async def request():
         remaining=max(.001,deadline-time.time())
         async with httpx.AsyncClient(timeout=remaining,follow_redirects=False) as client:
-            lines=[];response=None
+            lines=[];response=None;first_byte_at=None
             try:
                 async with client.stream('POST',url,headers=headers,json=body) as response:
                     if response.status_code>=400:
                         data=await response.aread()
                         return httpx.Response(response.status_code,content=data,
                             headers=response.headers,request=response.request)
-                    async for line in response.aiter_lines():lines.append(line)
+                    async for line in response.aiter_lines():
+                        if first_byte_at is None and line.startswith('data:'):
+                            first_byte_at=time.perf_counter()
+                        lines.append(line)
                     assembled=chat_completion_from_sse(lines)
                     return httpx.Response(response.status_code,json=assembled,
-                        headers=response.headers,request=response.request)
+                        headers=response.headers,request=response.request,
+                        extensions={'sourceloom_first_byte_at':first_byte_at})
             except httpx.TransportError:
                 # Some OpenAI-compatible gateways close chunked transfer
                 # without a clean HTTP terminator after already sending the
@@ -349,7 +384,8 @@ def post_stream_before_deadline(url,headers,body,deadline):
                 if response is not None and completed_chat_sse(lines):
                     assembled=chat_completion_from_sse(lines)
                     return httpx.Response(response.status_code,json=assembled,
-                        headers=response.headers,request=response.request)
+                        headers=response.headers,request=response.request,
+                        extensions={'sourceloom_first_byte_at':first_byte_at})
                 raise
             except TimeoutError:
                 raise Uncertain('本次流式模型响应超过等待上限，原请求及预留费用保留，不自动重发') from None
@@ -360,9 +396,127 @@ def post_stream_before_deadline(url,headers,body,deadline):
     return asyncio.run(bounded())
 
 
+class _ResponsesSSEParser:
+    """Keep only the current SSE frame and the canonical terminal artifact."""
+    def __init__(self):
+        self.event_name='';self.data=[];self.terminal=None
+
+    def feed(self,line):
+        # Once a terminal artifact has arrived, continue draining the response
+        # but do not retain deltas or frames following it.
+        if self.terminal is not None:return
+        if line=='':self._dispatch();return
+        if line.startswith(':'):return
+        if line.startswith('event:'):self.event_name=line[6:].strip()
+        elif line.startswith('data:'):self.data.append(line[5:].lstrip())
+
+    def _dispatch(self):
+        if not self.data:
+            self.event_name='';self.data=[];return
+        raw='\n'.join(self.data).strip();current_event=self.event_name
+        self.event_name='';self.data=[]
+        if raw=='[DONE]':return
+        try:payload=json.loads(raw)
+        except (TypeError,ValueError):
+            raise Uncertain('Responses 流包含无法解析的数据，费用状态未知，未接受部分结果') from None
+        if not isinstance(payload,dict):return
+        kind=str(payload.get('type') or current_event)
+        if kind not in {'response.completed','response.incomplete','response.failed'}:return
+        response=payload.get('response')
+        if not isinstance(response,dict):
+            # Preserve the provider's terminal error while leaving usage
+            # unknown; never turn a failed event into an empty success.
+            response={'status':kind.rsplit('.',1)[-1],
+                      'error':payload.get('error') or payload.get('response')}
+        else:
+            response=dict(response)
+            if not response.get('status'):
+                response['status']=kind.rsplit('.',1)[-1]
+        if kind=='response.completed' and response.get('status') not in {'completed','complete','succeeded'}:
+            raise Uncertain('Responses 流的完成事件与响应状态不一致，费用状态未知，未接受结果')
+        usage=response.get('usage')
+        if usage is not None and not isinstance(usage,dict):
+            raise Uncertain('Responses 流的 usage 格式无效，原请求费用状态未知，未接受结果')
+        if isinstance(usage,dict):
+            for key in ('input_tokens','output_tokens','total_tokens'):
+                value=usage.get(key)
+                if value is not None and (isinstance(value,bool) or not isinstance(value,int) or value<0):
+                    raise Uncertain('Responses 流的 usage 数值无效，原请求费用状态未知，未接受结果')
+        self.terminal=response
+
+    def result(self):
+        self._dispatch()
+        if self.terminal is None:
+            raise Uncertain('Responses 流未收到最终响应事件，原请求费用状态未知，未接受部分结果')
+        return self.terminal
+
+
+def responses_body_from_sse(lines):
+    """Return a terminal Responses object with usage/status intact."""
+    parser=_ResponsesSSEParser()
+    for line in lines:parser.feed(line)
+    return parser.result()
+
+
+def post_responses_stream_before_deadline(url,headers,body,deadline):
+    """Consume Responses SSE within one deadline and expose its final JSON object."""
+    async def request():
+        remaining=max(.001,deadline-time.time())
+        async with httpx.AsyncClient(timeout=remaining,follow_redirects=False) as client:
+            parser=_ResponsesSSEParser();response=None;first_byte_at=None
+            try:
+                async with client.stream('POST',url,headers=headers,json=body) as response:
+                    if response.status_code>=400:
+                        data=await response.aread()
+                        return httpx.Response(response.status_code,content=data,
+                            headers=response.headers,request=response.request)
+                    async for line in response.aiter_lines():
+                        if first_byte_at is None and line.startswith('data:'):
+                            first_byte_at=time.perf_counter()
+                        parser.feed(line)
+                    result=parser.result()
+                    return httpx.Response(response.status_code,json=result,
+                        headers=response.headers,request=response.request,
+                        extensions={'sourceloom_first_byte_at':first_byte_at})
+            except httpx.TransportError:
+                # A disconnect after the terminal event still has a complete
+                # billable artifact. Every earlier disconnect remains unknown.
+                try:result=parser.result()
+                except Uncertain:raise
+                if response is not None:
+                    return httpx.Response(response.status_code,json=result,
+                        headers=response.headers,request=response.request,
+                        extensions={'sourceloom_first_byte_at':first_byte_at})
+                raise
+            except TimeoutError:
+                try:result=parser.result()
+                except Uncertain:
+                    raise Uncertain('Responses 流超过等待上限且未收到最终事件，原请求费用状态未知，未自动重发') from None
+                if response is not None:
+                    return httpx.Response(response.status_code,json=result,
+                        headers=response.headers,request=response.request,
+                        extensions={'sourceloom_first_byte_at':first_byte_at})
+                raise Uncertain('Responses 流超过等待上限，原请求费用状态未知，未自动重发') from None
+    async def bounded():
+        try:return await asyncio.wait_for(request(),timeout=max(.001,deadline-time.time()))
+        except TimeoutError:
+            raise Uncertain('Responses 流超过等待上限且未确认完整结果，原请求费用状态未知，未自动重发') from None
+    return asyncio.run(bounded())
+
+
 def streaming_chat_enabled(config,protocol):
     from urllib.parse import urlsplit
     return (protocol=='chat_completions' and bool(config.get('kuafu_streaming',True))
+            and urlsplit(config.get('base_url','')).hostname=='api.kuafushe.cc')
+
+
+def streaming_responses_enabled(config,protocol):
+    from urllib.parse import urlsplit
+    # Live KuaFu requests showed non-stream Responses and Chat returning 524,
+    # while ten production Responses SSE requests completed. Use SSE for
+    # ordinary KuaFu Responses calls; keep an explicit false as an operator
+    # override and leave other hosts on their existing transport.
+    return (protocol=='responses' and bool(config.get('kuafu_responses_streaming',True))
             and urlsplit(config.get('base_url','')).hostname=='api.kuafushe.cc')
 
 
@@ -370,7 +524,7 @@ def apply_stream_timeout(config):
     """Give Kuafu SSE enough wall time while preserving an outer deadline."""
     result=dict(config)
     protocol=normalize_protocol(result)
-    if streaming_chat_enabled(result,protocol):
+    if streaming_chat_enabled(result,protocol) or streaming_responses_enabled(result,protocol):
         result['call_timeout']=max(float(result.get('call_timeout',90)),
                                    float(result.get('kuafu_stream_timeout',240)))
     return result
@@ -605,8 +759,296 @@ class Provider:
     def __init__(self, store, config):
         self.store, self.config = store, config
 
+    def _request_timed(self, job, call, send, prepare_started_at=None,
+                       prepare_started_wall=None, kind='generation'):
+        """Run one HTTP request and add it to a core-v1 logical attempt timeline."""
+        if job.get('core_chain_version') != 1:
+            return send(), None
+        logical = job['logical_requests'][call['logical_request_id']]
+        if prepare_started_at is None:
+            prepare_started_at = time.perf_counter()
+        if prepare_started_wall is None:
+            prepare_started_wall = time.time()
+        now = time.perf_counter()
+        same_process = logical.get('timing_process_id') == _TIMING_PROCESS_ID
+        previous_perf = (logical.get('last_attempt_finished_perf_counter',
+                                     logical.get('started_perf_counter'))
+                         if same_process else None)
+        previous_wall = logical.get('last_attempt_finished_at',logical['started_at'])
+        wait_ms = (max(0,prepare_started_at-previous_perf)*1000
+                   if isinstance(previous_perf,(int,float)) else
+                   max(0,prepare_started_wall-previous_wall)*1000)
+        attempt = dict(
+            attempt_id=call['id'] + ':' + str(len(call.get('network_attempts', [])) + 1),
+            kind=kind,
+            dispatched_at=time.time(),
+            prepare_ms=round(max(0, now-prepare_started_at)*1000, 3),
+            queue_or_recovery_wait_ms=round(wait_ms, 3),
+            dispatch_to_complete_ms=None,
+            dispatch_to_first_byte_ms=None,
+            first_byte_to_complete_ms=None,
+            parse_ms=0.0,
+            total_attempt_ms=None,
+        )
+        call.setdefault('network_attempts', []).append(attempt)
+        self.store.put_job(job)
+        try:
+            response = send()
+            complete = time.perf_counter()
+            attempt['dispatch_to_complete_ms'] = round(max(0, complete-now)*1000, 3)
+            first = response.extensions.get('sourceloom_first_byte_at')
+            if isinstance(first, (int, float)):
+                attempt['dispatch_to_first_byte_ms'] = round(max(0, first-now)*1000, 3)
+                attempt['first_byte_to_complete_ms'] = round(max(0, complete-first)*1000, 3)
+                attempt['first_byte_measurement']='first_sse_data_frame'
+            else:
+                attempt['first_byte_measurement']='unavailable'
+            attempt['http_status'] = response.status_code
+            return response, (attempt, complete, now)
+        except Exception as error:
+            attempt['error_type'] = type(error).__name__
+            raise
+        finally:
+            attempt['total_attempt_ms'] = round(max(0, time.perf_counter()-now)*1000, 3)
+            logical['last_attempt_finished_at'] = time.time()
+            logical['last_attempt_finished_perf_counter'] = time.perf_counter()
+            self.store.put_job(job)
+
+    def _timed_parse(self, job, timing, parse):
+        """Add response parsing time to the network request that returned it."""
+        if timing is None:
+            return parse()
+        started = time.perf_counter()
+        try:
+            return parse()
+        finally:
+            attempt = timing[0]
+            attempt['parse_ms'] = round(
+                (attempt.get('parse_ms') or 0) +
+                (time.perf_counter()-started)*1000, 3)
+            attempt['total_attempt_ms']=round(
+                max(0,time.perf_counter()-timing[2])*1000,3)
+            self.store.put_job(job)
+
+    def _post_timed(self, job, call, post, url, headers, request, deadline,
+                    prepare_started_at, prepare_started_wall):
+        """Record one actual network dispatch without changing the wire request."""
+        return self._request_timed(job, call,
+            lambda:post(url, headers, request, deadline),
+            prepare_started_at, prepare_started_wall)
+
+    def generate(self, pid, role, payload, schema, job, step_key, cancelled=lambda:False):
+        """One v1 business request; transport attempts remain Provider details."""
+        if job.get('core_chain_version') != 1:
+            raise ValueError('新版 Provider 入口只接受新版内容任务')
+        request_id = logical_request_id(job, step_key)
+        requests = job.setdefault('logical_requests', {})
+        record = requests.setdefault(request_id, dict(
+            step_key=step_key, role=role, started_at=time.time(),
+            started_perf_counter=time.perf_counter(),
+            timing_process_id=_TIMING_PROCESS_ID, status='running'))
+        if record.get('step_key') != step_key or record.get('role') != role:
+            raise ValueError('模型逻辑调用身份与原步骤不一致')
+        if job.get('pending') and job['pending'] != step_key:
+            raise Conflict('恢复阶段与已提交请求不一致')
+        pending = bool(job.get('pending'))
+        # Round 1 persisted calls before logical IDs existed. A queued legacy
+        # transport continuation may have cleared pending even though the
+        # original dispatch was delivered. Adopt that call and query it;
+        # never turn its queued marker into a fresh generation request.
+        prior = [call for call in job.get('calls', [])
+                 if call.get('step_key') == step_key]
+        for call in prior:
+            if not call.get('logical_request_id'):
+                call['logical_request_id'] = request_id
+        unresolved = any(call.get('dispatch_started')
+                         and call.get('status') != 'rejected'
+                         and call.get('dispatch_state') != 'confirmed_not_sent'
+                         for call in prior)
+        legacy_route = (job.get('transport_recovery_routes') or {}).get(step_key)
+        if not pending and (unresolved or legacy_route):
+            pending = True
+            job['pending'] = step_key
+        if not pending:
+            job['pending'] = step_key
+        job['current_step_key'] = step_key
+        self.store.put_job(job)
+        try:
+            if pending:
+                record['result_query_count']=int(record.get('result_query_count',0))+1
+                self.store.put_job(job)
+                value = self.recover(job)
+                if value is None:
+                    raise Uncertain('原请求结果未知，保留身份，不自动重发')
+            else:
+                role_routes = self.config.get('role_providers', {})
+                selected = role_routes.get(role, {})
+                if role == 'active_visual' and role not in role_routes:
+                    selected = role_routes.get('visual_extract', {})
+                effective = apply_stream_timeout(self.config | selected)
+                effective['role_providers'] = {}
+                effective['deadline_at'] = time.time() + float(effective.get('call_timeout', 90))
+                value = Provider(self.store, effective).call(
+                    pid, role, payload, schema, job, cancelled)
+        except Uncertain as error:
+            status = 'UNKNOWN'
+            outcome = ProviderResult(status, error=error)
+        except (ValueError, KeyError, IndexError, TypeError, Conflict, json.JSONDecodeError) as error:
+            if pending and _has_unresolved_delivery(job, request_id):
+                status = 'UNKNOWN'
+                outcome = ProviderResult(status, error=Uncertain(
+                    '原请求可能已送达，恢复数据不足以确认终态；保留原调用与未知费用'))
+            else:
+                status = 'KNOWN_FAILURE'
+                outcome = ProviderResult(status, error=error)
+        else:
+            status = 'SUCCESS'
+            outcome = ProviderResult(status, value=value)
+        calls = [call for call in job.get('calls', [])
+                 if call.get('logical_request_id') == request_id]
+        if status=='KNOWN_FAILURE' and not calls and job.get('pending')==step_key:
+            job.pop('pending',None)
+        same_process=(record.get('timing_process_id')==_TIMING_PROCESS_ID
+                      and isinstance(record.get('started_perf_counter'),(int,float)))
+        elapsed=(time.perf_counter()-record['started_perf_counter'] if same_process
+                 else time.time()-record['started_at'])
+        record.update(status=status, last_checked_at=time.time(),
+                      logical_total_ms=round(max(0,elapsed)*1000, 3),
+                      logical_timing_basis=('monotonic_same_process' if same_process
+                                            else 'wall_across_process_or_legacy'),
+                      attempt_count=sum(len(call.get('network_attempts', [])) or
+                                        int(bool(call.get('dispatch_started'))) for call in calls),
+                      recovery_count=max(0, len(calls)-1) + int(record.get('result_query_count',0)))
+        if status=='UNKNOWN':
+            record.pop('finished_at',None)
+        else:
+            record['finished_at']=time.time()
+        self.store.put_job(job)
+        return outcome
+
+    def saved_complete_text(self, job):
+        """Expose a complete saved model artifact without leaking its protocol."""
+        call = (job.get('calls') or [{}])[-1]
+        if not call.get('response_blob'):
+            raise Uncertain('未取得完整响应，不重发未知请求')
+        response = json.loads(self.store.read_blob(call['response_blob']))
+        if call.get('protocol') == 'responses':
+            if response.get('status') not in {'completed', 'complete', 'succeeded'}:
+                raise Uncertain('原响应未完整结束，不修复部分正文')
+            result = _responses_text(response)
+        elif call.get('protocol') == 'chat_completions':
+            if call.get('finish_reason') not in {'stop', 'tool_calls'}:
+                raise Uncertain('原响应未完整结束，不修复部分正文')
+            message = response['choices'][0]['message']
+            result = (message.get('content') if call.get('finish_reason') == 'stop'
+                      else message['tool_calls'][0]['function']['arguments'])
+        else:
+            raise Uncertain('该通道没有可供局部修复的完整原响应')
+        if not isinstance(result, str) or not result:
+            raise ValueError('完整响应中没有可修复的 JSON 正文')
+        return result
+
     def call(self, pid, role, payload, schema, job, cancelled=lambda:False):
+        """Call the selected route and make one explicitly configured backup attempt."""
+        effective=apply_route_override(self.config,self.config.get('role_providers',{}).get(role,{}))
+        primary=route_from_config(effective)
+        backup_id=effective.get('backup_provider_id')
+        def report_without_backup(exc):
+            call=job.get('calls',[])[-1] if job.get('calls') else {}
+            if (job.get('core_chain_version')==1 and call.get('dispatch_started')
+                    and call.get('status')!='rejected'
+                    and call.get('dispatch_state')!='confirmed_not_sent'):
+                raise Uncertain('原请求可能已经送达，结果与费用保留为未知') from None
+            if call.get('status') in {'rejected','unavailable'}:
+                raise ValueError('主线路已明确拒单或连接失败，未配置可用备用线路；费用状态已记录') from None
+            raise Uncertain('主线路服务错误且没有可用备用线路；原响应与未知用量已保留') from None
+        if not backup_id:
+            try:
+                return self._call_once(pid,role,payload,schema,job,cancelled)
+            except RouteUnavailable as exc:
+                report_without_backup(exc)
+        def use_backup(exc, reason):
+            routes=self.config.get('provider_routes')
+            credentials=self.config.get('provider_credentials')
+            raw=routes.get(str(backup_id)) if isinstance(routes,dict) else None
+            api_key=credentials.get(str(backup_id)) if isinstance(credentials,dict) else None
+            if (not isinstance(raw,dict) or not raw.get('enabled',True) or not api_key
+                    or str(backup_id)==primary.provider_id
+                    or str(raw.get('route_kind') or raw.get('kind') or 'model')=='search'
+                    or raw.get('protocol')=='rest_search'):
+                report_without_backup(exc)
+            backup_config=dict(self.config)
+            backup_role_routes=dict(self.config.get('role_providers') or {})
+            backup_route=dict(raw)|{'provider_id':str(backup_id),'api_key':api_key}
+            if role in backup_role_routes:
+                backup_role_routes[role]=backup_route
+                backup_config['role_providers']=backup_role_routes
+            else:
+                backup_config.update(backup_route)
+                backup_role_routes.pop(role,None)
+                backup_config['role_providers']=backup_role_routes
+            job.setdefault('route_switches',[]).append({
+                'role':role,'from_provider_id':primary.provider_id,
+                'to_provider_id':str(backup_id),'reason':reason,
+                'failure_kind':type(exc).__name__,
+            })
+            if reason=='configured_backup_after_uncertain_primary':
+                # The first request may still have completed upstream. Keep its
+                # separate unknown-cost receipt and make the second dispatch
+                # visible as a distinct attempt in the same task ledger.
+                job['route_switches'][-1]['primary_call_id']=job.get('calls',[])[-1].get('id')
+            self.store.put_job(job)
+            # Do not traverse back to the first route: each call has one backup
+            # attempt, which makes reciprocal configurations safe from loops.
+            return Provider(self.store,backup_config)._call_once(pid,role,payload,schema,job,cancelled)
+        try:
+            return self._call_once(pid,role,payload,schema,job,cancelled)
+        except RouteUnavailable as exc:
+            if job.get('core_chain_version')==1:
+                call=job.get('calls',[])[-1] if job.get('calls') else {}
+                if (call.get('status')=='uncertain' or
+                        (call.get('dispatch_started') and
+                         call.get('status')!='rejected' and
+                         call.get('dispatch_state')!='confirmed_not_sent')):
+                    raise Uncertain('原请求是否完成尚不确定，保留身份，不切换线路重新生成') from None
+            return use_backup(exc,'configured_backup_after_route_failure')
+        except Uncertain as exc:
+            if job.get('core_chain_version')==1:
+                raise
+            call=job.get('calls',[])[-1] if job.get('calls') else {}
+            if (call.get('status')!='uncertain' or not call.get('dispatch_started')
+                    or call.get('provider_id')!=primary.provider_id
+                    or call.get('protocol')!=primary.protocol):
+                raise
+            routes=self.config.get('provider_routes')
+            backup=routes.get(str(backup_id)) if isinstance(routes,dict) else None
+            if not isinstance(backup,dict):
+                raise
+            from urllib.parse import urlsplit
+            primary_host=urlsplit(primary.base_url).hostname
+            backup_host=urlsplit(str(backup.get('base_url') or '')).hostname
+            compatible_protocols={'chat_completions','responses'}
+            if (primary.provider_type!='openai-compatible' or backup.get('provider')!='openai-compatible'
+                    or primary_host!='api.kuafushe.cc' or backup_host!=primary_host
+                    or primary.protocol not in compatible_protocols
+                    or backup.get('protocol') not in compatible_protocols
+                    or str(backup.get('model') or '')!=primary.model):
+                # Unknown completion is automatically replayed only across
+                # the configured Chat/Responses pair for the same KuaFu DS
+                # model. Other providers may expose a queryable task or accept
+                # a request whose result must be recovered instead.
+                raise
+            # An explicit reciprocal route is allowed to recover a dispatched
+            # request whose transport ended before its final artifact arrived.
+            # The primary remains marked unknown; never relabel or erase its
+            # possible usage just because the backup returned successfully.
+            return use_backup(exc,'configured_backup_after_uncertain_primary')
+
+    def _call_once(self, pid, role, payload, schema, job, cancelled=lambda:False):
         import copy
+        prepare_started_at=time.perf_counter()
+        prepare_started_wall=time.time()
+        parse_timing=None
         original_payload=copy.deepcopy(payload)
         original_schema=copy.deepcopy(schema)
         c = apply_route_override(self.config,self.config.get('role_providers', {}).get(role, {}))
@@ -759,15 +1201,25 @@ class Provider:
         if (safe_bytes and urlsplit(c.get('base_url','')).hostname=='api.kuafushe.cc'
                 and input_bytes>safe_bytes):
             fallback=c.get('quota_fallback')
-            if not fallback:
-                raise Conflict('当前完整请求超过夸父社已验证的稳定尺寸，且没有配置备用通道；没有截断原文')
-            job.setdefault('route_switches',[]).append({
-                'role':role,'reason':'kuafu_verified_request_size_boundary',
-                'input_bytes':input_bytes,'safe_input_bytes':safe_bytes})
+            if fallback:
+                job.setdefault('route_switches',[]).append({
+                    'role':role,'reason':'kuafu_verified_request_size_boundary',
+                    'input_bytes':input_bytes,'safe_input_bytes':safe_bytes})
+                self.store.put_job(job)
+                return Provider(self.store,apply_route_override(c,fallback)|{
+                    'role_providers':{},'quota_fallback':None}).call(
+                        pid,role,original_payload,original_schema,job,cancelled)
+            # This boundary records the largest request we have already
+            # validated; it is not a provider limit.  When no fallback exists,
+            # keep the streaming request moving instead of turning a cautious
+            # transport estimate into a user-visible generation gate.
+            job.setdefault('nonblocking_transport_notes',[]).append({
+                'role':role,
+                'reason':'kuafu_verified_request_size_boundary_streamed_without_fallback',
+                'input_bytes':input_bytes,
+                'safe_input_bytes':safe_bytes,
+            })
             self.store.put_job(job)
-            return Provider(self.store,apply_route_override(c,fallback)|{
-                'role_providers':{},'quota_fallback':None}).call(
-                    pid,role,original_payload,original_schema,job,cancelled)
         if cancelled():
             raise Conflict("任务已取消")
         if time.time()>=deadline:
@@ -780,10 +1232,7 @@ class Provider:
         reserve = ((input_bytes+len(image_resources)*c.get('vision_input_token_reserve',20000))*c["input_price"] + c["max_output_tokens"]*c["output_price"])/1e6 if c["provider"]=="openai-compatible" and not subscription else 0
         reserve_usage={'prompt_tokens':input_bytes+len(image_resources)*c.get('vision_input_token_reserve',20000),'completion_tokens':c['max_output_tokens']}
         reserved_cny=0 if subscription else usage_cost(reserve_usage,c.get('pricing_cny'))
-        self.store.reserve(pid, call_id, reserve, dict(role=role,model=c["model"],input_bytes=input_bytes,channel=billing_channel,reserved_cny=reserved_cny),
-                           c.get('daily_budget_usd',2.0),c.get('daily_call_limit',80),
-                           c.get('total_budget_usd'),c.get('subscription_call_limit'))
-        job["calls"].append(dict(id=call_id,role=role,status="submitted",channel=c['provider'],
+        call_record=dict(id=call_id,role=role,status="submitted",channel=c['provider'],
                                  dispatch_started=False,
                                  unit_id=job.get('current_unit_id'),
                                  upstream_base=c['base_url'] if c['provider'] in {'router','openai-compatible'} else None,
@@ -792,8 +1241,25 @@ class Provider:
                                  pricing_version=route.price_snapshot.version if route.price_snapshot else '',
                                  price_snapshot_id=route.price_snapshot.snapshot_id if route.price_snapshot else None,
                                  step_key=job.get('current_step_key'),
-                                 skill_delivery='unabridged_inline',file_read_verified=False))
-        self.store.put_job(job)
+                                 skill_delivery='unabridged_inline',file_read_verified=False)
+        if job.get('core_chain_version')==1:
+            request_id=logical_request_id(job,job.get('current_step_key'))
+            call_record['logical_request_id']=request_id
+            job.setdefault('logical_requests',{}).setdefault(request_id,dict(
+                step_key=job['current_step_key'],role=role,started_at=prepare_started_wall,
+                status='running'))
+        job["calls"].append(call_record)
+        # Commit the call identity and its reserved spend together. A crash
+        # cannot leave one without the other, or reuse an old step's result.
+        try:
+            self.store.reserve(pid, call_id, reserve, dict(role=role,model=c["model"],input_bytes=input_bytes,channel=billing_channel,reserved_cny=reserved_cny),
+                               c.get('daily_budget_usd',2.0),c.get('daily_call_limit',80),
+                               c.get('total_budget_usd'),c.get('subscription_call_limit'),
+                               job_record=job)
+        except Exception:
+            job['calls'].pop()
+            job.pop('pending',None)
+            raise
         headers = {"Authorization":"Bearer "+c["api_key"], "Content-Type":"application/json"}
         if urlsplit(c['base_url']).hostname=='opencode.ai':
             headers.update({'User-Agent':'SourceLoom/0.1','x-opencode-session':'sourceloom-'+job['id']})
@@ -873,6 +1339,7 @@ class Provider:
                 strict_output=(c.get('structured_output')=='deepseek_strict_tool' and
                     (protocol=='responses' or
                      urlsplit(c.get('base_url','')).hostname=='api.deepseek.com'))
+                responses_streaming=streaming_responses_enabled(c,protocol)
                 schema_instruction=("" if protocol=='responses' and strict_output else
                     "\nReturn only JSON matching this schema:\n"+compact_schema)
                 messages = [{"role":"system","content":instruction+schema_instruction},
@@ -900,7 +1367,8 @@ class Provider:
                     # ReadWeave's Responses route uses deterministic JSON
                     # generation.  Do not leak the old compatible-provider
                     # ``thinking`` option into this wire protocol.
-                    request = dict(model=c['model'], max_output_tokens=c['max_output_tokens'],stream=False)
+                    request = dict(model=c['model'], max_output_tokens=c['max_output_tokens'],
+                                   stream=responses_streaming)
                     chatgpt_web = str(c['model']).startswith('chatgpt-web.')
                     model_router = (str(c.get('provider_id') or '').startswith('model-router')
                                     or c.get('responses_profile') == 'model_router')
@@ -937,24 +1405,28 @@ class Provider:
                 elif protocol != 'responses':
                     request['response_format']={'type':'json_object'}
                 job['calls'][-1]['wire_request_blob']=self.store.blob(json.dumps(request,ensure_ascii=False,separators=(',',':')).encode())
-                job['calls'][-1].update(dispatch_started=True,deadline_at=deadline);self.store.put_job(job)
+                streaming=streaming_chat_enabled(c,protocol) or responses_streaming
+                job['calls'][-1].update(deadline_at=deadline,streaming=streaming)
+                self.store.put_job(job)
+                self.store.begin_provider_dispatch(job,call_id,limit=3)
                 if protocol=='responses' and (str(c['model']).startswith('chatgpt-web.')
                                               or str(c.get('provider_id') or '').startswith('model-router')
                                               or c.get('responses_profile') == 'model_router'):
                     headers['Idempotency-Key']=call_id
-                streaming=streaming_chat_enabled(c,protocol)
-                job['calls'][-1]['streaming']=streaming;self.store.put_job(job)
-                post=post_stream_before_deadline if streaming else post_before_deadline
-                response=post(request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
-                    headers,request,deadline)
+                post=(post_responses_stream_before_deadline if responses_streaming else
+                      post_stream_before_deadline if streaming else post_before_deadline)
+                response,parse_timing=self._post_timed(job,job['calls'][-1],post,
+                    request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
+                    headers,request,deadline,prepare_started_at,prepare_started_wall)
                 if response.status_code==401 and kuafu_auth_is_current(c,headers,deadline):
                     # The first request was rejected before inference. Replay
                     # once only after the same key succeeds against the free
                     # model catalog.
                     job['calls'][-1].update(auth_revalidated=True,dispatch_attempts=2)
                     self.store.put_job(job)
-                    response=post(request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
-                        headers,request,deadline)
+                    response,parse_timing=self._post_timed(job,job['calls'][-1],post,
+                        request_endpoint if protocol == 'responses' else endpoint+'/chat/completions',
+                        headers,request,deadline,time.perf_counter(),time.time())
                 if response.status_code >= 400:
                     from urllib.parse import urlsplit
                     job['calls'][-1].update(http_status=response.status_code,response_blob=self.store.blob(response.content))
@@ -971,16 +1443,38 @@ class Provider:
                             'role_providers':{},'quota_fallback':None}).call(
                                 pid,role,original_payload,original_schema,job,cancelled)
                     balance_rejected=response.status_code==402 and urlsplit(endpoint).hostname=='api.deepseek.com'
-                    if response.status_code in {400,401,403,422} or balance_rejected:
+                    if response.status_code in {400,401,403,422,429} or balance_rejected:
                         self.store.settle(call_id,0,dict(channel=billing_channel,status='rejected',http_status=response.status_code,actual_cny=0))
                         job['calls'][-1].update(status='rejected',http_status=response.status_code,
                             response_blob=self.store.blob(response.content))
                         self.store.put_job(job)
+                        if response.status_code in {401,403,429}:
+                            raise RouteUnavailable(f'模型线路明确拒绝请求：{response.status_code}；费用已记为未接单')
                         if balance_rejected:
                             raise ValueError('深度求索官方余额不足，本次明确未接单；充值或切换已授权通道后可继续，已有正文与费用记录保留')
                         raise ValueError(f'模型请求被拒绝：{response.status_code}，没有自动重发')
+                    if response.status_code in {500,502,503,504,520,521,522,523,524}:
+                        job['calls'][-1].update(status='uncertain',error_code='upstream_service_error')
+                        self.store.put_job(job)
+                        self.store.settle(call_id,None,dict(role=role,channel=billing_channel,
+                            status='upstream_service_error',http_status=response.status_code))
+                        raise RouteUnavailable(f'模型线路返回服务错误 {response.status_code}；主线路用量状态保留为未知')
                     raise Uncertain(f"模型请求返回 {response.status_code}，本次未自动重发")
+                parse_started=time.perf_counter()
                 body = response.json()
+                if parse_timing is not None:
+                    parse_timing[0]['parse_ms']=round(
+                        (time.perf_counter()-parse_started)*1000,3)
+                def parse_content(value):
+                    started=time.perf_counter()
+                    try:
+                        return parse_json(value)
+                    finally:
+                        if parse_timing is not None:
+                            attempt=parse_timing[0]
+                            attempt['parse_ms']=round(
+                                (attempt.get('parse_ms') or 0)+
+                                (time.perf_counter()-started)*1000,3)
                 # Keep the exact returned artifact even when it is truncated or malformed.
                 finish_reason = body.get('status') if protocol == 'responses' else body.get('choices',[{}])[0].get('finish_reason')
                 job['calls'][-1].update(response_blob=self.store.blob(json.dumps(body,ensure_ascii=False).encode()),
@@ -1016,7 +1510,7 @@ class Provider:
                     if not result_text:
                         raise ValueError("Responses 通道未返回可解析正文")
                     job['calls'][-1]['status']='completed';self.store.put_job(job)
-                    return parse_json(result_text)
+                    return parse_content(result_text)
                 if body["choices"][0].get("finish_reason") != ('tool_calls' if strict_output else 'stop'):
                     if actual is not None and reasoning_exhausted(body):
                         job['calls'][-1]['status']='reasoning_exhausted';self.store.put_job(job)
@@ -1028,9 +1522,9 @@ class Provider:
                     returned=message.get('tool_calls',[])
                     if len(returned)!=1 or returned[0].get('function',{}).get('name')!='emit_artifact':
                         raise ValueError('模型未返回唯一的预期结果对象，没有执行任何工具')
-                    result=parse_json(returned[0]['function']['arguments'])
+                    result=parse_content(returned[0]['function']['arguments'])
                 else:
-                    result=parse_json(message['content'])
+                    result=parse_content(message['content'])
                 job['calls'][-1]['status']='completed';self.store.put_job(job)
                 return result
             if c["provider"] == "router":
@@ -1066,20 +1560,24 @@ class Provider:
                     raise ValueError('完整技能与材料超过当前转发器请求大小，未截断或发送；需要按完整教学单元处理或配置支持更大请求的通道')
                 with httpx.Client(timeout=25,follow_redirects=False) as client:
                     job['calls'][-1]['wire_request_blob']=self.store.blob(json.dumps(submission,ensure_ascii=False,separators=(',',':')).encode())
-                    job['calls'][-1]['dispatch_started']=True;self.store.put_job(job)
-                    response = client.post(c["base_url"].rstrip("/")+"/api/v1/jobs",headers=headers | {"Idempotency-Key":call_id},
-                                           json=submission)
+                    self.store.put_job(job)
+                    self.store.begin_provider_dispatch(job,call_id,limit=3)
+                    response,request_timing=self._request_timed(job,job['calls'][-1],
+                        lambda:client.post(c["base_url"].rstrip("/")+"/api/v1/jobs",
+                            headers=headers | {"Idempotency-Key":call_id},json=submission),
+                        prepare_started_at,prepare_started_wall,kind='router_submit')
                     if response.status_code >= 400:
                         if response.status_code in {400,401,403,413,422}:
                             self.store.settle(call_id,0,dict(channel='router',status='rejected',http_status=response.status_code))
                             job['calls'][-1].update(status='rejected',http_status=response.status_code,
                                 response_blob=self.store.blob(response.content))
                             self.store.put_job(job)
-                            try:code=response.json().get('error',{}).get('code','request_rejected')
+                            try:code=self._timed_parse(job,request_timing,
+                                lambda:response.json()).get('error',{}).get('code','request_rejected')
                             except (ValueError,AttributeError):code='request_rejected'
                             raise ValueError('转发器未接单：'+str(code)[:80])
                         raise Uncertain(f"转发器返回 {response.status_code}，保留原调用身份")
-                    body = response.json()
+                    body = self._timed_parse(job,request_timing,lambda:response.json())
                     jid = body.get("id",body.get("jobId"))
                     if not jid:
                         raise Uncertain("转发器未返回可查询任务身份")
@@ -1087,11 +1585,18 @@ class Provider:
                     self.store.put_job(job)
                     while time.time()<deadline:
                         if cancelled():
-                            client.post(c["base_url"].rstrip("/")+f"/api/v1/jobs/{jid}/cancel",headers=headers | {"Idempotency-Key":call_id+"-cancel"})
+                            self._request_timed(job,job['calls'][-1],
+                                lambda:client.post(c["base_url"].rstrip("/")+f"/api/v1/jobs/{jid}/cancel",
+                                    headers=headers | {"Idempotency-Key":call_id+"-cancel"}),
+                                kind='router_cancel')
                             raise Uncertain("已请求取消，原上游任务身份保留")
-                        response = client.get(c["base_url"].rstrip("/")+f"/api/v1/jobs/{jid}",headers=headers)
+                        poll_prepare_started_at=time.perf_counter()
+                        poll_prepare_started_wall=time.time()
+                        response,poll_timing=self._request_timed(job,job['calls'][-1],
+                            lambda:client.get(c["base_url"].rstrip("/")+f"/api/v1/jobs/{jid}",headers=headers),
+                            poll_prepare_started_at,poll_prepare_started_wall,kind='router_poll')
                         response.raise_for_status()
-                        body = response.json()
+                        body = self._timed_parse(job,poll_timing,lambda:response.json())
                         if body["status"] in {"succeeded","completed"}:
                             # The deployed controller returns output on GET /jobs/:id.
                             # Older prose mentions /result, but that route does not exist.
@@ -1103,15 +1608,19 @@ class Provider:
                             content = body.get("output")
                             if isinstance(content,dict):
                                 content = content.get("structured",content.get("text",content))
-                            return parse_json(content) if isinstance(content,str) else content
+                            return (self._timed_parse(job,poll_timing,
+                                lambda:parse_json(content)) if isinstance(content,str) else content)
                         if body["status"] in {"failed","cancelled","timed_out","expired","awaiting_approval"}:
-                            recovered=recover_labeled_chat_json(body,task['validation']['responseSchema'])
+                            recovered=self._timed_parse(job,poll_timing,
+                                lambda:recover_labeled_chat_json(body,task['validation']['responseSchema']))
                             recovery='Removed only browser JSON language label; validated complete original response schema; upstream failure retained'
                             if recovered is None:
-                                recovered=recover_reference_lists(body,task['validation']['responseSchema'],role)
+                                recovered=self._timed_parse(job,poll_timing,
+                                    lambda:recover_reference_lists(body,task['validation']['responseSchema'],role))
                                 recovery='Restored only omitted optional reference URL proposal lists as empty arrays; full dispatched schema validated; original upstream failure and output retained'
                             if recovered is None:
-                                recovered=recover_partial_style_review(body,task['validation']['responseSchema'],role)
+                                recovered=self._timed_parse(job,poll_timing,
+                                    lambda:recover_partial_style_review(body,task['validation']['responseSchema'],role))
                                 recovery='Retained returned partial style review only; missing assignments require explicit assessment and full-schema merge; no verdict added or content pass granted'
                             if recovered is not None:
                                 self.store.settle(call_id,None,dict(channel='subscription',usage=body.get('usage'),upstream_id=jid))
@@ -1129,6 +1638,24 @@ class Provider:
                         time.sleep(2)
                 raise Uncertain("达到本次等待上限，继续查询原任务，不自动重发")
             raise ValueError("当前为人工任务包通道，请导出任务包后导回结果")
+        except RouteUnavailable as exc:
+            if job['calls'][-1]['id']!=call_id:
+                raise
+            if job['calls'][-1]['status']=='submitted':
+                job['calls'][-1].update(status='unavailable',error_code='upstream_unavailable')
+                self.store.put_job(job)
+                self.store.settle(call_id,None,dict(role=role,channel=billing_channel,
+                    status='upstream_unavailable',error=type(exc).__name__))
+            raise
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            if job['calls'][-1]['id']!=call_id:
+                raise
+            job['calls'][-1].update(status='unavailable',error_code='connection_failed',
+                                     dispatch_state='confirmed_not_sent')
+            self.store.put_job(job)
+            self.store.settle(call_id,0,dict(role=role,channel=billing_channel,status='connection_failed',
+                                             error=type(exc).__name__,actual_cny=0))
+            raise RouteUnavailable('模型线路连接失败，确认未收到 HTTP 响应；转试配置的备用线路') from None
         except (httpx.HTTPError, Uncertain) as exc:
             if job['calls'][-1]['id']!=call_id:
                 # The explicitly authorized quota fallback owns its own ledger.
@@ -1144,6 +1671,13 @@ class Provider:
             if job['calls'][-1]['status']=='submitted':
                 job['calls'][-1]['status']='invalid';self.store.put_job(job)
             raise
+        finally:
+            if parse_timing is not None:
+                attempt,complete,dispatched=parse_timing
+                attempt['total_attempt_ms']=round(max(0,time.perf_counter()-dispatched)*1000,3)
+                job['logical_requests'][call_record['logical_request_id']]['last_attempt_finished_at']=time.time()
+                job['logical_requests'][call_record['logical_request_id']]['last_attempt_finished_perf_counter']=time.perf_counter()
+                self.store.put_job(job)
 
     def recover(self, job):
         """Query the existing call only; never submit a replacement request."""
@@ -1175,19 +1709,28 @@ class Provider:
             if resolved_base!=self.config['base_url']:
                 raise Conflict('模型通道地址已变化，请恢复原配置后查询')
             with httpx.Client(timeout=20,follow_redirects=False) as client:
-                r=client.get(self.config['base_url'].rstrip('/')+'/api/v1/jobs/'+call['upstream_id'],
-                             headers={'Authorization':'Bearer '+self.config['api_key']})
-                r.raise_for_status();body=r.json()
+                query_url=self.config['base_url'].rstrip('/')+'/api/v1/jobs/'+call['upstream_id']
+                query_headers={'Authorization':'Bearer '+self.config['api_key']}
+                query_prepare_started_at=time.perf_counter()
+                query_prepare_started_wall=time.time()
+                r,query_timing=self._request_timed(job,call,
+                    lambda:client.get(query_url,headers=query_headers),
+                    query_prepare_started_at,query_prepare_started_wall,kind='router_result_query')
+                r.raise_for_status()
+                body=self._timed_parse(job,query_timing,lambda:r.json())
             if body['status']!='succeeded':
                 request=json.loads(self.store.read_blob(call['wire_request_blob'])) if call.get('wire_request_blob') else {}
                 schema=request.get('task',{}).get('validation',{}).get('responseSchema')
-                recovered=recover_labeled_chat_json(body,schema) if schema else None
+                recovered=(self._timed_parse(job,query_timing,
+                    lambda:recover_labeled_chat_json(body,schema)) if schema else None)
                 recovery='Removed only browser JSON language label; validated complete original response schema; upstream failure retained'
                 if recovered is None and schema:
-                    recovered=recover_reference_lists(body,schema,call.get('role'))
+                    recovered=self._timed_parse(job,query_timing,
+                        lambda:recover_reference_lists(body,schema,call.get('role')))
                     recovery='Restored only omitted optional reference URL proposal lists as empty arrays; full dispatched schema validated; original upstream failure and output retained'
                 if recovered is None and schema:
-                    recovered=recover_partial_style_review(body,schema,call.get('role'))
+                    recovered=self._timed_parse(job,query_timing,
+                        lambda:recover_partial_style_review(body,schema,call.get('role')))
                     recovery='Retained returned partial style review only; missing assignments require explicit assessment and full-schema merge; no verdict added or content pass granted'
                 if recovered is not None:
                     call.update(status='recovered',web_execution=body.get('webExecution'),
@@ -1196,28 +1739,66 @@ class Provider:
                     self.store.put_job(job)
                     return recovered
                 if body['status'] in {'failed','cancelled','expired'}:
+                    call['status']='failed';self.store.put_job(job)
                     raise ValueError('原上游任务已结束：'+body['status'])
                 return None
             result=body['output']
             if isinstance(result,dict):result=result.get('structured',result.get('text',result))
-            if isinstance(result,str):result=parse_json(result)
+            if isinstance(result,str):
+                call['status']='recovered';self.store.put_job(job)
+                result=self._timed_parse(job,query_timing,lambda:parse_json(result))
         elif channel=='openai-compatible' and call.get('response_blob'):
-            body=json.loads(self.store.read_blob(call['response_blob']))
-            if call.get('http_status',0)>=500 and body.get('error') and not body.get('choices'):
-                raise Uncertain('供应方已返回服务错误，原响应与未知用量保留')
-            reason=body['choices'][0].get('finish_reason')
-            if call.get('status')=='reasoning_exhausted' and reasoning_exhausted(body):
-                raise ReasoningExhausted('原响应已明确结束且没有正文，可使用已配置的一次备用尝试')
-            if reason not in {'stop','tool_calls'}:
-                raise Conflict('原响应已保存但被截断，不能当作完整结果恢复')
-            message=body['choices'][0]['message']
-            if reason=='tool_calls':
-                returned=message.get('tool_calls',[])
-                if len(returned)!=1 or returned[0].get('function',{}).get('name')!='emit_artifact':
-                    raise Conflict('原响应不是唯一的预期数据对象')
-                result=parse_json(returned[0]['function']['arguments'])
+            try:
+                body=json.loads(self.store.read_blob(call['response_blob']))
+            except (OSError, ValueError, TypeError):
+                if job.get('core_chain_version')==1 and call.get('dispatch_started'):
+                    raise Uncertain('已派发请求的原响应记录无法可靠读取，不能确认终态') from None
+                raise
+            if not isinstance(body,dict):
+                if job.get('core_chain_version')==1 and call.get('dispatch_started'):
+                    raise Uncertain('已派发请求的原响应结构无法确认，保留原调用')
+                raise Conflict('原响应结构不是可恢复的数据对象')
+            if call.get('protocol')=='responses':
+                if body.get('status') not in {'completed','complete','succeeded'}:
+                    if body.get('status')=='incomplete':
+                        if job.get('core_chain_version')==1:
+                            call['status']='incomplete';self.store.put_job(job)
+                        raise Conflict('原 Responses 响应已明确标记 incomplete，不能作为完整结果恢复')
+                    if (job.get('core_chain_version')==1 and call.get('dispatch_started')
+                            and (int(call.get('http_status') or 0)>=500 or
+                                 body.get('status') not in {'failed','cancelled','expired'})):
+                        raise Uncertain('原 Responses 响应没有可靠终态，保留原调用和未知费用')
+                    if job.get('core_chain_version')==1 and body.get('status') in {'failed','cancelled','expired'}:
+                        call['status']='invalid';self.store.put_job(job)
+                    raise Conflict('原 Responses 响应没有完整结束，不能作为完整结果恢复')
+                text=_responses_text(body)
+                if not text:
+                    if job.get('core_chain_version')==1:
+                        call['status']='invalid';self.store.put_job(job)
+                    raise Conflict('原 Responses 响应没有可恢复的正文')
+                # Record successful transport recovery before parsing the
+                # model's inner JSON; malformed complete text still remains
+                # a received, billable artifact that local repair can inspect.
+                call['status']='recovered';self.store.put_job(job)
+                result=parse_json(text)
             else:
-                result=parse_json(message['content'])
+                if call.get('http_status',0)>=500 and body.get('error') and not body.get('choices'):
+                    raise Uncertain('供应方已返回服务错误，原响应与未知用量保留')
+                reason=body['choices'][0].get('finish_reason')
+                if call.get('status')=='reasoning_exhausted' and reasoning_exhausted(body):
+                    raise ReasoningExhausted('原响应已明确结束且没有正文，可使用已配置的一次备用尝试')
+                if reason not in {'stop','tool_calls'}:
+                    raise Conflict('原响应已保存但被截断，不能当作完整结果恢复')
+                message=body['choices'][0]['message']
+                if reason=='tool_calls':
+                    returned=message.get('tool_calls',[])
+                    if len(returned)!=1 or returned[0].get('function',{}).get('name')!='emit_artifact':
+                        raise Conflict('原响应不是唯一的预期数据对象')
+                    call['status']='recovered';self.store.put_job(job)
+                    result=parse_json(returned[0]['function']['arguments'])
+                else:
+                    call['status']='recovered';self.store.put_job(job)
+                    result=parse_json(message['content'])
         else:
             raise Uncertain('该通道没有任务查询接口，原请求结果未知且费用预留保留，不能自动重发')
         # Unknown subscription consumption stays unknown even when content is recovered.

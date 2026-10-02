@@ -3,6 +3,7 @@
 import copy
 import html
 import json
+import math
 import re
 from io import BytesIO
 import zipfile
@@ -18,6 +19,65 @@ from .math_render import markdown_renderer
 SAFE_TAGS = {"details","summary","div","p","br","strong","em","b","i","u","s","sub","sup","table","thead","tbody","tfoot","tr","td","th","caption","pre","code","blockquote","ul","ol","li","h2","h3","h4","h5","h6","span","a","img","figure","figcaption","hr"}
 MATH_TAGS=set('math mrow mi mn mo msub msup msubsup mfrac mover munder munderover mtable mtr mtd msqrt mroot mtext mspace menclose mpadded mphantom semantics annotation mstyle mfenced'.split())
 SAFE_TAGS |= MATH_TAGS
+
+IMAGE_ROLES = {'inline-icon', 'inline-component', 'table-symbol', 'research-image', 'source-image'}
+COMPACT_IMAGE_ROLES = {'inline-icon', 'inline-component', 'table-symbol'}
+
+
+def image_presentation(obj, occurrence_index=None):
+    """Use occurrence geometry, never bitmap resolution, as display evidence.
+
+    Mixed placements are deliberately unresolved unless a concrete occurrence
+    is supplied. A small PDF placement is a component, not a semantic claim
+    that the bitmap is decorative or that it may be omitted.
+    """
+    places = obj.get('placements') or []
+    if occurrence_index is not None:
+        if not isinstance(occurrence_index, int) or not 0 <= occurrence_index < len(places):
+            return {'role': 'source-image'}
+        places = [places[occurrence_index]]
+    dimensions = []
+    for place in places:
+        bbox = place.get('bbox') or []
+        if len(bbox) != 4 or place.get('unit') != 'pdf_point':
+            continue
+        try:
+            width, height = float(bbox[2])-float(bbox[0]), float(bbox[3])-float(bbox[1])
+        except (TypeError, ValueError):
+            continue
+        if all(math.isfinite(n) and n > 0 for n in (width, height)):
+            dimensions.append((width, height))
+    role = obj.get('presentation_role')
+    if occurrence_index is not None:
+        role = places[0].get('presentation_role', role)
+    if role not in IMAGE_ROLES:
+        compact = (dimensions and len(dimensions) == len(places)
+                   and all(max(pair) < 24 for pair in dimensions))
+        role = ('table-symbol' if compact and obj.get('parent_kind') == 'table' else
+                'inline-component' if compact else 'source-image')
+    result = {'role': role}
+    if dimensions and len(dimensions) == len(places):
+        result['source_dimensions'] = dimensions
+        if len(dimensions) == 1 or all(max(pair) < 24 for pair in dimensions):
+            result['aspect_ratio'] = dimensions[0][0]/dimensions[0][1]
+    return result
+
+
+def apply_image_presentation(node, obj, occurrence_index=None):
+    """Attach bounded presentation metadata after source HTML sanitization."""
+    info = image_presentation(obj, occurrence_index)
+    node['data-source-role'] = info['role']
+    if obj.get('id'):
+        node['data-source-id'] = obj['id']
+    if info['role'] in COMPACT_IMAGE_ROLES:
+        # Width attributes provide a native-editor fallback; em sizing follows
+        # the reader's font size and browser zoom in the compiled reading page.
+        node['width'] = '20'
+        # A rounded height makes CKEditor save a rounded aspect-ratio (20/19)
+        # instead of the bitmap's natural ratio. Width alone preserves it.
+        node.attrs.pop('height', None)
+        node['style'] = 'width: 1.1em; height: auto; display: inline-block; vertical-align: text-bottom; margin: 0;'
+    return info
 
 
 @lru_cache(maxsize=1)
@@ -36,7 +96,7 @@ def reading_page(content):
             '<style>'+article_style()+'</style></head><body>'+content+'</body></html>')
 
 
-def safe_html(raw):
+def safe_html(raw, *, source_anchors=False):
     soup = BeautifulSoup(raw, "html.parser")
     for node in list(soup.find_all(True)):
         if node.name in {"script","style","iframe","svg","object","embed"}:
@@ -51,9 +111,13 @@ def safe_html(raw):
             continue
         attrs = {}
         for key,value in node.attrs.items():
-            if key in {"rowspan","colspan"} and str(value).isdigit() and 1 <= int(value) <= 100:
+            if key == 'id' and source_anchors and re.fullmatch(r'loom-source-[A-Za-z0-9_-]{1,160}', str(value)):
+                attrs[key] = str(value)
+            elif key in {"rowspan","colspan"} and str(value).isdigit() and 1 <= int(value) <= 100:
                 attrs[key] = value
             elif key in {"alt","title"}:
+                attrs[key] = str(value)
+            elif node.name == 'img' and key in {'width', 'height'} and str(value).isdigit() and 1 <= int(value) <= 10000:
                 attrs[key] = str(value)
             elif key == 'align' and str(value)=='center':
                 attrs[key]='center'
@@ -69,6 +133,9 @@ def safe_html(raw):
             elif key == 'style':
                 declarations=[part.strip().split(':',1) for part in str(value).split(';') if part.strip()]
                 allowed={'text-align':{'center','left','right'},'max-width':{'100%'},'overflow-x':{'auto'}}
+                if node.name == 'img':
+                    allowed |= {'width': {'1.1em'}, 'height': {'auto'}, 'display': {'inline-block'},
+                                'vertical-align': {'text-bottom'}, 'margin': {'0'}}
                 if declarations and all(len(d)==2 and d[1].strip() in allowed.get(d[0].strip(),set()) for d in declarations):
                     attrs[key]=' '.join(d[0].strip()+': '+d[1].strip()+';' for d in declarations)
             elif key == "href" and (urlsplit(str(value)).scheme in {"http","https","mailto"} or str(value).startswith("#")):
@@ -105,6 +172,9 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
             key=img['src'][7:]
             if key not in resource_ids:
                 del img['src'];continue
+            candidates = [obj for obj in src.values() if obj.get('resource_id') == key and obj['kind'] != 'page']
+            if candidates and all(image_presentation(obj) == image_presentation(candidates[0]) for obj in candidates):
+                apply_image_presentation(img, candidates[0])
             img['src']=asset_url(key)
             if target=='preview':img['loading']='lazy';img['decoding']='async'
             if key in transparent:img['class']=['source-spacer'];img['width']='1';img['height']='1'
@@ -162,9 +232,18 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
             parts.append('<div id="loom-source-'+html.escape(sid,quote=True)+suffix+'">')
             if o["kind"] in {"image","page"}:
                 if o.get("resource_id"):
-                    parts.append(f'<figure class="image"><img loading="lazy" decoding="async" src="{html.escape(asset_url(o["resource_id"]),quote=True)}" alt="{html.escape(o["text"][:160] or o["locator"],quote=True)}"></figure>')
+                    if o['kind'] == 'page' and target == 'readweave':
+                        parts.append('<p><a href="'+html.escape(asset_url(o['resource_id']),quote=True)+
+                                     '">回查原页 · '+html.escape(o['locator'])+'</a></p>')
+                    else:
+                        parts.append(f'<figure class="image"><img loading="lazy" decoding="async" src="{html.escape(asset_url(o["resource_id"]),quote=True)}" alt="{html.escape(o["text"][:160] or o["locator"],quote=True)}"></figure>')
                 else:
-                    parts.append("<p>图片资源尚未取得</p>")
+                    target=o.get('target','')
+                    label=html.escape(o.get('text') or '原始图片',quote=True)
+                    if urlsplit(target).scheme in {'http','https'}:
+                        parts.append(f'<p>图片资源尚未取得：{label}；<a href="{html.escape(target,quote=True)}">打开原始图片地址</a></p>')
+                    else:
+                        parts.append(f'<p>图片资源尚未取得：{label}；原始引用 {html.escape(target or o["locator"])}</p>')
             elif o['kind']=='media':
                 if o.get('resource_id'):
                     parts.append(f'<figure class="image"><img loading="lazy" decoding="async" src="{html.escape(asset_url(o["resource_id"]),quote=True)}" alt="{html.escape(o.get("text") or o.get("media_type","原媒体"),quote=True)}"></figure>')
@@ -206,6 +285,20 @@ def render(project, asset_url=lambda key:"assets/"+key, target='preview'):
         result=str(doc)
     from .media import fold_media
     result=fold_media(result)
+    doc = BeautifulSoup(result, 'html.parser')
+    # The source wrapper retains occurrence identity even when two objects
+    # share attachment bytes but have different display purposes.
+    for obj in src.values():
+        for wrapper in doc.select('[id="loom-source-'+obj['id']+'"], [id^="loom-source-'+obj['id']+'-repeat-"]'):
+            if obj['kind'] not in {'image', 'media'}:
+                continue
+            for image in wrapper.select('img'):
+                info = apply_image_presentation(image, obj, obj.get('presentation_occurrence'))
+                figure = image.find_parent('figure')
+                if figure and info['role'] in COMPACT_IMAGE_ROLES and not figure.find('figcaption'):
+                    figure.name = 'span'
+                    figure.attrs = {'data-source-role': info['role']}
+    result = str(doc)
     if target=='readweave':
         result=editor_storage(result)
     return result
@@ -284,6 +377,8 @@ def export_zip(store, project, release=False):
     audit = dict(schema="sourceloom/1",revision=project["revision"],inventory=project["inventory"],plan=project["plan"],
                  draft=project["draft"],review=project["review"],accepted_revision=project["accepted_revision"],
                  release_issues=release_issues(project),readweave_roundtrip="not_verified")
+    if (project.get('production') or {}).get('core_chain_version')==1:
+        audit['integrity_result']=project.get('integrity_result')
     audit['production']=project.get('production')
     audit['previous_source_versions']=store.source_versions(project['id'])
     audit_raw = json.dumps(audit,ensure_ascii=False,indent=2).encode()

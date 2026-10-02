@@ -3,11 +3,338 @@
 import json
 import copy
 import math
+import re
 import time
 from pathlib import Path
 
 from .store import Conflict, identity, digest
 from .writing import canonical
+from .active_policy import (EVIDENCE_GAP_POLICY_REFRESH_VERSION,
+                            missing_evidence_gap_policy)
+
+
+def _refresh_short_rewrite_writer_policy(job, step_key):
+    """Version one writer-rule correction for the bounded glossary retry."""
+    policy=job.get('role_policy')
+    if not isinstance(policy,dict) or 'active_write' not in policy:
+        raise Conflict('短篇改写质量重试缺少冻结的 active_write 角色策略')
+    if digest(policy)!=job.get('role_policy_digest'):
+        raise Conflict('冻结的角色策略校验失败，未排队短篇改写质量重试')
+    updated=Path(__file__).parent/'roles'/'active_write.md'
+    new_text=updated.read_text(encoding='utf-8')
+    old_text=policy['active_write']
+    previous_policy_digest=job['role_policy_digest']
+    receipt=dict(version='active-write-short-rewrite-coverage-v1',role='active_write',
+        step=step_key,previous_text=old_text,previous_role_digest=digest(old_text),
+        previous_policy_digest=previous_policy_digest,
+        updated_role_digest=digest(new_text),changed=old_text!=new_text,at=time.time(),
+        reason='resolve conflicting short-rewrite definition-list instruction for one bounded fresh turn')
+    if old_text!=new_text:
+        policy['active_write']=new_text
+        job['role_policy_digest']=digest(policy)
+    receipt['updated_policy_digest']=job['role_policy_digest']
+    job.setdefault('versioned_role_policy_refreshes',[]).append(receipt)
+    return receipt
+
+
+def _kuafu_unanswered_call(call, pending):
+    from urllib.parse import urlsplit
+    return (call.get('status') in {'submitted','uncertain'}
+        and call.get('channel')=='openai-compatible' and call.get('dispatch_started')
+        and call.get('step_key')==pending and not call.get('response_blob')
+        and not call.get('http_status') and not call.get('upstream_id')
+        and urlsplit(call.get('upstream_base') or '').hostname=='api.kuafushe.cc')
+
+
+def _active_patch_unknown_sse_call(call, pending):
+    """Exact expired KuaFu Responses SSE shape; no artifact means no recovery query."""
+    from urllib.parse import urlsplit
+    return (bool(pending) and call.get('step_key')==pending
+        and call.get('role')=='active_patch' and call.get('channel')=='openai-compatible'
+        and call.get('protocol')=='responses' and call.get('streaming') is True
+        and call.get('status')=='uncertain' and call.get('dispatch_started') is True
+        and call.get('http_status')==200 and not call.get('response_blob')
+        and not call.get('upstream_id') and float(call.get('deadline_at') or 0)<=time.time()
+        and urlsplit(str(call.get('upstream_base') or '')).hostname=='api.kuafushe.cc')
+
+
+def _kuafu_responses_gateway_error(call, pending):
+    """A saved 52x gateway error page is not a model artifact and is retryable once via SSE."""
+    from urllib.parse import urlsplit
+    return (call.get('channel')=='openai-compatible' and call.get('step_key')==pending
+        and call.get('provider_id') and call.get('protocol')=='responses'
+        and call.get('status')=='uncertain' and call.get('http_status') in {520,521,522,523,524}
+        and call.get('response_blob') and call.get('error_code')=='upstream_service_error'
+        and urlsplit(call.get('upstream_base') or '').hostname=='api.kuafushe.cc')
+
+
+def _kuafu_saved_gateway_error(call, pending):
+    from urllib.parse import urlsplit
+    return (call.get('channel')=='openai-compatible' and call.get('step_key')==pending
+        and call.get('status')=='uncertain' and call.get('dispatch_started')
+        and call.get('http_status') in {520,521,522,523,524}
+        and call.get('response_blob') and call.get('error_code')=='upstream_service_error'
+        and urlsplit(str(call.get('upstream_base') or '')).hostname=='api.kuafushe.cc')
+
+
+def _mark_call_unknown(cx, job, call, reason):
+    """Atomically and repeatably preserve an unanswered dispatched call as unknown."""
+    call['status']='uncertain'
+    call['error_code']='worker_interrupted_after_dispatch'
+    call['uncertain_reason']=reason
+    call['uncertain_at']=call.get('uncertain_at') or time.time()
+    spending=cx.execute('SELECT actual,status,body FROM spending WHERE id=?',(call['id'],)).fetchone()
+    prior=json.loads(spending['body']) if spending else {}
+    receipt=prior|{'status':'unknown','reason':reason,'call_id':call['id']}
+    if spending and spending['actual'] is not None and spending['status']=='settled':
+        # Delivery can be uncertain even when billing is known; never erase a settled receipt.
+        receipt=prior|{'delivery_state':'unknown','delivery_reason':reason,'call_id':call['id']}
+        cx.execute('UPDATE spending SET body=? WHERE id=?',(json.dumps(receipt),call['id']))
+    elif spending:
+        cx.execute("UPDATE spending SET actual=NULL,status='unknown',body=? WHERE id=?",
+                   (json.dumps(receipt),call['id']))
+    else:
+        cx.execute('INSERT INTO spending(id,project,reserved,actual,status,body,created) VALUES(?,?,?,?,?,?,?)',
+                   (call['id'],job['project'],0,None,'unknown',json.dumps(receipt),time.time()))
+
+
+def _mark_call_not_sent(cx, job, call):
+    """Release a call saved before the durable dispatch claim, without sending it."""
+    call.update(status='unavailable',error_code='worker_interrupted_before_dispatch',
+                dispatch_state='confirmed_not_sent')
+    spending=cx.execute('SELECT body FROM spending WHERE id=?',(call['id'],)).fetchone()
+    if spending:
+        receipt=json.loads(spending['body'])|{
+            'status':'rejected','reason':'worker_interrupted_before_dispatch',
+            'call_id':call['id'],'actual_cny':0}
+        cx.execute("UPDATE spending SET actual=0,status='settled',body=? WHERE id=?",
+                   (json.dumps(receipt),call['id']))
+    recovery=(job.get('transport_recovery_routes') or {}).get(call.get('step_key'))
+    if (recovery and recovery.get('status')=='dispatching'
+            and recovery.get('provider_id')==call.get('provider_id')):
+        recovery.update(status='queued',attempts=0)
+        recovery.pop('started_at',None)
+    job.pop('pending',None)
+
+
+def _split_active_plan_group_once(source, source_ids):
+    """Split one ordered source group at a structural boundary near its midpoint."""
+    by_id={obj.get('id'):obj for obj in source.get('objects',[])}
+    objects=[by_id.get(source_id) for source_id in source_ids]
+    if len(objects)<2 or any(obj is None for obj in objects):
+        return None
+
+    def container(obj):
+        locator=str(obj.get('locator') or '')
+        matches=list(re.finditer(r'/(?:li|p|td|th|figure|figcaption|pre|blockquote)\[\d+\]',locator))
+        return locator[:matches[-1].end()] if matches else ''
+
+    weights=[len(str(obj.get('text') or '')) for obj in objects]
+    total=sum(weights)
+    candidates=[]
+    max_side_objects=max(1,math.ceil(len(objects)*2/3))
+    for boundary in range(1,len(objects)):
+        if max(boundary,len(objects)-boundary)>max_side_objects:
+            continue
+        left=container(objects[boundary-1]);right=container(objects[boundary])
+        if left and left==right:
+            continue
+        left_weight=sum(weights[:boundary])
+        # Keep both sides operationally small first; use text size as a tie-breaker.
+        candidates.append((abs(len(objects)-2*boundary),abs(total-2*left_weight),boundary))
+    if not candidates:
+        return None
+    boundary=min(candidates)[2]
+    left=list(source_ids[:boundary]);right=list(source_ids[boundary:])
+    if not left or not right:
+        return None
+    return left,right
+
+
+def _exhausted_active_plan_triplet(job, call, read_blob):
+    """Identify only the bounded KuaFu primary, backup, and one SSE history."""
+    from urllib.parse import urlsplit
+    step=call.get('step_key')
+    if not isinstance(step,str) or not step.startswith('active-plan-'):
+        return None
+    rows=[item for item in job.get('calls',[])
+        if item.get('step_key')==step and item.get('dispatch_started') is True
+        and item.get('channel')=='openai-compatible'
+        and urlsplit(str(item.get('upstream_base') or '')).hostname=='api.kuafushe.cc']
+    if (len(rows)!=3 or rows[-1].get('id')!=call.get('id')
+            or any(str(item.get('role') or '').removesuffix('__fallback')!='active_plan'
+                   for item in rows)):
+        return None
+    first,second,third=rows
+    no_receipt=lambda item: (not item.get('response_blob') and not item.get('http_status')
+                             and not item.get('upstream_id'))
+    first_saved_gateway=(first.get('status')=='uncertain'
+        and first.get('http_status') in {520,521,522,523,524}
+        and first.get('error_code')=='upstream_service_error' and bool(first.get('response_blob')))
+    if (first.get('protocol')!='chat_completions'
+            or first.get('status') not in {'submitted','uncertain'}
+            or not (no_receipt(first) or first_saved_gateway)
+            or second.get('protocol')!='responses'
+            or second.get('status')!='uncertain'
+            or second.get('streaming') is not False
+            or second.get('http_status') not in {520,521,522,523,524}
+            or second.get('error_code')!='upstream_service_error'
+            or not second.get('response_blob')
+            or third.get('protocol')!='responses'
+            or third.get('streaming') is not True
+            or third.get('provider_id')!=second.get('provider_id')):
+        return None
+    if (third.get('status') in {'submitted','uncertain'} and no_receipt(third)
+            and float(third.get('deadline_at') or 0)<=time.time()
+            and job.get('status')=='uncertain' and job.get('pending')==step):
+        return 'unknown_sse'
+    if (third.get('status')=='invalid' and third.get('finish_reason')=='failed'
+            and third.get('http_status') in (None,200) and third.get('response_blob')):
+        try:
+            response=json.loads(read_blob(third['response_blob']))
+        except (KeyError,TypeError,ValueError,OSError):
+            return None
+        error=response.get('error') if isinstance(response,dict) else None
+        error_code=(error.get('code') or error.get('type')) if isinstance(error,dict) else ''
+        if response.get('status')=='failed' and error_code=='upstream_error':
+            return 'failed_sse'
+    return None
+
+
+def _queue_reciprocal_kuafu_route(job, call, config, reason):
+    """Queue only the route explicitly named by the interrupted KuaFu route."""
+    key=call.get('step_key')
+    if not key or not (_kuafu_unanswered_call(call,key)
+                       or _kuafu_saved_gateway_error(call,key)):
+        return None
+    recoveries=job.setdefault('transport_recovery_routes',{})
+    if key in recoveries:
+        return recoveries[key]
+    routes=config.get('provider_routes') if isinstance(config,dict) else None
+    credentials=config.get('provider_credentials') if isinstance(config,dict) else None
+    if not isinstance(routes,dict) or not isinstance(credentials,dict):
+        return None
+    primary=routes.get(call.get('provider_id'))
+    if not isinstance(primary,dict) or primary.get('provider')!='openai-compatible':
+        return None
+    backup_id=str(primary.get('backup_provider_id') or primary.get('backupProviderId') or '')
+    if not backup_id:
+        return None
+    backup=routes.get(backup_id)
+    attempted={item.get('provider_id') for item in job.get('calls',[])
+               if item.get('step_key')==key and item.get('provider_id')}
+    from urllib.parse import urlsplit
+    valid=(isinstance(backup,dict) and backup_id not in attempted
+        and backup.get('enabled') is not False and backup.get('provider')=='openai-compatible'
+        and backup.get('model')==primary.get('model')
+        and urlsplit(str(backup.get('base_url') or '')).hostname=='api.kuafushe.cc'
+        and backup.get('protocol') in {'chat_completions','responses'}
+        and call.get('protocol') in {'chat_completions','responses'}
+        and bool(credentials.get(backup_id)))
+    if valid:
+        state=dict(status='queued',provider_id=backup_id,protocol=backup['protocol'],
+            original_call_id=call['id'],original_provider_id=call.get('provider_id'),
+            attempts=0,reason=reason)
+    else:
+        state=dict(status='failed',provider_id=None,original_call_id=call['id'],
+            original_provider_id=call.get('provider_id'),attempts=0,
+            reason='KuaFu dispatch is uncertain; its configured reciprocal route is unavailable or already tried')
+    recoveries[key]=state
+    rows=job.setdefault('internal_recoveries',[])
+    if not any(row.get('type')=='interrupted_kuafu_dispatch' and row.get('step')==key for row in rows):
+        rows.append(dict(stage=job.get('stage'),step=key,type='interrupted_kuafu_dispatch',
+            original_call_id=call['id'],provider_id=state.get('provider_id'),at=time.time()))
+    job.pop('pending',None)
+    return state
+
+
+def _kuafu_pair_is_failed_without_artifact(job, config, key, read_blob):
+    """Match one failed active-v2 KuaFu pair, with no usable result to resume."""
+    from urllib.parse import urlsplit
+    if (job.get('role')!='production' or job.get('pipeline')!='active_composition_v2'
+            or not key or job.get('pending')!=key or key in (job.get('results') or {})):
+        return None
+    calls=[item for item in job.get('calls',[])
+        if item.get('step_key')==key and item.get('dispatch_started') is True
+        and item.get('dispatch_state')!='confirmed_not_sent']
+    kuafu_calls=[item for item in calls
+        if urlsplit(str(item.get('upstream_base') or '')).hostname=='api.kuafushe.cc']
+    roles={str(item.get('role') or '').removesuffix('__fallback') for item in kuafu_calls}
+    if len(roles)!=1:
+        return None
+    role=next(iter(roles))
+    role_cfg=(config.get('role_providers') or {}).get(role,{})
+    if not isinstance(role_cfg,dict) or not role:
+        return None
+    primary_id=str(role_cfg.get('provider_id') or '')
+    routes=config.get('provider_routes')
+    credentials=config.get('provider_credentials')
+    if not primary_id or not isinstance(routes,dict) or not isinstance(credentials,dict):
+        return None
+    primary=routes.get(primary_id)
+    if (not isinstance(primary,dict) or primary.get('enabled') is False
+            or primary.get('provider')!='openai-compatible'
+            or urlsplit(str(primary.get('base_url') or '')).hostname!='api.kuafushe.cc'
+            or not credentials.get(primary_id)):
+        return None
+    backup_id=str(primary.get('backup_provider_id') or primary.get('backupProviderId') or
+                  role_cfg.get('backup_provider_id') or '')
+    backup=routes.get(backup_id)
+    if (not backup_id or not isinstance(backup,dict) or backup.get('enabled') is False
+            or backup.get('provider')!='openai-compatible'
+            or backup.get('backup_provider_id',backup.get('backupProviderId'))!=primary_id
+            or backup.get('model')!=primary.get('model')
+            or urlsplit(str(backup.get('base_url') or '')).hostname!='api.kuafushe.cc'
+            or backup.get('protocol') not in {'chat_completions','responses'}
+            or primary.get('protocol') not in {'chat_completions','responses'}
+            or not credentials.get(backup_id)):
+        return None
+    expected={primary_id,backup_id}
+    if (not kuafu_calls or any(item.get('provider_id') not in expected
+            or str(item.get('role') or '').removesuffix('__fallback')!=role
+            for item in kuafu_calls)
+            or not expected<={item.get('provider_id') for item in kuafu_calls}):
+        return None
+    # A complete candidate, even one rejected by a later content validator,
+    # must be resumed/repaired instead of being silently replaced by Go output.
+    for item in calls:
+        if item.get('status') in {'completed','recovered'}:
+            return None
+        blob=item.get('response_blob')
+        if not blob:
+            continue
+        try:
+            body=json.loads(read_blob(blob))
+        except (KeyError,TypeError,ValueError,OSError):
+            body=None
+        if not isinstance(body,dict):
+            continue
+        if item.get('protocol')=='responses':
+            if body.get('status') in {'completed','complete','succeeded'}:
+                from .providers import _responses_text
+                if _responses_text(body):
+                    return None
+        else:
+            choices=body.get('choices')
+            choice=choices[0] if isinstance(choices,list) and choices and isinstance(choices[0],dict) else {}
+            message=choice.get('message') if isinstance(choice.get('message'),dict) else {}
+            if (choice.get('finish_reason') in {'stop','tool_calls'}
+                    and (message.get('content') or message.get('tool_calls'))):
+                return None
+    allowed={'uncertain','unavailable','rejected','truncated','incomplete','reasoning_exhausted','invalid'}
+    for item in kuafu_calls:
+        status=item.get('status')
+        if status not in allowed:
+            return None
+        if status=='invalid' and item.get('finish_reason')!='failed':
+            return None
+        # Queryable upstream work has its own recovery path; do not fork it.
+        if status=='uncertain' and item.get('upstream_id'):
+            return None
+    return dict(role=role,primary_id=primary_id,backup_id=backup_id,
+                call_ids=[item.get('id') for item in kuafu_calls],
+                unknown_call_ids=[item.get('id') for item in kuafu_calls
+                                  if item.get('status')=='uncertain'])
 
 
 def planning_policy_digest():
@@ -74,6 +401,8 @@ class Queue:
                     max_calls=max_calls,feasible=minimum_calls<=max_calls)
 
     def enqueue(self, pid, bundle, expected_intake=None):
+        if self.pipeline == 'active_composition_v1':
+            raise Conflict('内部错误：旧逐批流程只允许续接已标记的存量任务')
         now = time.time()
         with self.store.connect() as cx:
             cx.execute('BEGIN IMMEDIATE')
@@ -109,6 +438,8 @@ class Queue:
                        results={},repair_rounds=0,planning_policy_digest=planning_policy_digest(),teaching_version=2,writing_contract_version=7,review_order='style_first',transformation_mode=p.get('mode','rewrite'),base_revision=p['revision'],
                        source_digest=p['inventory']['digest'],source=p['inventory'],goal=p['goal'],project_goal=p['goal'],
                        writing_skill={k:bundle[k] for k in ('root','package_digest','instruction_digest')})
+            if self.pipeline == 'active_composition_v2':
+                job['core_chain_version'] = 1
             if self.pipeline in {'active_composition_v1','active_composition_v2'}:
                 from .active_composition import initialize
                 initialize(job)
@@ -123,7 +454,7 @@ class Queue:
             cx.execute('UPDATE projects SET body=? WHERE id=?', (json.dumps(p,ensure_ascii=False),pid))
         return job
 
-    def claim(self, owner, lease=45, project=None):
+    def claim(self, owner, lease=45, project=None, recovery_config=None):
         now = time.time()
         with self.store.connect() as cx:
             cx.execute('BEGIN IMMEDIATE')
@@ -148,6 +479,51 @@ class Queue:
             job.setdefault('started',now)
             job['status']='running'
             job['worker_owner']=owner
+            if job['recovered_lease']:
+                call=(job.get('calls') or [{}])[-1]
+                pending=job.get('pending')
+                if pending and call.get('step_key')!=pending:
+                    # The worker stopped while preparing or reserving the next
+                    # request. The prior step's completed response must never
+                    # be interpreted as the pending step's output.
+                    job.setdefault('internal_recoveries',[]).append(dict(
+                        stage=job.get('stage'),step=pending,
+                        type='interrupted_before_call_record',at=time.time()))
+                    job.pop('pending',None)
+                if (call.get('status')=='submitted' and call.get('channel')=='openai-compatible'
+                        and call.get('dispatch_started') is False and call.get('step_key')==pending
+                        and not call.get('response_blob') and not call.get('http_status')
+                        and not call.get('upstream_id')):
+                    _mark_call_not_sent(cx,job,call)
+                if (call.get('status')=='submitted' and call.get('channel')=='openai-compatible'
+                        and call.get('dispatch_started') and call.get('step_key')==pending
+                        and not call.get('response_blob') and not call.get('http_status')
+                        and not call.get('upstream_id')):
+                    reason='worker lease expired after dispatch; no response or queryable upstream identity was saved'
+                    _mark_call_unknown(cx,job,call,reason)
+                    if (job.get('pipeline')=='active_composition_v2'
+                            and job.get('core_chain_version')==0):
+                        from urllib.parse import urlsplit
+                        if urlsplit(call.get('upstream_base') or '').hostname=='api.kuafushe.cc':
+                            recovery=(job.get('transport_recovery_routes') or {}).get(pending)
+                            if (recovery and recovery.get('recovery_protocol_version')=='kuafu-responses-sse-v1'
+                                    and recovery.get('status')=='dispatching'):
+                                recovery.update(status='failed',error='worker_interrupted_during_sse',
+                                    attempt_call_id=call.get('id'),finished_at=time.time())
+                                job.pop('pending',None)
+                            else:
+                                from .production import queue_kuafu_responses_stream_recovery
+                                if not queue_kuafu_responses_stream_recovery(
+                                        job,recovery_config or {},legacy_excess=True):
+                                    _queue_reciprocal_kuafu_route(job,call,recovery_config or {},
+                                        'original KuaFu call delivery is unknown after worker restart; its configured reciprocal route is queued once')
+                elif (pending and job.get('core_chain_version')==0
+                      and _kuafu_saved_gateway_error(call,pending)):
+                    from .production import queue_kuafu_responses_stream_recovery
+                    if not queue_kuafu_responses_stream_recovery(
+                            job,recovery_config or {}):
+                        _queue_reciprocal_kuafu_route(job,call,recovery_config or {},
+                            'saved KuaFu 52x response had no model artifact; its configured reciprocal route is queued once')
             cx.execute("UPDATE jobs SET status='running',body=? WHERE id=?", (json.dumps(job,ensure_ascii=False),job['id']))
         return job
 
@@ -228,6 +604,8 @@ class Queue:
 
     def rewrite_active(self,pid,bundle):
         """Explicit new generation keeps historical drafts and cumulative spending."""
+        if self.pipeline == 'active_composition_v1':
+            raise Conflict('内部错误：旧逐批流程只允许续接已标记的存量任务')
         from .active_composition import initialize
         with self.store.connect() as cx:
             cx.execute('BEGIN IMMEDIATE')
@@ -240,6 +618,7 @@ class Queue:
                 raise Conflict('原请求仍未确定，不能借重新改写重复提交')
             jid=identity();now=time.time()
             job=initialize(dict(id=jid,project=pid,role='production',status='queued',created=now,calls=[],pipeline=self.pipeline,
+                core_chain_version=1 if self.pipeline=='active_composition_v2' else 0,
                 results={},repair_rounds=0,base_revision=p['revision'],source_digest=p['inventory']['digest'],
                 source_snapshot_digest=digest(p['inventory']),source=copy.deepcopy(p['inventory']),
                 goal=p['goal'],project_goal=p['goal'],transformation_mode=p.get('mode','rewrite'),
@@ -250,6 +629,8 @@ class Queue:
             # A cancelled retry can be newer than the last complete visual pass
             # Search history for the newest exact, complete visual checkpoint
             for old in history:
+                if old.get('core_chain_version')!=job.get('core_chain_version'):
+                    continue
                 cards=old.get('visual_cards',[])
                 visual_ids={o['id'] for o in old.get('source',{}).get('objects',[])
                     if o['kind'] in {'image','page','media'} and o.get('resource_id')}
@@ -269,11 +650,18 @@ class Queue:
             # partition sessions and their raw responses remain historical, while
             # the new job resumes at the first unvalidated source group
             plan_candidates=[]
+            current_archived={o['id'] for o in job.get('source',{}).get('objects',[])
+                              if decorative_resource(o)}
             for old in history:
+                if old.get('core_chain_version')!=job.get('core_chain_version'):
+                    continue
                 completed=old.get('active_plans',[]);index=old.get('active_partition_index',0)
                 groups=old.get('active_groups',[])
+                old_archived=(set(old['archived_layout_source_ids'])
+                              if 'archived_layout_source_ids' in old else current_archived)
                 if (job.get('reused_visual_job') and completed and index==len(completed)
                         and index<=len(groups)
+                        and old_archived==current_archived
                         and material_signature(old.get('source',{}))==material_signature(job['source'])
                         and old.get('writing_skill',{}).get('package_digest')==bundle['package_digest']
                         and old.get('role_policy_digest')==job.get('role_policy_digest')):
@@ -470,7 +858,8 @@ class Queue:
             new=project.get('inventory',{})
             old_originals={(item['name'],item['sha256']) for item in old.get('originals',[])}
             new_originals={(item['name'],item['sha256']) for item in new.get('originals',[])}
-            if (job.get('pipeline') not in {'active_composition_v1','active_composition_v2'} or job['status']!='failed'
+            if (job.get('pipeline') not in {'active_composition_v1','active_composition_v2'}
+                    or job.get('core_chain_version') not in {0,1} or job['status']!='failed'
                     or job.get('calls') or job.get('pending') or job.get('draft',{}).get('blocks')
                     or job.get('stage') not in {'active_index','active_visual'}
                     or project.get('active_job') or project.get('draft')
@@ -494,8 +883,51 @@ class Queue:
     def retry_validation(self, jid, config=None):
         """Continue a known returned artifact after a code fix, retaining all limits."""
         snapshot=self.store.job(jid)
+        if snapshot.get('core_chain_version')==1:
+            if snapshot.get('status') in {'uncertain','failed'} and config is not None:
+                self.recover_original(jid,config)
+                return self.store.job(jid)
+            raise Conflict('新版任务只能通过 Provider 查询原请求，不能进入旧版续接流程')
         last=(snapshot.get('calls') or [{}])[-1]
-        if (config and snapshot.get('status')=='failed' and snapshot.get('pending')==last.get('step_key')
+        if self._queue_saved_responses_artifact(jid,snapshot,last):
+            return self.store.job(jid)
+        if (config and snapshot.get('status') in {'uncertain','failed'}
+                and snapshot.get('pipeline')=='active_composition_v2'
+                and snapshot.get('core_chain_version')==0
+                and self._queue_kuafu_go_third_route(jid,config,snapshot,last)):
+            return self.store.job(jid)
+        if (config and snapshot.get('core_chain_version')==0
+                and snapshot.get('status')=='failed'
+                and snapshot.get('stage')=='active_plan'
+                and last.get('protocol')=='responses'
+                and last.get('status')=='invalid'
+                and last.get('finish_reason')=='failed'
+                and last.get('response_blob')):
+            return self.continue_failed_active_plan_context(jid)
+        if (config and snapshot.get('core_chain_version')==0
+                and snapshot.get('status')=='uncertain'
+                and snapshot.get('pipeline')=='active_composition_v2'
+                and snapshot.get('stage')=='active_plan'
+                and _exhausted_active_plan_triplet(snapshot,last,self.store.read_blob)=='unknown_sse'):
+            return self.continue_failed_active_plan_context(jid)
+        if (config and snapshot.get('core_chain_version')==0
+                and snapshot.get('status')=='uncertain'
+                and snapshot.get('pipeline')=='active_composition_v2'
+                and self._queue_kuafu_responses_stream_retry(jid,config,snapshot,last)):
+            return self.store.job(jid)
+        if (config and snapshot.get('core_chain_version')==0
+                and snapshot.get('status')=='uncertain'
+                and snapshot.get('pipeline')=='active_composition_v2'
+                and _kuafu_unanswered_call(last,snapshot.get('pending'))):
+            return self.continue_interrupted_kuafu(jid,config)
+        if (config and snapshot.get('core_chain_version')==0
+                and snapshot.get('status')=='uncertain'
+                and snapshot.get('pipeline')=='active_composition_v2'
+                and snapshot.get('stage')=='active_revision'
+                and _active_patch_unknown_sse_call(last,snapshot.get('pending'))):
+            return self.continue_active_patch_unknown_sse(jid)
+        if (config and snapshot.get('core_chain_version')==0
+                and snapshot.get('status')=='failed' and snapshot.get('pending')==last.get('step_key')
                 and last.get('status')=='submitted' and last.get('dispatch_started')
                 and not last.get('response_blob') and not last.get('http_status')
                 and last.get('deadline_at',0)<=time.time()):
@@ -511,6 +943,144 @@ class Queue:
                 raise Conflict('只能继续已经收到完整响应的校验失败任务')
             call=job['calls'][-1] if job['calls'] else {}
             call_role=str(call.get('role') or '').removesuffix('__fallback')
+            # One bounded quality escalation for a completed short-rewrite
+            # glossary correction that exhausted its scoped repair. Queue the
+            # next turn of that same active writer session on its configured
+            # KuaFu primary; retain all prior results and checkpoints.
+            escalation_session=None
+            fresh_turn_retry_session=None
+            policy_refresh_session=None
+            policy_refresh=None
+            exhausted_policy_refresh=False
+            if (config and job.get('pipeline')=='active_composition_v2'
+                    and job.get('stage')=='active_plan' and not job.get('pending')
+                    and call.get('role')=='active_plan'
+                    and call.get('status') in {'completed','recovered'}
+                    and call.get('response_blob')):
+                gap_policy=missing_evidence_gap_policy(job.get('error'))
+                step_key=call.get('step_key','')
+                saved=(job.get('results') or {}).get(step_key)
+                repair_limit=max(1,min(2,int(config.get('max_plan_repairs',2))))
+                for session_key,session in (job.get('active_sessions') or {}).items():
+                    turn_prefix=session_key+'-turn-'
+                    if not step_key.startswith(turn_prefix):
+                        continue
+                    marker=(job.get('active_plan_policy_refreshes') or {}).get(session_key,{})
+                    if (marker.get('version')==EVIDENCE_GAP_POLICY_REFRESH_VERSION
+                            and marker.get('next_step_key')==step_key and gap_policy):
+                        exhausted_policy_refresh=True
+                        break
+                    if (not gap_policy or marker or int(session.get('corrections',0))<repair_limit
+                            or not isinstance(saved,dict) or not isinstance(saved.get('result'),dict)):
+                        continue
+                    try:
+                        failed_turn=int(step_key[len(turn_prefix):])
+                    except ValueError:
+                        continue
+                    if failed_turn!=int(session.get('round',-1)):
+                        continue
+                    declared_ids=set(session.get('declared_gap_ids',[]))
+                    returned_ids={item.get('id') for item in saved['result'].get('evidence_gaps',[])
+                                  if isinstance(item,dict) and item.get('id')}
+                    missing_ids=set(gap_policy['gap_ids'])
+                    action_gap_ids={entry.get('action',{}).get('gap_id')
+                        for entry in session.get('action_history',[])
+                        if entry.get('action',{}).get('kind') in {'search','page','image'}}
+                    previously_corrected=any(
+                        receipt.get('step')==session_key and receipt.get('role')=='active_plan'
+                        and (previous:=missing_evidence_gap_policy(receipt.get('error')))
+                        and set(previous['gap_ids'])==missing_ids
+                        for receipt in job.get('active_correction_receipts',[]))
+                    if (not missing_ids or not missing_ids<=declared_ids
+                            or not missing_ids<=action_gap_ids
+                            or missing_ids & returned_ids or previously_corrected):
+                        continue
+                    policy_refresh_session=session_key
+                    policy_refresh=dict(error=gap_policy['error'],
+                                        instruction=gap_policy['instruction'],
+                                        gap_ids=sorted(missing_ids),
+                                        previous_call_id=call.get('id'),
+                                        previous_step_key=step_key,
+                                        next_step_key=session_key+'-turn-'+str(failed_turn+1))
+                    session['round']=max(int(session.get('round',0)),failed_turn+1)
+                    session['correction']=dict(error=policy_refresh['error'],
+                                               instruction=policy_refresh['instruction'])
+                    break
+            if exhausted_policy_refresh:
+                raise Conflict('本阶段一次性 EvidenceGap 策略刷新已用完；已保留结果，未重复请求模型')
+            if (config and job.get('pipeline')=='active_composition_v2'
+                    and job.get('stage')=='active_write' and not job.get('pending')
+                    and call_role=='active_write' and str(call.get('role','')).endswith('__fallback')
+                    and call.get('status') in {'completed','recovered'} and call.get('response_blob')
+                    and '短篇普通改写被扩成术语表' in str(job.get('error') or '')):
+                from .providers import apply_route_override
+                primary_cfg=(config.get('role_providers') or {}).get('active_write',{})
+                primary=apply_route_override(config,primary_cfg)
+                primary_id=primary.get('provider_id')
+                from urllib.parse import urlsplit
+                primary_host=urlsplit(primary.get('base_url') or '').hostname
+                primary_key=(primary.get('api_key') or
+                    (config.get('provider_credentials') or {}).get(primary_id))
+                fallback_cfg=(config.get('fallback_providers') or {}).get('active_write',{})
+                fallback=apply_route_override(config,fallback_cfg)
+                if (primary.get('provider')=='openai-compatible' and primary_host=='api.kuafushe.cc'
+                        and primary_key and primary_id and primary_id!=call.get('provider_id')
+                        and call.get('provider_id')==fallback.get('provider_id')):
+                    repair_limit=max(1,min(2,int(config.get('active_structure_correction_limit',2))))
+                    for session_key,session in (job.get('active_sessions') or {}).items():
+                        if (call.get('step_key','').startswith(session_key+'-turn-')
+                                and session.get('short_rewrite_glossary_repair_used') is True
+                                and int(session.get('corrections',0))>=repair_limit+1
+                                and session.get('correction')
+                                and session_key not in job.get('active_glossary_quality_escalations',{})):
+                            escalation_session=session_key
+                            # Keep the complete failed artifact as correction context,
+                            # then resume at a fresh turn so the cached response cannot
+                            # immediately fail validation again.
+                            result=(job.get('results') or {}).get(call.get('step_key'))
+                            if isinstance(result,dict) and isinstance(result.get('result'),dict):
+                                session['previous_invalid_result']=copy.deepcopy(result['result'])
+                            try:
+                                failed_turn=int(call.get('step_key','').rsplit('-turn-',1)[1])
+                            except (IndexError,ValueError):
+                                failed_turn=int(session.get('round',0))
+                            session['round']=max(int(session.get('round',0)),failed_turn+1)
+                            session['quality_escalation_queued']=True
+                            break
+            # If the one primary quality escalation also returned a completed
+            # but invalid glossary artifact, grant one more fresh writer turn.
+            # The cached artifact stays as correction context; this marker can
+            # never authorize a replay of its step or a provider fallback.
+            if (not escalation_session and config and job.get('pipeline')=='active_composition_v2'
+                    and job.get('stage')=='active_write' and not job.get('pending')
+                    and call_role=='active_write' and call.get('role')=='active_write'
+                    and call.get('status') in {'completed','recovered'} and call.get('response_blob')
+                    and '短篇普通改写被扩成术语表' in str(job.get('error') or '')):
+                repair_limit=max(1,min(2,int(config.get('active_structure_correction_limit',2))))
+                for session_key,session in (job.get('active_sessions') or {}).items():
+                    first=(job.get('active_glossary_quality_escalations') or {}).get(session_key,{})
+                    result=(job.get('results') or {}).get(call.get('step_key'))
+                    if (not call.get('step_key','').startswith(session_key+'-turn-')
+                            or session.get('short_rewrite_glossary_repair_used') is not True
+                            or int(session.get('corrections',0))<repair_limit+1
+                            or not session.get('correction')
+                            or first.get('version')!='active-short-rewrite-glossary-kuafu-v1'
+                            or first.get('status')!='completed' or first.get('attempts')!=1
+                            or first.get('attempt_call_id')!=call.get('id')
+                            or first.get('attempt_step')!=call.get('step_key')
+                            or call.get('provider_id')!=first.get('primary_provider_id')
+                            or not isinstance(result,dict) or not isinstance(result.get('result'),dict)
+                            or session_key in job.get('active_glossary_quality_retries',{})):
+                        continue
+                    fresh_turn_retry_session=session_key
+                    session['previous_invalid_result']=copy.deepcopy(result['result'])
+                    try:
+                        failed_turn=int(call.get('step_key','').rsplit('-turn-',1)[1])
+                    except (IndexError,ValueError):
+                        failed_turn=int(session.get('round',0))
+                    session['round']=max(int(session.get('round',0)),failed_turn+1)
+                    session['quality_fresh_turn_retry_queued']=True
+                    break
             # Migrate the known old checkpoint bug: the trial circuit rejected
             # the request before Provider created any call or dispatched bytes.
             no_call_preflight=(not job['calls'] and (
@@ -523,7 +1093,7 @@ class Queue:
                 job.setdefault('preflight_stops',[]).append(dict(key=job['pending'],dispatched=False,
                     reason='legacy_trial_circuit_before_provider_dispatch'))
                 job.pop('pending',None)
-            billing=cx.execute('SELECT actual,body FROM spending WHERE id=?',(call.get('id',''),)).fetchone()
+            billing=cx.execute('SELECT actual,status,body FROM spending WHERE id=?',(call.get('id',''),)).fetchone()
             rejected=bool(billing and billing['actual']==0 and (
                 json.loads(billing['body']).get('status')=='rejected' or
                 json.loads(billing['body']).get('status')=='quota_rejected' and
@@ -613,6 +1183,30 @@ class Queue:
                     call['status']='reasoning_exhausted'
                     job.pop('pending',None)
                     returned_invalid=True
+                    if config:
+                        from .providers import ReasoningExhausted
+                        from .production import (queue_go_pro_reasoning_escalation,
+                                                 queue_go_thinking_disabled_retry,
+                                                 queue_kuafu_response_recovery)
+                        # A previously failed job can be resumed through the
+                        # same one-shot KuaFu route selection as a live worker;
+                        # no manual job-body edits are needed.
+                        job['pending']=call.get('step_key')
+                        route=(job.get('transport_recovery_routes') or {}).get(call.get('step_key'))
+                        if route and route.get('recovery_protocol_version')=='kuafu-opencode-go-third-v1':
+                            queued=queue_go_thinking_disabled_retry(
+                                job,config,self.store,dict(billing))
+                            if not queued:
+                                raise Conflict('Go 的一次性 thinking-disabled 重试不符合完整计费空响应条件，或已使用；旧调用与费用记录已保留')
+                        elif route and route.get('recovery_protocol_version')=='kuafu-opencode-go-thinking-disabled-v1':
+                            queued=queue_go_pro_reasoning_escalation(
+                                job,config,self.store,dict(billing))
+                            if not queued:
+                                raise Conflict('Go 的一次性 Pro 升级不符合第二次完整计费空响应条件，或已使用；旧调用与费用记录已保留')
+                        else:
+                            queue_kuafu_response_recovery(
+                                job,ReasoningExhausted('已确认备用通道耗尽推理输出'),config)
+                        job.pop('pending',None)
             continuation_rows=job.get('unqueryable_router_continuations',[])+job.get('unqueryable_subscription_continuations',[])
             software_resume=(not job.get('pending') and job.get('error')=='PermissionError'
                 and any(item.get('original_call')==call.get('id') for item in continuation_rows))
@@ -622,12 +1216,555 @@ class Queue:
             if p['active_job'] or p.get('trashed') or p['revision']!=job['base_revision']:
                 raise Conflict('原版本已变化或材料不可继续处理')
             job.setdefault('validation_stops',[]).append(dict(error=job.get('error'),at=job.get('finished')))
+            if escalation_session:
+                marker=dict(version='active-short-rewrite-glossary-kuafu-v1',
+                    role='active_write',logical_step=escalation_session,
+                    previous_call_id=call.get('id'),fallback_provider_id=call.get('provider_id'),
+                    primary_provider_id=primary_id,attempts=0,status='queued',queued_at=time.time(),
+                    reason='one primary-provider quality escalation after scoped glossary correction exhaustion')
+                job.setdefault('active_glossary_quality_escalations',{})[escalation_session]=marker
+                job.setdefault('quality_escalation_history',[]).append(copy.deepcopy(marker))
+            if fresh_turn_retry_session:
+                fresh_turn_key=(fresh_turn_retry_session+'-turn-'+str(
+                    job['active_sessions'][fresh_turn_retry_session]['round']))
+                _refresh_short_rewrite_writer_policy(
+                    job,fresh_turn_key)
+                marker=dict(version='active-short-rewrite-glossary-fresh-turn-v1',
+                    role='active_write',logical_step=fresh_turn_retry_session,
+                    previous_call_id=call.get('id'),
+                    next_step_key=fresh_turn_key,
+                    primary_provider_id=call.get('provider_id'),attempts=0,status='queued',
+                    queued_at=time.time(),
+                    reason='one bounded fresh writer turn after completed primary glossary escalation')
+                job.setdefault('active_glossary_quality_retries',{})[
+                    fresh_turn_retry_session]=marker
+                job.setdefault('quality_escalation_history',[]).append(copy.deepcopy(marker))
+            if policy_refresh_session:
+                marker=dict(version=EVIDENCE_GAP_POLICY_REFRESH_VERSION,
+                    role='active_plan',logical_step=policy_refresh_session,
+                    previous_call_id=policy_refresh['previous_call_id'],
+                    previous_step_key=policy_refresh['previous_step_key'],
+                    next_step_key=policy_refresh['next_step_key'],
+                    gap_ids=policy_refresh['gap_ids'],attempts=0,status='queued',
+                    queued_at=time.time(),
+                    reason='one bounded fresh plan turn after the saved EvidenceGap policy became actionable')
+                job.setdefault('active_plan_policy_refreshes',{})[
+                    policy_refresh_session]=marker
+                job.setdefault('active_policy_refresh_history',[]).append(copy.deepcopy(marker))
             job.update(status='queued',error=None)
             p.update(active_job=jid,state='queued')
             cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
             cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
             cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),p['id']))
         return job
+
+    def _queue_kuafu_go_third_route(self,jid,config,snapshot,last):
+        """Queue one configured OpenCode Go attempt after both KuaFu routes fail."""
+        from urllib.parse import urlsplit
+        key=snapshot.get('pending')
+        if not key or last.get('step_key')!=key:
+            return False
+        matched=_kuafu_pair_is_failed_without_artifact(snapshot,config,key,self.store.read_blob)
+        if not matched:
+            return False
+        role=matched['role']
+        fallback=(config.get('fallback_providers') or {}).get(role)
+        if not isinstance(fallback,dict) or fallback.get('enabled') is False:
+            return False
+        from .providers import apply_route_override
+        effective=apply_route_override(config,fallback)
+        fallback_id=str(effective.get('provider_id') or '')
+        credential=effective.get('api_key') or (config.get('provider_credentials') or {}).get(fallback_id)
+        if (effective.get('provider')!='openai-compatible' or not fallback_id or not credential
+                or urlsplit(str(effective.get('base_url') or '')).hostname!='opencode.ai'
+                or effective.get('protocol','chat_completions') not in {'chat_completions','responses'}
+                or not effective.get('model')):
+            return False
+        step_calls=[item for item in snapshot.get('calls',[]) if item.get('step_key')==key]
+        if any(item.get('provider_id')==fallback_id for item in step_calls):
+            return False
+        old=(snapshot.get('transport_recovery_routes') or {}).get(key)
+        if old and (old.get('status')!='failed'
+                    or old.get('recovery_protocol_version')=='kuafu-opencode-go-third-v1'):
+            return False
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:
+                return False
+            job=json.loads(row[0])
+            call=(job.get('calls') or [{}])[-1]
+            project_row=cx.execute('SELECT body FROM projects WHERE id=?',(job.get('project'),)).fetchone()
+            if not project_row:
+                return False
+            project=json.loads(project_row[0])
+            if (job.get('status') not in {'uncertain','failed'}
+                    or job.get('pipeline')!='active_composition_v2'
+                    or job.get('pending')!=key or call.get('id')!=last.get('id')
+                    or project.get('active_job') or project.get('trashed')
+                    or project.get('revision')!=job.get('base_revision')
+                    or _kuafu_pair_is_failed_without_artifact(job,config,key,self.store.read_blob)!=matched):
+                return False
+            step_calls=[item for item in job.get('calls',[]) if item.get('step_key')==key]
+            if any(item.get('provider_id')==fallback_id for item in step_calls):
+                return False
+            current=(job.get('transport_recovery_routes') or {}).get(key)
+            if current and (current.get('status')!='failed'
+                    or current.get('recovery_protocol_version')=='kuafu-opencode-go-third-v1'):
+                return False
+            if current:
+                job.setdefault('transport_recovery_history',{}).setdefault(key,[]).append(copy.deepcopy(current))
+            state=dict(status='queued',provider_id=fallback_id,
+                protocol=effective.get('protocol','chat_completions'),
+                original_provider_id=matched['primary_id'],
+                original_call_ids=list(matched['call_ids']),
+                unknown_call_ids=list(matched['unknown_call_ids']),
+                original_provider_ids=[matched['primary_id'],matched['backup_id']],
+                attempts=0,recovery_protocol_version='kuafu-opencode-go-third-v1',
+                reason='both configured reciprocal KuaFu routes failed on this exact active-v2 step with no complete artifact; one OpenCode Go fallback is queued')
+            job.setdefault('transport_recovery_routes',{})[key]=state
+            job.setdefault('internal_recoveries',[]).append(dict(stage=role,step=key,
+                type='kuafu_opencode_go_third_route',provider_id=fallback_id,
+                original_call_ids=list(matched['call_ids']),unknown_call_ids=list(matched['unknown_call_ids']),
+                at=time.time()))
+            job.pop('pending',None)
+            job.update(status='queued',error=None)
+            job.pop('error_type',None);job.pop('finished',None)
+            project.update(active_job=jid,state='queued')
+            cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                ('queued',json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0,cancel_requested=0 WHERE id=?",
+                (jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',
+                (json.dumps(project,ensure_ascii=False),project['id']))
+        return True
+
+    def continue_failed_active_plan_context(self,jid):
+        """Continue one exhausted KuaFu active-plan failure on the same job.
+
+        The previous responses and every charge remain in the job and ledger.
+        A three-dispatch KuaFu failure gets one structural split of the current
+        source group; older saved failures retain the existing context retry.
+        """
+        from urllib.parse import urlsplit
+
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0])
+            if (job.get('role')!='production' or job.get('pipeline')!='active_composition_v2'
+                    or job.get('status') not in {'failed','uncertain'} or job.get('stage')!='active_plan'):
+                raise Conflict('Continuation requires a terminal failed or uncertain active-plan job')
+            call=(job.get('calls') or [{}])[-1]
+            if job.get('pending') not in (None,call.get('step_key')):
+                raise Conflict('Pending step does not match the saved failed call')
+            split_kind=_exhausted_active_plan_triplet(job,call,self.store.read_blob)
+            unknown_sse=split_kind=='unknown_sse'
+            valid_failed_artifact=(call.get('protocol')=='responses' and call.get('status')=='invalid'
+                and call.get('finish_reason')=='failed' and call.get('http_status') in (None,200)
+                and call.get('dispatch_started') is True and bool(call.get('response_blob'))
+                and str(call.get('role') or '').removesuffix('__fallback')=='active_plan'
+                and urlsplit(str(call.get('upstream_base') or '')).hostname=='api.kuafushe.cc')
+            if not (unknown_sse or valid_failed_artifact):
+                raise Conflict('Last call is not a saved KuaFu Responses upstream failure')
+            if not unknown_sse:
+                try:
+                    response=json.loads(self.store.read_blob(call['response_blob']))
+                except (OSError,ValueError,TypeError):
+                    raise Conflict('Saved Responses failure receipt cannot be read') from None
+                if not isinstance(response,dict):
+                    raise Conflict('Saved Responses failure receipt has an invalid structure')
+                error=response.get('error') if isinstance(response,dict) else None
+                error_code=(error.get('code') or error.get('type')) if isinstance(error,dict) else ''
+                if response.get('status')!='failed' or error_code!='upstream_error':
+                    raise Conflict('Saved Responses receipt is not an upstream_error')
+            control=cx.execute('SELECT status,owner,lease_until FROM production_control WHERE id=?',
+                               (jid,)).fetchone()
+            project_row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            if not control or not project_row:
+                raise Conflict('Job or project execution record is missing')
+            project=json.loads(project_row[0])
+            if (control['status'] not in {'failed','uncertain'} or control['owner'] is not None
+                    or project.get('active_job') or project.get('trashed')
+                    or project.get('revision')!=job.get('base_revision')
+                    or project.get('inventory',{}).get('digest')!=job.get('source_digest')):
+                raise Conflict('Project version, ownership, or source inventory changed')
+            source=job.get('source') or {}
+            original=project.get('inventory') or {}
+            saved_objects=source.get('objects') or []
+            original_objects=original.get('objects') or []
+            immutable_fields=('id','locator','resource_id','target','raw')
+            if (job.get('source_snapshot_digest')!=digest(original)
+                    or source.get('source_url')!=original.get('source_url')
+                    or source.get('originals')!=original.get('originals')
+                    or source.get('resources')!=original.get('resources')
+                    or len(saved_objects)!=len(original_objects)
+                    or any(any(saved.get(field)!=base.get(field) for field in immutable_fields)
+                           for saved,base in zip(saved_objects,original_objects))):
+                # Vision and inert-markup classification legitimately change
+                # derived text/kind while the uploaded bytes and addresses stay
+                # fixed. The source snapshot and immutable object identities
+                # protect this continuation without rejecting those changes.
+                raise Conflict('Saved source no longer matches the current project inventory')
+            group_index=int(job.get('active_partition_index',0))
+            groups=job.get('active_groups') or []
+            plans=job.get('active_plans') or []
+            if (group_index<0 or group_index>=len(groups) or len(plans)!=group_index
+                    or not groups[group_index]):
+                raise Conflict('Failed partition does not follow all prior validated plans')
+            from .visual_sources import decorative_resource
+            expected=[obj['id'] for obj in source.get('objects',[])
+                      if not decorative_resource(obj)]
+            assigned=[sid for group in groups for sid in group]
+            if (assigned!=expected or len(assigned)!=len(set(assigned))):
+                raise Conflict('Saved partitions do not exactly cover source objects in order')
+            policy=job.get('role_policy') or {}
+            if not policy or digest(policy)!=job.get('role_policy_digest'):
+                raise Conflict('Frozen role policy digest is invalid')
+            skill=job.get('writing_skill') or {}
+            if not skill.get('root') or not skill.get('package_digest'):
+                raise Conflict('Frozen complete writing-skill package is unavailable')
+            from .skills import load_bundle
+            try:
+                load_bundle(skill['root'],skill['package_digest'])
+            except (OSError,ValueError,KeyError):
+                raise Conflict('Frozen writing-skill package digest is invalid') from None
+            prefixes=list(job.get('active_group_prefixes') or
+                          ['p'+str(index+1) for index in range(len(groups))])
+            if len(prefixes)!=len(groups):
+                raise Conflict('Saved partition prefix count does not match partition count')
+            old_prefix=prefixes[group_index]
+            old_step_prefix='active-plan-'+old_prefix+'-turn-'
+            if not str(call.get('step_key','')).startswith(old_step_prefix):
+                raise Conflict('Failed call does not belong to the current planning partition')
+            old_session_key='active-plan-'+old_prefix
+            old_session=(job.get('active_sessions') or {}).get(old_session_key)
+            if not isinstance(old_session,dict) or old_session.get('complete'):
+                raise Conflict('Failed partition has no resumable resource and research checkpoint')
+
+            # A bounded split is allowed only for the known two-route plus one
+            # Responses-SSE history.  The SSE can end in an upstream_error
+            # artifact or have unknown delivery after the worker loses its
+            # response; neither case is replayed.  Any other history keeps the
+            # legacy context continuation behavior below.
+            step_calls=[item for item in job.get('calls',[])
+                if item.get('step_key')==call.get('step_key')
+                and item.get('dispatch_started') is True
+                and urlsplit(str(item.get('upstream_base') or '')).hostname=='api.kuafushe.cc']
+            split_recovery=_exhausted_active_plan_triplet(job,call,self.store.read_blob) in {
+                'unknown_sse','failed_sse'}
+            recoveries=job.get('active_plan_context_recoveries',[])
+            if (not split_recovery and
+                    any(int(item.get('partition_index',-1))==group_index for item in recoveries)):
+                raise Conflict('The one-time context recovery was already used for this partition')
+            if split_recovery:
+                if job.get('active_plan_split_recoveries'):
+                    raise Conflict('当前任务的一次性规划分组拆分恢复已经使用')
+                split_groups=_split_active_plan_group_once(source,groups[group_index])
+                if not split_groups:
+                    raise Conflict('当前规划分组没有安全的原对象边界可供一次性拆分；原任务与费用记录保持不变')
+                recovery_prefixes=[old_prefix+'-split1a',old_prefix+'-split1b']
+                recovery_sessions=['active-plan-'+prefix for prefix in recovery_prefixes]
+                if (any(prefix in prefixes for prefix in recovery_prefixes)
+                        or any(key in job.get('active_sessions',{}) for key in recovery_sessions)):
+                    raise Conflict('版本化分组拆分身份已存在')
+                now=time.time()
+                receipt=dict(version='active-plan-single-split-v1',partition_index=group_index,
+                    original_prefix=old_prefix,recovery_prefixes=recovery_prefixes,
+                    original_source_ids=list(groups[group_index]),
+                    split_source_ids=[list(group) for group in split_groups],
+                    previous_call_ids=[item['id'] for item in step_calls],
+                    previous_step_key=call['step_key'],prior_session_digest=digest(old_session),
+                    reused_validated_partition_count=group_index,status='queued',queued_at=now,
+                    reason=('one same-job source-object split after two saved KuaFu 52x responses and one Responses SSE with unknown delivery'
+                            if unknown_sse else
+                            'one same-job source-object split after two saved KuaFu 52x responses and one failed Responses SSE; all prior source, plan and call records remain immutable'))
+                if unknown_sse:
+                    route=(job.get('transport_recovery_routes') or {}).get(call.get('step_key'))
+                    if route and route.get('status') in {'queued','dispatching'}:
+                        route.update(status='failed',error='unknown_delivery_superseded_by_bounded_source_split',
+                                     finished_at=now)
+                groups[group_index:group_index+1]=split_groups
+                prefixes[group_index:group_index+1]=recovery_prefixes
+                job['active_groups']=groups
+                job['active_group_prefixes']=prefixes
+                job['active_partition_count']=len(groups)
+                job.setdefault('active_plan_split_recoveries',[]).append(receipt)
+                job.setdefault('validation_stops',[]).append(dict(
+                    error=job.get('error'),at=job.get('finished'),
+                    recovery='one_same_job_active_plan_source_group_split'))
+                job.update(status='queued',error=None)
+                job.pop('pending',None)
+                job.pop('error_type',None);job.pop('finished',None)
+                project.update(active_job=jid,state='queued')
+                cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                           ('queued',json.dumps(job,ensure_ascii=False),jid))
+                cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0,cancel_requested=0 WHERE id=?",
+                           (jid,))
+                cx.execute('UPDATE projects SET body=? WHERE id=?',
+                           (json.dumps(project,ensure_ascii=False),project['id']))
+                return job
+
+            recovery_prefix=old_prefix+'-ctx1'
+            new_session_key='active-plan-'+recovery_prefix
+            if (recovery_prefix in prefixes or new_session_key in job.get('active_sessions',{})):
+                raise Conflict('Versioned recovery identity already exists')
+
+            now=time.time()
+            receipt=dict(version='active-plan-historical-catalog-compaction-v1',
+                partition_index=group_index,original_prefix=old_prefix,
+                recovery_prefix=recovery_prefix,source_ids=list(groups[group_index]),
+                previous_call_id=call['id'],previous_step_key=call['step_key'],
+                reused_validated_partition_count=group_index,
+                preserved_unknown_dispatches=sum(
+                    1 for item in job.get('calls',[]) if item.get('status')=='uncertain'
+                    and item.get('dispatch_started')),
+                status='queued',queued_at=now,
+                reason='One explicit same-job continuation after a saved upstream_error; active-plan prompt omits image_refs for unopened archived external resources')
+            prefixes[group_index]=recovery_prefix
+            job['active_group_prefixes']=prefixes
+            job.setdefault('active_sessions',{})[new_session_key]=copy.deepcopy(old_session)
+            job.setdefault('active_plan_context_recoveries',[]).append(receipt)
+            job.setdefault('validation_stops',[]).append(dict(
+                error=job.get('error'),at=job.get('finished'),
+                recovery='one_explicit_versioned_active_plan_context_continuation'))
+            job.update(status='queued',error=None)
+            job.pop('pending',None)
+            job.pop('error_type',None);job.pop('finished',None)
+            project.update(active_job=jid,state='queued')
+            cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                       ('queued',json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0,cancel_requested=0 WHERE id=?",
+                       (jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',
+                       (json.dumps(project,ensure_ascii=False),project['id']))
+        return job
+
+    def _queue_saved_responses_artifact(self,jid,snapshot,last):
+        """Resume a received Responses artifact without sending the source again."""
+        key=snapshot.get('pending')
+        if (snapshot.get('status') not in {'uncertain','failed'} or snapshot.get('pipeline')!='active_composition_v2'
+                or not key or last.get('step_key')!=key or last.get('channel')!='openai-compatible'
+                or last.get('protocol')!='responses' or last.get('status') not in {'completed','recovered'}
+                or not last.get('response_blob') or last.get('http_status',0)>=400):
+            return False
+        try:
+            from .providers import _responses_text
+            body=json.loads(self.store.read_blob(last['response_blob']))
+            if body.get('status') not in {'completed','complete','succeeded'} or not _responses_text(body):
+                return False
+        except (ValueError,TypeError,KeyError):
+            return False
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:return False
+            job=json.loads(row[0]);call=(job.get('calls') or [{}])[-1]
+            project_row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            if not project_row:return False
+            project=json.loads(project_row[0])
+            if (job.get('status') not in {'uncertain','failed'} or job.get('pending')!=key or call.get('id')!=last.get('id')
+                    or call.get('protocol')!='responses' or call.get('status') not in {'completed','recovered'}
+                    or project.get('active_job') or project.get('trashed')
+                    or project.get('revision')!=job.get('base_revision')):
+                return False
+            # If an earlier local repair checkpoint already captured the text,
+            # re-enter that repair directly; otherwise keep pending so Provider
+            # can read the saved response blob and extract its text.
+            if key in job.get('active_invalid_json',{}):
+                job.pop('pending',None)
+            job.setdefault('internal_recoveries',[]).append(dict(stage=job.get('stage'),step=key,
+                type='resume_saved_responses_artifact',original_call_id=call['id'],at=time.time()))
+            job.update(status='queued',error=None);job.pop('error_type',None)
+            project.update(active_job=jid,state='queued')
+            cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                ('queued',json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0,cancel_requested=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(project,ensure_ascii=False),project['id']))
+        return True
+
+    def continue_interrupted_kuafu(self, jid, config):
+        """Resume one uncertain KuaFu v2 step on its configured reciprocal route.
+
+        The original request remains unknown, its cost is preserved as unknown,
+        and the existing saved plan/writer checkpoints are not reset.
+        """
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0]);call=(job.get('calls') or [{}])[-1]
+            if (job.get('role')!='production' or job.get('pipeline')!='active_composition_v2'
+                    or job.get('status')!='uncertain' or not _kuafu_unanswered_call(call,job.get('pending'))
+                    or job.get('pending') in job.get('transport_recovery_routes',{})):
+                raise Conflict('当前任务没有可续接的 KuaFu 未知调用')
+            project=json.loads(cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()[0])
+            if (project.get('active_job') or project.get('trashed')
+                    or project['revision']!=job['base_revision']):
+                raise Conflict('原材料已变化或仍在处理中，未建立续接')
+            _mark_call_unknown(cx,job,call,
+                'existing uncertain KuaFu call resumed through the configured reciprocal route; original usage remains unknown')
+            key=job['pending']
+            state=_queue_reciprocal_kuafu_route(job,call,config,
+                'existing KuaFu call delivery is unknown; configured reciprocal route queued once')
+            if not state or state.get('status')!='queued':
+                job.update(status='uncertain',error='配置的夸父社互备线路不可用或该步骤已尝试，原调用费用仍为未知')
+                cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                    ('uncertain',json.dumps(job,ensure_ascii=False),jid))
+                cx.execute("UPDATE production_control SET status='uncertain',owner=NULL,lease_until=0 WHERE id=?",(jid,))
+                return {'status':'uncertain','queued':False,'original_call_preserved':call['id']}
+            job.update(status='queued',error=None)
+            job.pop('error_type',None)
+            project.update(active_job=jid,state='queued')
+            cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                ('queued',json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0,cancel_requested=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(project,ensure_ascii=False),project['id']))
+        return {'status':'queued','queued':True,'original_call_preserved':call['id'],
+                'recovery_provider_id':state['provider_id'],'step':key}
+
+    def continue_active_patch_unknown_sse(self, jid):
+        """Queue one new active-patch session after an expired, artifact-free KuaFu SSE.
+
+        The original step and its unknown spend remain intact. The new session
+        key is versioned and distinct; project/source/skill snapshots are
+        checked before the worker can submit it.
+        """
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:raise KeyError(jid)
+            job=json.loads(row[0]);call=(job.get('calls') or [{}])[-1]
+            pending=job.get('pending')
+            if (job.get('role')!='production' or job.get('pipeline')!='active_composition_v2'
+                    or job.get('status')!='uncertain' or job.get('stage')!='active_revision'
+                    or not _active_patch_unknown_sse_call(call,pending)):
+                raise Conflict('当前任务没有满足条件的 active_patch 未知 SSE 调用')
+            project_row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            if not project_row:raise Conflict('项目执行记录不存在')
+            project=json.loads(project_row[0]);inventory=project.get('inventory') or {}
+            if (project.get('active_job') or project.get('trashed')
+                    or project.get('revision')!=job.get('base_revision')
+                    or inventory.get('digest')!=job.get('source_digest')
+                    or job.get('source_snapshot_digest')!=digest(inventory)):
+                raise Conflict('项目版本或冻结原始材料已变化，未建立续接')
+            source=job.get('source') or {}
+            if (source.get('source_url')!=inventory.get('source_url')
+                    or source.get('originals')!=inventory.get('originals')
+                    or source.get('resources')!=inventory.get('resources')
+                    or len(source.get('objects') or [])!=len(inventory.get('objects') or [])):
+                raise Conflict('保存的来源快照与项目原始材料不一致')
+            immutable=('id','locator','resource_id','target','raw')
+            if any(any(saved.get(field)!=original.get(field) for field in immutable)
+                   for saved,original in zip(source['objects'],inventory['objects'])):
+                raise Conflict('保存的来源对象身份与冻结原始材料不一致')
+            policy=job.get('role_policy') or {}
+            if (not policy or digest(policy)!=job.get('role_policy_digest')
+                    or 'active_patch' not in policy):
+                raise Conflict('冻结的 active_patch 角色策略校验失败')
+            skill=job.get('writing_skill') or {}
+            if not skill.get('root') or not skill.get('package_digest'):
+                raise Conflict('冻结的完整写作技能包不可用')
+            from .skills import load_bundle
+            try:load_bundle(skill['root'],skill['package_digest'])
+            except (OSError,ValueError,KeyError):
+                raise Conflict('冻结的完整写作技能包校验失败') from None
+            nodes=job.get('writing_batches') or [n for part in job.get('active_plans',[])
+                                                  for n in part.get('nodes',[])]
+            index=int(job.get('unit_index',0));candidate=job.get('active_candidate') or {}
+            if index<0 or index>=len(nodes) or not candidate.get('draft'):
+                raise Conflict('当前局部修订单元或原稿不存在')
+            from .active_composition import (claim_unknown_patch_continuation,
+                patchable_block_ids,retarget_protected_findings)
+            from .active_composition import writing_batch_contract
+            node=nodes[index];attempt=len(candidate.get('patch_history',[]))
+            contract=writing_batch_contract(job['active_plans'][0]['contract'],node,job.get('goal',''))
+            base='active-patch-'+node['id']+'-'+str(attempt)+'-'+digest([
+                canonical(candidate['draft']),contract])[:16]
+            if not pending.startswith(base+'-turn-'):
+                raise Conflict('未知调用不属于当前冻结的 active_patch 修订步骤')
+            retarget_protected_findings(candidate.setdefault('revision_issues',{}),candidate['draft'])
+            candidate['revision_blocks']=list(dict.fromkeys(
+                finding['block_id'] for finding in candidate['revision_issues'].get('findings',[])))
+            if not set(candidate['revision_blocks']) & patchable_block_ids(candidate['draft']):
+                raise Conflict('受保护材料附近没有可定位的作者解释段落，不能安全续接')
+            suffix=digest([pending,call.get('id'),candidate['draft'],candidate['revision_issues']])[:12]
+            continuation_session=base+'-unknown-sse-v1-'+suffix
+            marker=claim_unknown_patch_continuation(job,pending,continuation_session)
+            if not marker:
+                raise Conflict('该未知 active_patch 调用不满足唯一续接条件，或续接已使用')
+            now=time.time()
+            marker['queued_at']=now
+            job.setdefault('internal_recoveries',[]).append(dict(
+                stage='active_revision',step=pending,type='active_patch_unknown_sse_continuation',
+                original_call_id=call['id'],continuation_session=continuation_session,
+                original_result='unknown_not_replayed',at=now))
+            job.update(status='queued',error=None);job.pop('error_type',None);job.pop('finished',None)
+            project.update(active_job=jid,state='queued')
+            cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                ('queued',json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0,cancel_requested=0 WHERE id=?",
+                (jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',
+                (json.dumps(project,ensure_ascii=False),project['id']))
+        return {'status':'queued','queued':True,'original_call_preserved':call['id'],
+                'continuation_session':continuation_session,'original_result':'unknown_not_replayed'}
+
+    def _queue_kuafu_responses_stream_retry(self,jid,config,snapshot,last):
+        """Queue exactly one code-versioned SSE retry after a saved KuaFu 52x page.
+
+        The gateway page is retained as evidence; it is not fed to the model as output.
+        The retry uses the same explicitly configured Responses route with streaming enabled.
+        """
+        if not _kuafu_responses_gateway_error(last,snapshot.get('pending')):
+            return False
+        key=snapshot['pending']
+        routes=config.get('provider_routes') if isinstance(config,dict) else None
+        credentials=config.get('provider_credentials') if isinstance(config,dict) else None
+        if not isinstance(routes,dict) or not isinstance(credentials,dict):return False
+        route=routes.get(last.get('provider_id'))
+        if (not isinstance(route,dict) or route.get('provider')!='openai-compatible'
+                or route.get('enabled') is False or route.get('protocol')!='responses'
+                or not credentials.get(last.get('provider_id'))):return False
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+            if not row:return False
+            job=json.loads(row[0]);call=(job.get('calls') or [{}])[-1]
+            markers=job.setdefault('kuafu_responses_protocol_retries',{})
+            project_row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+            if not project_row:return False
+            project=json.loads(project_row[0])
+            if (job.get('status')!='uncertain' or job.get('pending')!=key
+                    or call.get('id')!=last.get('id') or not _kuafu_responses_gateway_error(call,key)
+                    or key in markers or project.get('active_job') or project.get('trashed')
+                    or project.get('revision')!=job.get('base_revision')):
+                return False
+            old=job.setdefault('transport_recovery_routes',{}).get(key)
+            if not isinstance(old,dict) or old.get('status')!='failed' or old.get('provider_id')!=call.get('provider_id'):
+                return False
+            # Preserve the failed non-stream attempt before installing a distinct one-shot protocol retry.
+            job.setdefault('transport_recovery_history',{}).setdefault(key,[]).append(dict(old))
+            state=dict(status='queued',provider_id=call['provider_id'],protocol='responses',
+                original_call_id=call['id'],original_provider_id=call['provider_id'],attempts=0,
+                reason='saved KuaFu 524 gateway error had no model artifact; one versioned Responses SSE retry is queued',
+                recovery_protocol_version='kuafu-responses-sse-v1',streaming=True)
+            job['transport_recovery_routes'][key]=state
+            markers[key]=dict(fix_id='kuafu-responses-sse-v1',previous_call_id=call['id'],queued_at=time.time())
+            job.setdefault('internal_recoveries',[]).append(dict(stage=job.get('stage'),step=key,
+                type='kuafu_responses_stream_retry',original_call_id=call['id'],
+                provider_id=call['provider_id'],http_status=call.get('http_status'),at=time.time()))
+            # Keep saved plan/results intact, but clear the in-flight marker so this
+            # exact stage is dispatched through the versioned route on worker resume.
+            job.pop('pending',None)
+            job.update(status='queued',error=None);job.pop('error_type',None)
+            project.update(active_job=jid,state='queued')
+            cx.execute('UPDATE jobs SET status=?,body=? WHERE id=?',
+                ('queued',json.dumps(job,ensure_ascii=False),jid))
+            cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0,cancel_requested=0 WHERE id=?",(jid,))
+            cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(project,ensure_ascii=False),project['id']))
+        return True
 
     def _mark_interrupted_subscription_uncertain(self,jid,call_id):
         """Record a killed synchronous request as unknown only after its deadline."""
@@ -901,28 +2038,71 @@ class Queue:
         """Only query the original result. Resume requires the existing source version."""
         from .providers import Provider,Uncertain,returned_subscription_service_error
         job=self.store.job(jid)
-        if job['role']!='production' or job['status']!='uncertain' or not job.get('pending'):
+        core_v1=job.get('core_chain_version')==1
+        if (job['role']!='production' or not job.get('pending')
+                or job['status'] not in ({'uncertain','failed'} if core_v1 else {'uncertain'})):
             raise Conflict('当前任务没有等待查询的原请求')
+        if core_v1 and (not job.get('calls') or job['calls'][-1].get('step_key')!=job['pending']):
+            raise Conflict('新版任务缺少与当前步骤对应的原调用身份，不能建立新的投递')
         resume_error=False
-        try:result=Provider(self.store,config).recover(job)
-        except Uncertain:
-            if job['pending'] in job.get('service_error_retries',{}) or not returned_subscription_service_error(self.store,job['calls'][-1]):raise
-            result=None;resume_error=True
-        if result is None and not resume_error:
+        repair_invalid=False
+        if core_v1:
+            call=job['calls'][-1]
+            provider=Provider(self.store,config)
+            outcome=provider.generate(
+                job['project'],call['role'],None,None,job,job['pending'])
+            if outcome.status=='UNKNOWN':
+                if job['status']=='failed':
+                    with self.store.connect() as cx:
+                        cx.execute('BEGIN IMMEDIATE')
+                        row=cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()
+                        current=json.loads(row[0]) if row else {}
+                        if (current.get('status')!='failed' or current.get('pending')!=job['pending']
+                                or (current.get('calls') or [{}])[-1].get('id')!=call['id']):
+                            raise Conflict('原请求状态已变化，不能覆盖当前处理记录')
+                        current.update(status='uncertain',error=str(outcome.error),error_type='Uncertain')
+                        cx.execute("UPDATE jobs SET status='uncertain',body=? WHERE id=?",
+                                   (json.dumps(current,ensure_ascii=False),jid))
+                        cx.execute("UPDATE production_control SET status='uncertain',owner=NULL,lease_until=0 WHERE id=?",
+                                   (jid,))
+                        project_row=cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()
+                        if project_row:
+                            project=json.loads(project_row[0])
+                            if (not project.get('active_job') and not project.get('trashed')
+                                    and project.get('revision')==job['base_revision']):
+                                project['state']='uncertain'
+                                cx.execute('UPDATE projects SET body=? WHERE id=?',
+                                           (json.dumps(project,ensure_ascii=False),job['project']))
+                return {'recovered':False,'status':'uncertain'}
+            if outcome.status=='KNOWN_FAILURE':
+                if not isinstance(outcome.error,json.JSONDecodeError):
+                    raise outcome.error
+                provider.saved_complete_text(job)
+                repair_invalid=True
+            result=outcome.value
+        else:
+            try:result=Provider(self.store,config).recover(job)
+            except Uncertain:
+                if job['pending'] in job.get('service_error_retries',{}) or not returned_subscription_service_error(self.store,job['calls'][-1]):raise
+                result=None;resume_error=True
+        if result is None and not resume_error and not repair_invalid:
             return {'recovered':False,'status':'uncertain'}
         with self.store.connect() as cx:
             cx.execute('BEGIN IMMEDIATE')
             current=json.loads(cx.execute('SELECT body FROM jobs WHERE id=?',(jid,)).fetchone()[0])
             p=json.loads(cx.execute('SELECT body FROM projects WHERE id=?',(job['project'],)).fetchone()[0])
-            if current['status']!='uncertain' or p['active_job'] or p.get('trashed') or p['revision']!=job['base_revision']:
+            if (current['status'] not in ({'uncertain','failed'} if core_v1 else {'uncertain'})
+                    or p['active_job'] or p.get('trashed') or p['revision']!=job['base_revision']):
                 raise Conflict('原请求已取回，但当前材料状态不允许继续；没有覆盖新版本')
-            if not resume_error:job['results'][job.pop('pending')]=result
+            if not resume_error and not repair_invalid:
+                job['results'][job.pop('pending')]=result
             job.update(status='queued',error=None)
             p.update(active_job=jid,state='queued')
             cx.execute("UPDATE jobs SET status='queued',body=? WHERE id=?",(json.dumps(job,ensure_ascii=False),jid))
             cx.execute("UPDATE production_control SET status='queued',owner=NULL,lease_until=0 WHERE id=?",(jid,))
             cx.execute('UPDATE projects SET body=? WHERE id=?',(json.dumps(p,ensure_ascii=False),p['id']))
-        return {'recovered':not resume_error,'status':'queued','received_service_error':resume_error}
+        return {'recovered':not resume_error,'status':'queued',
+                'received_service_error':resume_error}
 
     def recheck_failed_fidelity(self, jid, config, role='fidelity'):
         """Explicit new review after a terminal upstream failure, never a replay.

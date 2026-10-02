@@ -89,6 +89,12 @@ class LinkBrief(Strict):
     unavailable_reason: str = ''
 
 
+class ObjectResponsibility(Strict):
+    source_id: str
+    present: bool
+    explain: bool
+
+
 class EvidenceGap(Strict):
     """A bounded external lookup tied to one frozen source obligation."""
     id: str
@@ -131,6 +137,7 @@ class CompositionPlan(Strict):
     evidence_gaps: list[EvidenceGap] = []
     evidence_bindings: list[EvidenceBinding] = []
     evidence_resolutions: list[EvidenceResolution] = []
+    object_responsibilities: list[ObjectResponsibility] = []
 
 
 class CompositionPart(Strict):
@@ -141,6 +148,7 @@ class CompositionPart(Strict):
     evidence_gaps: list[EvidenceGap] = []
     evidence_bindings: list[EvidenceBinding] = []
     evidence_resolutions: list[EvidenceResolution] = []
+    object_responsibilities: list[ObjectResponsibility] = []
 
 
 class Action(Strict):
@@ -155,6 +163,13 @@ class Action(Strict):
     url: str = ''
 
 
+class PlanLinkDecision(Strict):
+    source_id: str
+    role: Literal['reference', 'semantic_dependency']
+    missing: str = ''
+    source_quote: str = ''
+
+
 T = TypeVar('T')
 
 
@@ -163,6 +178,7 @@ class Turn(Strict, Generic[T]):
     ready_reason: str
     actions: list[Action]
     result: T | None
+    link_decisions: list[PlanLinkDecision] = []
 
 
 class Binding(Strict):
@@ -280,3 +296,37 @@ class ContentReview(Strict):
     checked_obligation_ids: list[str]
     format_decisions: list[FormatDecision] = []
     link_assessments: list[LinkAssessment] = []
+
+
+class IntegrityFinding(Strict):
+    invariant: Literal['I1','I2','I3','I4','I5']
+    verdict: Literal['FAIL','UNKNOWN']
+    block_id: str = ''
+    source_id: str = ''
+    output_quote: str = ''
+    source_quote: str = ''
+    problem: str = Field(min_length=1)
+    required_change: str = ''
+
+
+class AddedFactClaim(Strict):
+    block_id: str
+    output_quote: str = Field(min_length=1)
+    support: Literal['SOURCE_SUPPORTED', 'EXTERNAL_SUPPORTED', 'UNSUPPORTED']
+    source_id: str = ''
+    source_quote: str = ''
+    evidence_id: str = ''
+
+
+class I3BlockAssessment(Strict):
+    block_id: str
+    status: Literal['NO_ADDED_FACTS', 'ADDED_FACTS_PRESENT']
+
+
+class IntegrityReview(Strict):
+    checked_source_ids: list[str]
+    checked_block_ids: list[str]
+    findings: list[IntegrityFinding]
+    i3_provenance_checked: bool = False
+    i3_block_assessments: list[I3BlockAssessment] = []
+    added_fact_claims: list[AddedFactClaim] = []

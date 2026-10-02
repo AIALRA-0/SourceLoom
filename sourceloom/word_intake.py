@@ -10,6 +10,8 @@ R='http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 A='http://schemas.openxmlformats.org/drawingml/2006/main'
 MC='http://schemas.openxmlformats.org/markup-compatibility/2006'
 WP='http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+V='urn:schemas-microsoft-com:vml'
+O='urn:schemas-microsoft-com:office:office'
 
 
 def read_word(parts,name,store,resources,add,gap,safe_images):
@@ -94,6 +96,21 @@ def read_word(parts,name,store,resources,add,gap,safe_images):
                         **({'source_scope':'source_metadata','visual_classification':{
                             'method':'word_story_part','source_role':'source_metadata'}} if story_metadata else {}))
                     if mime not in safe_images:gap('此文稿媒体尚无可靠显示方式',loc,pic['id'])
+                elif child.tag=='{'+V+'}imagedata':
+                    rid=child.get('{'+R+'}id')
+                    rel=rels.get(rid);target=rel.get('Target','') if rel is not None else ''
+                    path=posixpath.normpath(posixpath.join(base,target))
+                    if path not in media:
+                        gap('旧式文稿图片关系未指向已保存的媒体',loc,obj['id']);continue
+                    key,mime=media[path];emitted.add(path)
+                    story_metadata=posixpath.basename(part).casefold().startswith(('header','footer'))
+                    title=child.get('{'+O+'}title') or path
+                    pic=add('image' if mime in safe_images else 'attachment',title,loc,
+                        resource_id=key,parent_id=obj['id'],source_part=part,
+                        source_format='vml-imagedata',
+                        **({'source_scope':'source_metadata','visual_classification':{
+                            'method':'word_story_part','source_role':'source_metadata'}} if story_metadata else {}))
+                    if mime not in safe_images:gap('此文稿媒体尚无可靠显示方式',loc,pic['id'])
                 elif tag in {'footnoteReference','endnoteReference','commentReference'}:
                     add('metadata',tag+':'+str(attr(child,'id','')),loc,parent_id=obj['id'],
                         reference_kind=tag,reference_id=attr(child,'id',''),source_part=part)
@@ -103,7 +120,17 @@ def read_word(parts,name,store,resources,add,gap,safe_images):
                         gap('原始文稿公式已保留，尚未完成可视排版核对',loc,formula['id'])
                 elif child.tag=='{'+WP+'}anchor':
                     continue
-                elif tag in {'ins','del','moveFrom','moveTo','fldChar','instrText','sym','object','altChunk','pict','vanish','anchor'}:
+                elif child.tag=='{'+W+'}pict':
+                    # A linked VML bitmap is a visual occurrence, not an
+                    # unowned media file. Other VML content remains a gap.
+                    images=list(child.iter('{'+V+'}imagedata'))
+                    if not images or any(
+                        posixpath.normpath(posixpath.join(base,
+                            rels.get(image.get('{'+R+'}id')).get('Target','')
+                            if rels.get(image.get('{'+R+'}id')) is not None else '')) not in media
+                        for image in images):
+                        gap('文稿包含需要核对的原始结构：pict',loc,obj['id'])
+                elif tag in {'ins','del','moveFrom','moveTo','fldChar','instrText','sym','object','altChunk','vanish','anchor'}:
                     gap('文稿包含需要核对的原始结构：'+tag,loc,obj['id'])
 
         def paragraph(node,location,context=None):

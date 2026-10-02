@@ -119,6 +119,43 @@ def test_markdown_snapshot_fetches_raster_and_rasterizes_svg_badge(tmp_path,monk
     assert any(name.endswith('.png') and data.startswith(b'\x89PNG') for name,data in uploads[1:])
 
 
+def test_markdown_remote_svg_with_local_gradient_is_captured_and_rendered(tmp_path,monkeypatch):
+    base='https://raw.githubusercontent.com/example/project/refs/heads/stable/README.md'
+    logo='https://raw.githubusercontent.com/example/project/refs/heads/stable/docs/_static/logo.svg'
+    relative='https://raw.githubusercontent.com/example/project/refs/heads/stable/docs/_static/diagram.svg'
+    raw=(f'<div align="center"><img src="{logo}" alt="" height="150"></div>\n\n'
+         '![Diagram](docs/_static/diagram.svg)\n').encode()
+    svg=(b'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="30">'
+         b'<defs><linearGradient id="_Linear1"><stop offset="0" stop-color="blue">'
+         b'</stop><stop offset="1" stop-color="green"></stop></linearGradient></defs>'
+         b'<path d="M0 0h80v30H0z" style="fill:url(#_Linear1)"/></svg>')
+    seen=[]
+    def fetch(url,*args):
+        seen.append(url)
+        return (raw,'text/plain',url) if url==base else (svg,'image/svg+xml',url)
+    monkeypatch.setattr(network,'fetch',fetch)
+    uploads,final,aliases,failures=network.fetch_bundle(base)
+    store=Store(tmp_path)
+    inventory=intake(store,uploads,final,aliases)
+    images=[obj for obj in inventory['objects'] if obj['kind']=='image']
+    assert seen==[base,relative,logo] and failures==[] and inventory['unknown']==[]
+    assert len(images)==2 and all(obj['resource_id'] for obj in images)
+    assert all(store.read_blob(obj['resource_id']).startswith(b'\x89PNG') for obj in images)
+
+    from sourceloom.export import render
+    from sourceloom.media import image_markup
+    picture=images[0]
+    project={'inventory':inventory,'draft':{'blocks':[dict(id='logo',kind='object',
+        object_ids=[picture['id']],embedded_object_ids=[picture['id']],
+        markdown='<div align="center">\n\n'+image_markup(picture,legacy=True)+'\n\n</div>')]}}
+    from bs4 import BeautifulSoup
+    output=BeautifulSoup(render(project,lambda key:'/assets/'+key),'html.parser')
+    centered=output.select_one('div[align="center"]')
+    assert centered and centered.find('img',src='/assets/'+picture['resource_id'])
+    assert not any(not node.find(['img','table','pre']) and not node.get_text(strip=True)
+                   for node in output.select('div[align="center"]'))
+
+
 def test_svg_stylesheet_import_is_rejected_before_rasterization(monkeypatch):
     raw=b'# Page\n\n![Diagram](image.svg)\n'
     svg=(b'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
@@ -129,6 +166,15 @@ def test_svg_stylesheet_import_is_rejected_before_rasterization(monkeypatch):
     uploads,_,_,failures=network.fetch_bundle('https://example.invalid/page.md')
     assert len(uploads)==1 and len(failures)==1
     assert failures[0]['reason']=='ValueError'
+
+
+def test_svg_external_paint_server_is_rejected():
+    from sourceloom.network import rasterize_svg
+    svg=(b'<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
+         b'<rect width="40" height="20" style="fill:url(https://example.invalid/paint.svg#blue)"/></svg>')
+    try:rasterize_svg(svg)
+    except ValueError:pass
+    else:raise AssertionError('external SVG paint servers must remain blocked')
 
 
 def test_svg_foreign_object_uses_local_text_fallback(monkeypatch):

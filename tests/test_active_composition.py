@@ -9,6 +9,15 @@ from sourceloom.ingest import intake
 from tests.test_production import skill, prepared
 
 
+def saved_legacy_v1_job(store, pid, bundle):
+    """Model a pre-cutover job without reopening v1 creation in production."""
+    job = Queue(store, pipeline='active_composition_v2').enqueue(pid, bundle)
+    job.update(pipeline='active_composition_v1', core_chain_version=0)
+    initialize(job)
+    store.put_job(job)
+    return job
+
+
 def source():
     return dict(objects=[dict(id='s1', kind='text', locator='input/1', text='We may use three items only if ready.'),
                          dict(id='s2', kind='text', locator='input/2', text='Do not use them otherwise.')],
@@ -37,6 +46,42 @@ def test_plan_requires_all_sources_and_preserves_explicit_qualifications():
     assert inv['frozen'] and legacy['units'][0]['obligation_ids']==['f1','f2']
     broken=plan();broken['obligations'].pop()
     with pytest.raises(ValueError,match='全部原对象'):validate_plan(broken,source(),['s1','s2'])
+
+
+def test_archive_only_metadata_and_ordinary_name_need_no_concept_or_section():
+    from sourceloom.active_composition import planned_object_responsibilities, writing_batches
+    material=source()
+    material['objects'][1].update(kind='metadata',text=':synopsis: Build marker')
+    candidate=plan()
+    candidate['obligations'][1].update(quote=':synopsis: Build marker',
+        meaning='Preserve the source document field',conditions=[],negations=[],
+        narrator='source document',referents=[])
+    candidate['object_responsibilities']=[
+        dict(source_id='s1',present=True,explain=False),
+        dict(source_id='s2',present=False,explain=False)]
+    validated=validate_plan(candidate,material,['s1','s2'],
+        require_object_responsibilities=True)
+    assert validated['concepts']==[] and len(validated['nodes'])==1
+    roles=planned_object_responsibilities([validated],material)
+    batches=writing_batches([validated],material,
+        present_source_ids={sid for sid,role in roles.items() if role['present']})
+    assert len(batches)==1 and batches[0]['source_ids']==['s1']
+    assert batches[0]['obligation_ids']==['f1']
+
+
+def test_neighboring_source_headings_can_share_one_reader_section():
+    material=source()
+    material['objects'][0].update(kind='heading',text='Syntax')
+    material['objects'][1].update(kind='heading',text='Parameters')
+    candidate=plan()
+    for obligation,obj in zip(candidate['obligations'],material['objects']):
+        obligation.update(quote=obj['text'],meaning=obj['text'],conditions=[],
+                          quantities=[],negations=[])
+    candidate['nodes'][0]['title']='调用方式与参数'
+    checked=validate_plan(candidate,material,['s1','s2'])
+    assert len(checked['nodes'])==1
+    assert checked['nodes'][0]['source_ids']==['s1','s2']
+    assert checked['nodes'][0]['obligation_ids']==['f1','f2']
 
 
 def test_internal_english_plan_title_does_not_block_generation():
@@ -80,16 +125,183 @@ def test_repeated_summary_node_does_not_duplicate_source_obligations():
     assert [node['id'] for node in validated['nodes']]==['n1']
 
 
+def test_repeated_summary_node_moves_new_concept_to_existing_obligation_owner():
+    candidate=plan()
+    candidate['concepts']=[dict(id='condition',name='Condition',definition='A requirement',
+        source_ids=['s1'],requires=[],chinese_name='条件',english_name='Condition',
+        naming_status='verified',name_evidence=[],abbreviations=[],naming_note='',
+        naming_status_reason='')]
+    summary=copy.deepcopy(candidate['nodes'][0])
+    summary.update(id='n2',title='重复汇总',depends_on=['n1'],
+        requires_concepts=[],establishes_concepts=['condition'])
+    candidate['nodes'].append(summary)
+    validated=validate_plan(candidate,source(),['s1','s2'])
+    assert [node['id'] for node in validated['nodes']]==['n1']
+    assert validated['nodes'][0]['establishes_concepts']==['condition']
+
+
 def test_redundant_effective_name_status_is_removed_only_from_validation_copy():
     from sourceloom.active_composition import discard_known_plan_protocol_extras
     raw={'result':{'concepts':[{'id':'cache','requires':[],'naming_status':'ambiguous',
         'naming_status_effective':'ambiguous'}],
-        'nodes':[{'id':'node-1','explanation_placeholder':''}]}}
+        'nodes':[{'id':'node-1','explanation_placeholder':'',
+                  'explanation':{'section_outline':[]}}]}}
     cleaned,removed=discard_known_plan_protocol_extras(raw)
     assert removed==['cache','node-1'] and 'naming_status_effective' not in cleaned['result']['concepts'][0]
     assert 'explanation_placeholder' not in cleaned['result']['nodes'][0]
+    assert 'section_outline' not in cleaned['result']['nodes'][0]['explanation']
     assert raw['result']['concepts'][0]['naming_status_effective']=='ambiguous'
     assert raw['result']['nodes'][0]['explanation_placeholder']==''
+    assert raw['result']['nodes'][0]['explanation']['section_outline']==[]
+
+
+def test_clarify_expansion_without_bound_external_fact_uses_source_only(tmp_path):
+    from sourceloom.active_composition import normalize_plan_clarify_expansion
+
+    raw={'result':plan()}
+    raw['result']['nodes'][0]['expansion']='clarify'
+    original=copy.deepcopy(raw)
+    resources=Resources(Store(tmp_path),source())
+    cleaned,receipts=normalize_plan_clarify_expansion(raw,resources)
+    assert cleaned['result']['nodes'][0]['expansion']=='source_only'
+    assert receipts==[dict(node_id='n1',field='expansion',original='clarify',
+        normalized='source_only',reason='no fact-scoped external evidence bound to node',
+        has_fact_scoped_external_evidence=False,evidence_ids=[])]
+    assert raw==original
+
+
+def test_clarify_expansion_requires_resolved_fact_bound_to_node(tmp_path):
+    from sourceloom.active_composition import normalize_plan_clarify_expansion
+
+    raw={'result':plan()}
+    raw['result']['nodes'][0]['expansion']='clarify'
+    raw['result']['evidence_bindings']=[dict(id='fact-1',gap_id='gap-1',
+        obligation_id='f1',resource_id='external-fact',quote='Exact external fact')]
+    raw['result']['evidence_resolutions']=[dict(gap_id='gap-1',status='resolved',
+        binding_ids=['fact-1'])]
+    resources=Resources(Store(tmp_path),source())
+    resources.add('external-fact','Exact external fact',kind='external',
+                  locator='https://example.org/fact')
+    cleaned,receipts=normalize_plan_clarify_expansion(raw,resources)
+    assert cleaned['result']['nodes'][0]['expansion']=='verified_clarification'
+    assert receipts[0]['evidence_ids']==['fact-1']
+    assert receipts[0]['has_fact_scoped_external_evidence'] is True
+    raw['result']['evidence_resolutions'][0]['status']='unresolved'
+    assert normalize_plan_clarify_expansion(raw,resources)[0]['result']['nodes'][0][
+        'expansion']=='source_only'
+
+
+def test_clarify_expansion_ignores_name_only_and_unbound_evidence(tmp_path):
+    from sourceloom.active_composition import normalize_plan_clarify_expansion
+
+    raw={'result':plan()}
+    raw['result']['nodes'][0]['expansion']='clarify'
+    raw['result']['evidence_bindings']=[dict(id='name-1',gap_id='gap-1',
+        obligation_id='f1',resource_id='name-only',quote='A formal name'),
+        dict(id='other-1',gap_id='gap-2',obligation_id='other',
+             resource_id='external-fact',quote='Exact external fact')]
+    raw['result']['evidence_resolutions']=[
+        dict(gap_id='gap-1',status='resolved',binding_ids=['name-1']),
+        dict(gap_id='gap-2',status='resolved',binding_ids=['other-1'])]
+    resources=Resources(Store(tmp_path),source())
+    resources.add('name-only','A formal name',kind='external',
+                  locator='https://example.org/name',scope='name_evidence_excerpt')
+    resources.add('external-fact','Exact external fact',kind='external',
+                  locator='https://example.org/fact')
+    assert normalize_plan_clarify_expansion(raw,resources)[0]['result']['nodes'][0][
+        'expansion']=='source_only'
+
+
+def test_clarify_expansion_can_use_explained_semantic_link_evidence(tmp_path):
+    from sourceloom.active_composition import normalize_plan_clarify_expansion
+
+    raw={'result':plan(),'link_decisions':[dict(source_id='s1',
+        role='semantic_dependency')]}
+    raw['result']['nodes'][0]['expansion']='clarify'
+    raw['result']['object_responsibilities']=[dict(source_id='s1',
+        present=True,explain=True)]
+    raw['result']['link_briefs']=[dict(source_id='s1',role='content',
+        evidence=[dict(resource_id='target',quote='Exact target fact')])]
+    material=source()
+    material['objects'][0].update(kind='link',target='https://example.org/target')
+    resources=Resources(Store(tmp_path),material)
+    resources.add('target','Exact target fact',kind='external',
+                  locator='https://example.org/target')
+    checked,receipts=normalize_plan_clarify_expansion(raw,resources)
+    assert checked['result']['nodes'][0]['expansion']=='verified_clarification'
+    assert receipts[0]['evidence_ids']==['target']
+    raw['link_decisions'][0]['role']='reference'
+    assert normalize_plan_clarify_expansion(raw,resources)[0]['result']['nodes'][0][
+        'expansion']=='source_only'
+
+
+@pytest.mark.parametrize('expansion',['source_only','verified_clarification',
+                                     'authorized_example','not_a_valid_expansion'])
+def test_plan_expansion_alias_only_changes_exact_clarify(tmp_path,expansion):
+    from sourceloom.active_composition import normalize_plan_clarify_expansion
+    from sourceloom.active_contracts import CompositionPlan
+
+    raw={'result':plan()}
+    raw['result']['nodes'][0]['expansion']=expansion
+    cleaned,receipts=normalize_plan_clarify_expansion(raw,Resources(Store(tmp_path),source()))
+    assert cleaned['result']['nodes'][0]['expansion']==expansion
+    assert receipts==[]
+    if expansion=='not_a_valid_expansion':
+        with pytest.raises(ValueError):CompositionPlan.model_validate(cleaned['result'])
+    else:
+        CompositionPlan.model_validate(cleaned['result'])
+
+
+def test_core_planner_records_alias_without_another_model_call(tmp_path,monkeypatch):
+    from sourceloom.active_contracts import CompositionPlan
+
+    store=Store(tmp_path)
+    engine=ActiveComposition(Production(store,{'active_resource_rounds':0}))
+    raw=dict(gaps=[],ready_reason='Current original is enough',actions=[],
+             link_decisions=[],result=plan())
+    raw['result']['nodes'][0]['expansion']='clarify'
+    untouched=copy.deepcopy(raw)
+    keys=[]
+    def call(job,key,role,payload,schema):
+        keys.append(key)
+        return raw
+    monkeypatch.setattr(engine,'call',call)
+    job=dict(id='plan-alias',project='p',role='production',status='running',
+             created=1,pipeline='active_composition_v2',core_chain_version=1,
+             results={},calls=[],active_sessions={},external_resources={},
+             generated_resources={},verified_terminology=[])
+    checked=engine.turn(job,'active-plan-p1','active_plan',CompositionPlan,
+        source(),['s1','s2'],{},lambda value,_resources:value)
+    assert checked['nodes'][0]['expansion']=='source_only'
+    assert keys==['active-plan-p1-turn-0']
+    assert job['plan_protocol_normalizations'][0]['node_id']=='n1'
+    assert job['plan_protocol_normalizations'][0]['normalized']=='source_only'
+    assert raw==untouched
+
+
+def test_partition_level_cross_batch_risks_move_to_last_plan_node():
+    from sourceloom.active_composition import discard_known_plan_protocol_extras
+    raw={'result':{'concepts':[],'cross_batch_risks':['保持术语一致'],
+        'nodes':[{'id':'n1','cross_batch_risks':[]},{'id':'n2'}]}}
+    cleaned,changed=discard_known_plan_protocol_extras(raw)
+    assert 'result.cross_batch_risks' in changed
+    assert 'cross_batch_risks' not in cleaned['result']
+    assert cleaned['result']['nodes'][1]['cross_batch_risks']==['保持术语一致']
+    assert raw['result']['cross_batch_risks']==['保持术语一致']
+
+
+def test_missing_plan_transitions_are_filled_from_adjacent_nodes():
+    from sourceloom.active_composition import discard_known_plan_protocol_extras
+    raw={'result':{'concepts':[],'nodes':[{'id':'n1','title':'起点'},
+        {'id':'n2','title':'结论','transition_from':'已有衔接'}]}}
+    cleaned,changed=discard_known_plan_protocol_extras(raw)
+    first,second=cleaned['result']['nodes']
+    assert {'n1','n2'}<=set(changed)
+    assert first['transition_from']=='本文起点，无前置段落'
+    assert '结论' in first['prepares_for']
+    assert second['transition_from']=='已有衔接'
+    assert second['prepares_for']=='本文在此结束'
+    assert 'transition_from' not in raw['result']['nodes'][0]
 
 
 def test_missing_concept_dependency_list_is_normalized_without_another_model_call():
@@ -218,7 +430,7 @@ def test_source_changes_invalidate_saved_resource_reads(tmp_path):
 
 def test_pipeline_identity_is_frozen_at_enqueue(tmp_path,skill):
     store,queue,p,bundle=prepared(tmp_path,skill)
-    job=Queue(store,pipeline='active_composition_v1').enqueue(p['id'],bundle)
+    job=saved_legacy_v1_job(store,p['id'],bundle)
     assert job['stage']=='active_index' and job['pipeline']=='active_composition_v1'
     claimed=Queue(Store(store.root),pipeline='legacy').claim('new-worker')
     assert claimed['pipeline']==job['pipeline']
@@ -252,6 +464,17 @@ def test_visual_card_missing_optional_lists_are_filled_without_another_model_cal
             'relationships':[],'uncertainty':[],'limitations':[],'blocking_uncertainty':[]}
     assert all(key not in raw['cards'][0] for key in
         ('relationships','uncertainty','limitations','blocking_uncertainty'))
+
+
+def test_visual_card_limitations_note_is_merged_without_losing_words():
+    from sourceloom.active_composition import normalize_visual_card_lists
+    raw={'cards':[dict(source_id='image',visible_content='map',source_text='',role='diagram',
+        relationships=[],uncertainty=[],limitations=['cropped'],limitations_note=['legend unreadable'],
+        blocking_uncertainty=[])]}
+    fixed=normalize_visual_card_lists(raw)
+    assert fixed['cards'][0]['limitations']==['cropped','legend unreadable']
+    assert 'limitations_note' not in fixed['cards'][0]
+    assert raw['cards'][0]['limitations_note']==['legend unreadable']
 
 
 def test_active_rewrite_reuses_content_visuals_without_requiring_chrome_cards(tmp_path,skill):
@@ -405,19 +628,19 @@ def test_active_rewrite_reuses_all_clean_batches_without_recovering_fallback_blo
     assert rewritten['reused_writing_checkpoint_job']==old['id']
 
 
-def test_active_call_honors_the_whole_job_deadline_before_dispatch(tmp_path,skill,monkeypatch):
+def test_active_call_does_not_abort_the_document_at_a_global_elapsed_time(tmp_path,skill,monkeypatch):
     import time
     from sourceloom import active_contracts as A
-    from sourceloom.store import Conflict
     store,_,project,bundle=prepared(tmp_path,skill)
     Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
     engine=Production(store,{'generation_pipeline':'active_composition_v2','job_timeout':300})
     job=engine.queue.claim(engine.owner,project=project['id'])
     job['started']=time.time()-301
+    called=[]
     monkeypatch.setattr('sourceloom.active_composition.Provider.call',
-        lambda *args,**kwargs:pytest.fail('deadline must stop dispatch'))
-    with pytest.raises(Conflict,match='处理时间上限'):
-        ActiveComposition(engine).call(job,'deadline-test','active_plan',{},A.VisualCards)
+        lambda *args,**kwargs:called.append(True) or {'cards':[]})
+    assert ActiveComposition(engine).call(job,'deadline-test','active_plan',{},A.VisualCards)=={'cards':[]}
+    assert called==[True]
 
 
 def test_active_calls_replay_saved_result_without_provider_cost(tmp_path,monkeypatch):
@@ -514,6 +737,21 @@ def test_compiler_binds_actual_body_and_never_trusts_model_self_quotation():
     with pytest.raises(ValueError,match='结构校验'):validate_written(broken,node,inv,None,{'blocks':[]})
 
 
+def test_compiler_prefixes_block_identity_and_updates_coverage_reference():
+    from sourceloom.active_composition import validate_written
+    p=plan();inv,_=legacy_artifacts([p],source());node=p['nodes'][0]
+    value=dict(blocks=[dict(id='body',kind='explanation',
+        markdown='只有准备好时，我们才可以使用三个项目，否则不要使用',
+        obligation_ids=['f1','f2'],source_ids=['s1','s2'])],
+        coverage=[dict(obligation_id='f1',block_id='body',output_quote='unused'),
+                  dict(obligation_id='f2',block_id='body',output_quote='unused')],
+        knowledge_delta=dict(established_concepts=[],explained_obligations=['f1','f2'],
+            unresolved_prerequisites=[],next_bridge='',concept_evidence=[]))
+    draft,coverage,_=validate_written(value,node,inv,None,{'blocks':[]})
+    assert draft['blocks'][0]['id']=='n1-body'
+    assert {row['block_id'] for row in coverage}=={'n1-body'}
+
+
 def test_patch_and_delivery_reject_empty_block_that_still_claims_source_coverage():
     from sourceloom.active_composition import reject_empty_claimed_blocks
     with pytest.raises(ValueError,match='段落不能为空'):
@@ -534,6 +772,138 @@ def test_protected_resource_is_inserted_by_identity_with_exact_bytes():
     draft,coverage,_=validate_written(value,p['nodes'][0],inv,None,{'blocks':[]})
     assert draft['blocks'][0]['markdown']==src['objects'][0]['fence_raw']
     assert coverage[0]['output_quote']==src['objects'][0]['fence_raw']
+
+
+def test_core_rewrite_writer_receives_concept_identity_without_planner_definition():
+    from sourceloom.active_composition import writer_concepts_for_payload, bounded_established_memory
+    original=[dict(id='concept-1',name='示例概念（Example Concept）',
+        chinese_name='示例概念',english_name='Example Concept',
+        naming_status='verified',name_evidence=[dict(resource_id='name-1',quote='Example Concept')],
+        abbreviations=[dict(short='EC',chinese='示例概念',english='Example Concept')],
+        source_ids=['s1'],requires=[],definition='规划器预写的长定义')]
+    frozen=copy.deepcopy(original)
+    rewrite=writer_concepts_for_payload(original,core_rewrite=True)
+    assert 'definition' not in rewrite[0]
+    for field in ('id','chinese_name','english_name','naming_status',
+                  'name_evidence','abbreviations','source_ids','requires'):
+        assert rewrite[0][field]==original[0][field]
+    assert original==frozen
+    assert writer_concepts_for_payload(original,core_rewrite=False)==original
+    memory=bounded_established_memory(dict(pipeline='active_composition_v2',core_chain_version=1,
+        transformation_mode='rewrite',active_plans=[dict(concepts=original)],
+        knowledge_memory=[dict(node_id='n1',established=[dict(id='concept-1',
+            definition='实际正文中的自然解释')])]))
+    assert memory[0]['prior_explanation']=='实际正文中的自然解释'
+    memory_without_text=bounded_established_memory(dict(pipeline='active_composition_v2',core_chain_version=1,
+        transformation_mode='rewrite',active_plans=[dict(concepts=original)],
+        knowledge_memory=[dict(node_id='n1',established=[dict(id='concept-1')])]))
+    assert 'prior_explanation' not in memory_without_text[0]
+
+
+def test_core_rewrite_writer_drops_reasoning_script_without_changing_frozen_plan():
+    from sourceloom.active_composition import (writer_node_context,
+        writer_reasoning_coverage, prompt_obligations)
+    node=dict(id='n1',title='主体',purpose='说明原文主体',source_ids=['s1'],
+        obligation_ids=['f1'],requires_concepts=[],establishes_concepts=['c1'],
+        explanation=dict(known_start='读者已知背景',obstacle='负索引容易误解',
+            boundary='只解释当前材料',reasoning_steps=['逐项复述代码输出']),
+        section_outline=[dict(id='section-1',title='示例',purpose='展示差异',
+            source_ids=['s1'],obligation_ids=['f1'],
+            explanation=dict(obstacle='区分正负索引',boundary='不扩展外部材料',
+                reasoning_steps=['重新口述每个赋值']))])
+    original=copy.deepcopy(node)
+    rewrite=writer_node_context(node,core_rewrite=True)
+    assert 'reasoning_steps' not in rewrite['explanation']
+    assert 'reasoning_steps' not in rewrite['section_outline'][0]['explanation']
+    assert rewrite['purpose']==node['purpose']
+    assert rewrite['explanation']['obstacle']=='负索引容易误解'
+    assert rewrite['explanation']['boundary']=='只解释当前材料'
+    assert rewrite['section_outline'][0]['purpose']=='展示差异'
+    assert writer_reasoning_coverage(node,core_rewrite=True)=={}
+    assert writer_reasoning_coverage(node,core_rewrite=False)=={
+        'reasoning_step_coverage':['逐项复述代码输出']}
+    assert writer_node_context(node,core_rewrite=False)['explanation']['reasoning_steps']==[
+        '逐项复述代码输出']
+    obligations=[dict(id='f1',source_id='s1',quote='原文必须保留',meaning='原文必须保留')]
+    assert prompt_obligations(obligations)==[dict(id='f1',source_id='s1',meaning='原文必须保留')]
+    assert node==original
+
+
+def test_core_rewrite_reference_obligations_are_display_only_without_changing_plan():
+    from sourceloom.active_composition import writer_reference_payload
+
+    source=dict(objects=[
+        dict(id='body',kind='text',text='The value is rounded; see details.'),
+        dict(id='inline',kind='link',text='details',target='https://example.test/details',
+             parent_id='body'),
+        dict(id='related',kind='heading',text='Related resources'),
+        dict(id='label',kind='text',text='Guide to the feature',
+             raw='<li><a href="https://example.test/guide">Guide to the feature</a></li>'),
+        dict(id='list-link',kind='link',text='Guide to the feature',
+             target='https://example.test/guide',parent_id='label'),
+        dict(id='macro-label',kind='text',text='{{jsxref("Feature")}}',
+             raw='<li>{{jsxref("Feature")}}</li>'),
+        dict(id='fact-link',kind='link',text='required evidence',
+             target='https://example.test/evidence'),
+    ])
+    source_ids=[item['id'] for item in source['objects']]
+    roles={sid:dict(preserve=True,present=True,explain=sid in {'body','label','fact-link'})
+           for sid in source_ids}
+    obligations=[dict(id='o-'+sid,source_id=sid,quote='source bytes',
+        meaning='Target page explains its mechanism' if sid in {'inline','list-link'}
+            else 'Define this linked term' if sid in {'label','macro-label'}
+            else 'Source fact') for sid in source_ids]
+    briefs=[dict(source_id=sid,role='content',topic='target details')
+            for sid in ('inline','list-link','fact-link')]
+    job=dict(pipeline='active_composition_v2',core_chain_version=1,
+             transformation_mode='rewrite',object_responsibilities=roles,
+             active_plans=[dict(link_briefs=briefs)])
+    frozen=copy.deepcopy((source,obligations,briefs,roles))
+
+    rewrite=writer_reference_payload(job,source,source_ids,obligations,core_rewrite=True)
+    assert rewrite['reference_link_ids']==['inline','list-link']
+    assert rewrite['reference_label_ids']==['label','macro-label']
+    assert [item['source_id'] for item in rewrite['link_guides']]==['fact-link']
+    by_source={item['source_id']:item for item in rewrite['obligations']}
+    assert all('destination' in by_source[sid]['meaning']
+               for sid in ('inline','list-link'))
+    assert all('no term definition' in by_source[sid]['meaning']
+               for sid in ('label','macro-label'))
+    assert by_source['body']['meaning']=='Source fact'
+    assert by_source['fact-link']['meaning']=='Source fact'
+    assert rewrite['object_responsibilities']['label']['explain'] is False
+    assert rewrite['object_responsibilities']['body']['explain'] is True
+    assert rewrite['object_responsibilities']['fact-link']['explain'] is True
+    assert (source,obligations,briefs,roles)==frozen
+
+    legacy=writer_reference_payload(job,source,source_ids,obligations,core_rewrite=False)
+    assert legacy['obligations'][1]['meaning']=='Target page explains its mechanism'
+    assert legacy['link_guides']==briefs
+    assert legacy['object_responsibilities']==roles
+    assert 'reference_link_ids' not in legacy
+
+
+def test_protected_code_once_with_natural_prose_needs_no_annotated_copy():
+    from sourceloom.active_composition import validate_written
+    for fence in ('```python\nx = 3\n```', '```pycon\n>>> x = 3\n>>> x\n3\n```'):
+        src=source();src['objects']=src['objects'][:1]
+        src['objects'][0].update(kind='code',text=fence,fence_raw=fence)
+        p=plan();p['obligations']=p['obligations'][:1]
+        p['obligations'][0]['quote']=fence
+        p['nodes'][0].update(source_ids=['s1'],obligation_ids=['f1'])
+        inv,_=legacy_artifacts([p],src)
+        value=dict(blocks=[
+            dict(id='n1-code',kind='object',markdown='{{source:s1}}',
+                 obligation_ids=['f1'],source_ids=['s1']),
+            dict(id='n1-explain',kind='explanation',markdown='这段示例展示了变量的值。',
+                 obligation_ids=[],source_ids=['s1'])],
+            coverage=[],knowledge_delta=dict(established_concepts=[],
+                explained_obligations=['f1'],unresolved_prerequisites=[],next_bridge=''))
+        draft,coverage,_=validate_written(value,p['nodes'][0],inv,None,{'blocks':[]})
+        assert sum(fence in block['markdown'] for block in draft['blocks'])==1
+        assert draft['blocks'][0]['markdown']==fence
+        assert draft['blocks'][1]['markdown'].startswith('这段示例展示了变量的值')
+        assert coverage[0]['block_id']=='n1-code'
 
 
 def test_document_information_discards_plain_text_marker_and_keeps_explanation():
@@ -604,16 +974,98 @@ def test_content_link_plan_requires_direct_destination_evidence(tmp_path):
         kind='external',locator='https://example.org/topic',original_url='https://example.org/topic')
     p['link_briefs']=[dict(source_id='link',role='content',topic='Route counting',
         connection='Explains why checking every route is expensive',
-        destination='Counts candidate routes but does not prove hardness',
+        destination='',
         limitation='Counting alone is not a hardness proof',
         evidence=[dict(resource_id='external-page',quote='distinguishes counting from proving difficulty')])]
-    assert validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)['link_briefs'][0]['role']=='content'
+    initial=validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)['link_briefs'][0]
+    assert initial['role']=='content'
+    assert initial['destination']=='distinguishes counting from proving difficulty'
     p['link_briefs'][0]['evidence'][0]['quote']='Invented destination sentence'
-    with pytest.raises(ValueError,match='目标证据'):
-        validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    repaired=validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    assert repaired['link_briefs'][0]['evidence']==[dict(resource_id='external-page',
+        quote='This example distinguishes counting from proving difficulty.')]
     p['link_briefs']=[]
-    with pytest.raises(ValueError,match='每个原文链接'):
-        validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    restored=validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    assert restored['link_briefs'][0]['source_id']=='link'
+    assert restored['link_briefs'][0]['role']=='content'
+
+
+@pytest.mark.parametrize('present',[True,False])
+def test_core_reference_link_keeps_original_without_fetching_destination(
+        tmp_path,monkeypatch,present):
+    material=source()
+    material['objects']=[dict(id='link',kind='link',text='More examples',
+        locator='input/see-also/link',target='https://example.org/examples')]
+    candidate=plan()
+    candidate['obligations']=[dict(id='f1',source_id='link',quote='More examples',
+        meaning='Further reading',conditions=[],quantities=[],negations=[],
+        narrator='source',referents=[])]
+    candidate['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    candidate['object_responsibilities']=[dict(source_id='link',present=present,explain=False)]
+    candidate['link_briefs']=[dict(source_id='link',role='content',topic='More examples',
+        connection='Further reading',destination='Unsupported target-page claim',
+        limitation='',evidence=[],unavailable_reason='')]
+    resources=Resources(Store(tmp_path),material)
+    monkeypatch.setattr(resources,'execute',lambda action:pytest.fail('reference link fetched'))
+    checked=validate_plan(candidate,material,['link'],resources=resources,
+        require_link_briefs=True,require_object_responsibilities=True)
+    brief=checked['link_briefs'][0]
+    assert brief['role']=='content' and brief['topic']=='More examples'
+    assert brief['destination']=='' and brief['evidence']==[]
+
+
+def test_core_semantic_dependency_link_still_requires_target_evidence(tmp_path):
+    material=source()
+    material['objects']=[dict(id='link',kind='link',text='Defined in advance',
+        locator='input/body/link',target='https://example.org/definition')]
+    candidate=plan()
+    candidate['obligations']=[dict(id='f1',source_id='link',quote='Defined in advance',
+        meaning='Definition required to understand the claim',conditions=[],quantities=[],
+        negations=[],narrator='source',referents=[])]
+    candidate['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    candidate['object_responsibilities']=[dict(source_id='link',present=True,explain=True)]
+    candidate['link_briefs']=[dict(source_id='link',role='content',topic='Definition',
+        connection='Clarifies the current source claim',destination='The term is fixed before use',
+        limitation='',evidence=[],unavailable_reason='')]
+    resources=Resources(Store(tmp_path),material)
+    resources.add('target','The term is fixed before use.',kind='external',
+        locator='https://example.org/definition',original_url='https://example.org/definition')
+    checked=validate_plan(candidate,material,['link'],resources=resources,
+        require_link_briefs=True,require_object_responsibilities=True)
+    assert checked['link_briefs'][0]['evidence'][0]['resource_id']=='target'
+
+
+def test_default_rewrite_validator_never_fetches_model_explained_link(tmp_path,monkeypatch):
+    material=source()
+    material['objects']=[dict(id='link',kind='link',text='More examples',
+        locator='input/body/link',target='https://example.org/examples')]
+    candidate=plan()
+    candidate['obligations']=[dict(id='f1',source_id='link',quote='More examples',
+        meaning='Further reading',conditions=[],quantities=[],negations=[],
+        narrator='source',referents=[])]
+    candidate['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    candidate['object_responsibilities']=[dict(source_id='link',present=True,explain=True)]
+    candidate['link_briefs']=[dict(source_id='link',role='content',topic='More examples',
+        connection='Research this target',destination='Unverified destination claim',
+        limitation='',evidence=[],unavailable_reason='')]
+    candidate['evidence_gaps']=[dict(id='link-gap',obligation_id='f1',source_id='link',
+        missing='Target page text',reason='Model requested link research',
+        allowed_sources=['example.org'],stop_condition='Open target',status='unresolved')]
+    candidate['evidence_resolutions']=[dict(gap_id='link-gap',status='unresolved',
+        binding_ids=[],attempts=0,stop_reason='Target not fetched',error='')]
+    resources=Resources(Store(tmp_path),material)
+    monkeypatch.setattr(resources,'execute',lambda action:
+        pytest.fail('plan validation fetched an original link target'))
+    checked=validate_plan(candidate,material,['link'],resources=resources,
+        require_link_briefs=True,require_object_responsibilities=True,
+        default_reference_links=True,
+        classified_link_decisions={'link':dict(source_id='link',role='reference',
+            missing='',source_quote='')})
+    assert checked['object_responsibilities'][0]['explain'] is False
+    assert checked['link_briefs'][0]['destination']==''
+    assert checked['link_briefs'][0]['evidence']==[]
+    assert checked['evidence_gaps']==[]
+    assert checked['evidence_resolutions']==[]
 
 
 def test_site_chrome_and_author_links_get_structural_roles_without_model_research():
@@ -681,7 +1133,8 @@ def test_omitted_empty_image_wrapper_gets_a_deterministic_noncontent_role():
         topic='',connection='',destination='',limitation='',evidence=[],unavailable_reason='')]
 
 
-def test_article_reference_cannot_be_declared_navigation_to_skip_research():
+def test_article_reference_misclassified_as_navigation_is_read_and_repaired(tmp_path,monkeypatch):
+    import sourceloom.network
     src=source();src['source_url']='https://example.org/article'
     src['objects']=[dict(id='link',kind='link',text='Research background',
         locator='input/p/a',target='https://example.org/background')]
@@ -689,8 +1142,15 @@ def test_article_reference_cannot_be_declared_navigation_to_skip_research():
     p['obligations'][0].update(source_id='link',quote='Research background')
     p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
     p['link_briefs']=[dict(source_id='link',role='navigation')]
-    with pytest.raises(ValueError,match='正文知识链接不能仅按导航'):
-        validate_plan(p,src,['link'],require_link_briefs=True)
+    monkeypatch.setattr(sourceloom.network,'fetch',lambda url,allowed_types=None,timeout=12:
+        (b'<html><title>Research background</title><main>The verified background.</main></html>',
+         'text/html',url))
+    resources=Resources(Store(tmp_path),src)
+    brief=validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)['link_briefs'][0]
+    assert brief['role']=='content'
+    assert brief['topic']=='Research background'
+    assert 'The verified background' in brief['destination']
+    assert brief['evidence']
 
 
 def test_unavailable_article_reference_becomes_explicit_content_gap(tmp_path):
@@ -729,6 +1189,19 @@ def test_same_page_topic_anchor_is_navigation_even_inside_article():
     p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
     p['link_briefs']=[dict(source_id='link',role='navigation')]
     assert validate_plan(p,src,['link'],require_link_briefs=True)['link_briefs'][0]['role']=='navigation'
+
+
+def test_feedback_link_is_administrative_even_when_planner_calls_it_content():
+    src=source();src['source_url']='https://example.org/article'
+    src['objects']=[dict(id='link',kind='link',text='Report an error',locator='input/footer/a',
+                         target='https://example.org/contact.html#feedback')]
+    p=plan();p['obligations']=p['obligations'][:1]
+    p['obligations'][0].update(source_id='link',quote='Report an error')
+    p['nodes'][0].update(source_ids=['link'],obligation_ids=['f1'])
+    p['link_briefs']=[dict(source_id='link',role='content',topic='wrong',connection='wrong',
+        destination='wrong',evidence=[],unavailable_reason='')]
+    brief=validate_plan(p,src,['link'],require_link_briefs=True)['link_briefs'][0]
+    assert brief['role']=='administrative' and not brief['destination']
 
 
 def test_first_use_moves_a_planned_concept_before_its_later_introduction():
@@ -840,9 +1313,17 @@ def test_visual_card_archives_a_confirmed_textless_decorative_icon():
         role='diagram',source_text='',visible_content='Cache bandwidth chart'))
     labelled=dict(kind='image',text='OPEN',visual_card=dict(
         role='decorative',source_text='OPEN',visible_content='OPEN'))
+    svg_icon=dict(kind='image',source_format='inline-svg',
+        original_extracted_text='dot gov icon',visual_card=dict(
+            role='decorative',source_text='<title>dot gov icon</title>; .cls{fill:blue}',
+            visible_content='A government building icon'))
+    social_logo=dict(kind='image',material_scope='page',text='X Logo',visual_card=dict(
+        role='decorative',source_text='X Logo',visible_content='A platform logo'))
     assert decorative_resource(icon)
     assert not decorative_resource(chart)
     assert not decorative_resource(labelled)
+    assert decorative_resource(svg_icon)
+    assert decorative_resource(social_logo)
 
 
 def test_writer_concept_labels_can_be_aligned_only_from_exact_cited_ids():
@@ -916,6 +1397,19 @@ def test_standalone_heading_merges_into_its_following_code_unit():
     assert plan['nodes'][0]['depends_on']==['before']
     assert plan['nodes'][0]['title']=='简单示例'
     assert later['depends_on']==['code']
+
+
+def test_standalone_heading_merge_does_not_depend_on_model_dependency_label():
+    from sourceloom.active_composition import merge_adjacent_heading_only_nodes
+    heading=dict(id='h',title='示例',source_ids=['s1'],obligation_ids=['f1'],
+                 requires_concepts=[],establishes_concepts=[],depends_on=[],transition_from='')
+    body=dict(id='body',title='正文',source_ids=['s2'],obligation_ids=['f2'],
+              requires_concepts=[],establishes_concepts=[],depends_on=[],transition_from='')
+    plan={'nodes':[heading,body]}
+    assert merge_adjacent_heading_only_nodes(
+        plan,{'s1':{'kind':'heading'},'s2':{'kind':'text'}})==[
+            dict(heading_id='h',content_id='body')]
+    assert plan['nodes'][0]['source_ids']==['s1','s2']
 
 
 def test_verified_name_can_be_inserted_at_unique_authored_first_use():
@@ -1039,8 +1533,8 @@ def test_direct_link_failure_is_recorded_and_cannot_be_invented(tmp_path,monkeyp
         unavailable_reason=receipt['reason'])]
     assert validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)['link_briefs'][0]['unavailable_reason']==receipt['reason']
     p['link_briefs'][0]['unavailable_reason']='The source says something else'
-    with pytest.raises(ValueError,match='访问失败记录'):
-        validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    repaired=validate_plan(p,src,['link'],resources=resources,require_link_briefs=True)
+    assert repaired['link_briefs'][0]['unavailable_reason']==receipt['reason']
 
 
 def test_image_led_link_requires_actual_visual_evidence(tmp_path):
@@ -1153,7 +1647,7 @@ def test_writer_structure_corrections_edit_the_previous_candidate_incrementally(
     def validate(value,_):
         markdown=value['blocks'][0]['markdown']
         if len(requests)==1:raise ValueError('正文标题照搬了未解释的英文，需要按完整写作技能改写')
-        if len(requests)==2:raise ValueError('正文图片缺少与原图绑定的说明：image-1')
+        if len(requests)==2:raise ValueError('正文非文字材料缺少与原对象绑定的说明：image-1')
         return value
     result=engine.turn(job,'writer','active_write',A.WrittenUnit,src,['s1'],{'node':node},validate)
     assert result['blocks'][0]['markdown'].endswith('图片说明')
@@ -1261,6 +1755,73 @@ def test_html_main_region_excludes_navigation_from_rewrite_but_keeps_original(tm
         'Water','Water moves.'}
     assert all(o.get('source_scope')=='site_chrome' for o in classified['objects']
                if o['text'] in {'All pages','Site footer'})
+
+
+def test_nested_navigation_wrapper_is_archived_as_site_chrome(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+    raw=(b'<html><body><div class="shell"><nav><a href="/arctic">Arctic</a>'
+         b'<a href="/ocean">Ocean</a></nav><main><article><h1>Ocean month</h1>'
+         b'<p>The ocean shapes weather and climate.</p></article></main></div></body></html>')
+    store=Store(tmp_path)
+    source=intake(store,[('snapshot.html',raw)],source_url='https://example.org/month')
+    classified=classify_web_chrome(store,source)
+    objects={obj.get('text'):obj for obj in classified['objects']}
+    assert objects['Arctic']['source_scope']=='site_chrome'
+    assert objects['Ocean']['source_scope']=='site_chrome'
+    assert objects['The ocean shapes weather and climate.'].get('source_scope')!='site_chrome'
+    assert store.read_blob(source['originals'][0]['sha256'])==raw
+
+
+def test_embedded_page_details_and_topic_cards_are_archived_not_presented(tmp_path):
+    from sourceloom.ingest import intake
+    from sourceloom.source_context import classify_web_chrome
+    from sourceloom.active_composition import planned_object_responsibilities
+    raw=(b'<html><body><main><article><h1>Discovery</h1>'
+         b'<p>The observation changed the estimate.</p>'
+         b'<figure><img src="result.png" alt="Observed result"></figure>'
+         b'<div class="wp-block-publication-credits-and-details">'
+         b'<h2>Details</h2><p>Last updated yesterday</p></div>'
+         b'<div class="site-topic-cards"><h2>Keep exploring</h2>'
+         b'<a href="/one"><img src="one.png" alt="One">Topic one</a>'
+         b'<a href="/two"><img src="two.png" alt="Two">Topic two</a></div>'
+         b'</article></main></body></html>')
+    store=Store(tmp_path)
+    source=intake(store,[('snapshot.html',raw)],source_url='https://example.org/discovery')
+    classified=classify_web_chrome(store,source)
+    by_text={obj['text']:obj for obj in classified['objects']}
+    assert by_text['The observation changed the estimate.'].get('source_scope') not in {
+        'site_chrome','source_metadata'}
+    assert by_text['Observed result'].get('source_scope') not in {
+        'site_chrome','source_metadata'}
+    assert by_text['Last updated yesterday']['source_scope']=='source_metadata'
+    assert by_text['Topic one']['source_scope']=='site_chrome'
+    assert by_text['One']['source_scope']=='site_chrome'
+    roles=planned_object_responsibilities([{'object_responsibilities':[
+        dict(source_id=obj['id'],present=True,explain=True)
+        for obj in classified['objects']]}],classified)
+    assert roles[by_text['The observation changed the estimate.']['id']]['present']
+    assert roles[by_text['Observed result']['id']]['explain']
+    assert all(roles[by_text[label]['id']]==dict(preserve=True,present=False,explain=False)
+               for label in ('Last updated yesterday','Topic one','One'))
+    assert store.read_blob(source['originals'][0]['sha256'])==raw
+
+
+def test_plan_discards_only_null_transport_dummy_fields():
+    from sourceloom.active_composition import validate_plan
+    src=source()
+    candidate=plan()
+    candidate['concepts']=[dict(id='condition',name='Condition',definition='Source condition',
+        source_ids=['s1'],requires=[],chinese_name='',english_name='',naming_status='unsearched',
+        name_evidence=[],abbreviations=[],naming_note='',naming_status_reason='',
+        abbreviations_dummy=None)]
+    candidate['nodes'][0]['establishes_concepts']=['condition']
+    validated=validate_plan(candidate,src,{'s1','s2'})
+    assert 'abbreviations_dummy' not in validated['concepts'][0]
+    changed=copy.deepcopy(candidate)
+    changed['concepts'][0]['abbreviations_dummy']='content'
+    with pytest.raises(Exception):
+        validate_plan(changed,src,{'s1','s2'})
 
 
 def test_article_header_avatar_is_archived_as_source_metadata(tmp_path):
@@ -1434,7 +1995,7 @@ def test_background_restart_completes_planning_writing_review_without_repeating_
     from sourceloom.active_composition import source_spans
     from sourceloom.writing import canonical
     store,_,p,bundle=prepared(tmp_path,skill)
-    job=Queue(store,pipeline='active_composition_v1').enqueue(p['id'],bundle)
+    job=saved_legacy_v1_job(store,p['id'],bundle)
     calls=[]
     def provider(self,pid,role,payload,schema,job,cancelled):
         calls.append(role)
@@ -1498,7 +2059,7 @@ def test_missing_asset_can_resume_same_zero_call_job_after_inventory_is_complete
     incomplete['digest']='before-asset-recovery'
     store.change(project['id'],lambda p:p.update(inventory=incomplete))
     queue=Queue(store,pipeline='active_composition_v1')
-    job=queue.enqueue(project['id'],bundle)
+    job=saved_legacy_v1_job(store,project['id'],bundle)
     claimed=queue.claim('test-worker')
     claimed.update(stage='active_visual',error='original image unavailable')
     queue.finish(claimed,'test-worker','failed')
@@ -1639,7 +2200,7 @@ def test_active_revision_limit_cannot_silently_create_unbounded_loops(tmp_path,l
 def test_content_correction_routes_through_committer_and_scoped_review(tmp_path,skill,monkeypatch):
     from sourceloom.writing import canonical
     store,_,p,bundle=prepared(tmp_path,skill)
-    job=Queue(store,pipeline='active_composition_v1').enqueue(p['id'],bundle)
+    job=saved_legacy_v1_job(store,p['id'],bundle)
     calls=[]
     def provider(self,pid,role,payload,schema,job,cancelled):
         calls.append(role)
@@ -1685,7 +2246,7 @@ def test_content_correction_routes_through_committer_and_scoped_review(tmp_path,
     assert saved['delivery_checks']['compiled_inventory_digest']==saved['inventory']['digest']
 
 
-def test_v2_failure_preserves_work_as_a_reviewable_result(tmp_path,skill,monkeypatch):
+def test_v2_failure_keeps_only_real_writer_work_as_an_unpublished_attempt(tmp_path,skill,monkeypatch):
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
     engine=Production(store,{'generation_pipeline':'active_composition_v2'})
@@ -1700,51 +2261,88 @@ def test_v2_failure_preserves_work_as_a_reviewable_result(tmp_path,skill,monkeyp
     monkeypatch.setattr(engine,'step',fail_after_partial_writer)
     assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
-    assert saved['status']=='ready_for_review' and saved.get('error')=='模拟检查失败'
-    assert published['state']=='ready_for_review'
-    assert published['delivery_state']=='recovered_ready_for_review'
-    represented={sid for block in published['draft']['blocks'] for sid in block.get('object_ids',[])}
-    assert represented=={obj['id'] for obj in published['inventory']['objects']}
-    assert published['draft']['blocks'][0]['markdown']=='已生成的正文'
+    assert saved['status']=='failed' and saved.get('error')=='模拟检查失败'
+    assert published['state']=='failed' and not published.get('draft')
+    assert published['revision']==project['revision']
+    assert [block['markdown'] for block in saved['draft']['blocks']]==['已生成的正文']
     assert saved['internal_failures'][0]['detail']=='模拟检查失败'
 
 
-def test_v2_recovery_keeps_uncommitted_candidate_and_uses_all_evidence_links(tmp_path,skill,monkeypatch):
-    from sourceloom.production import recoverable_delivery
+def test_failed_generation_has_no_normal_output_endpoint(tmp_path,skill,monkeypatch):
+    from fastapi.testclient import TestClient
+    from sourceloom.app import create_app
+    from sourceloom.config import load_config
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
-    claimed=store.job(job['id'])
-    first=claimed['source']['objects'][0]
-    second=copy.deepcopy(first)|dict(id='source-second',locator='input/2',text='The second source object.')
-    claimed['source']['objects'].append(second)
-    claimed.update(inventory=claimed['source'],draft={'blocks':[dict(
-        id='written-first',unit_id='u1',kind='explanation',markdown='已生成的正文',
-        obligation_ids=[],object_ids=[first['id']],evidence=[],embedded_object_ids=[])]},
-        active_candidate={'draft':{'blocks':[dict(
-            id='written-second',unit_id='u2',kind='explanation',markdown='尚未提交的正文',
-            obligation_ids=[],source_ids=[second['id']],evidence=[],embedded_object_ids=[])]}})
-    inventory,_,draft=recoverable_delivery(claimed)
-    blocks={block['id']:block for block in draft['blocks']}
-    assert set(blocks)=={'written-first','written-second'}
-    represented={sid for block in draft['blocks'] for sid in (
-        block.get('object_ids',[])+block.get('source_ids',[])+
-        [e['source_id'] for e in block.get('evidence',[]) if e.get('source_id')])}
-    assert represented=={first['id'],second['id']}
-    assert all('原件没有' not in block['markdown'] for block in draft['blocks'])
+    engine=Production(store,{'generation_pipeline':'active_composition_v2'})
+    original=store.get(project['id'])['inventory']['objects'][0]['text']
+
+    def fail_after_partial_writer(claimed):
+        claimed.update(stage='active_write',inventory=claimed['source'],draft={'blocks':[dict(
+            id='written-first',unit_id='u1',kind='explanation',markdown='真实生成的片段',
+            obligation_ids=[],object_ids=[],evidence=[],embedded_object_ids=[])]})
+        raise ValueError('模型结果没有通过内容核对')
+
+    monkeypatch.setattr(engine,'step',fail_after_partial_writer)
+    assert engine.run_once()
+    config=load_config()|{'data_dir':str(store.root),'provider':'manual',
+                          'auth_mode':'local','writing_skill_dir':str(skill)}
+    with TestClient(create_app(config)) as client:
+        status=client.get(f"/api/projects/{project['id']}/production")
+        output=client.get(f"/api/projects/{project['id']}/output?format=markdown")
+        preview=client.get(f"/api/projects/{project['id']}/preview")
+        assert status.status_code==200 and output.status_code==409
+        assert preview.status_code==409
+        body=status.json()
+        assert body['status']=='failed' and not body['has_output']
+        assert not body['delivery_complete'] and body['candidate_url']
+        assert original not in body.get('error','')
+    assert store.job(job['id'])['draft']['blocks'][0]['markdown']=='真实生成的片段'
 
 
-def test_v2_explicit_gateway_timeout_retries_current_saved_stage_once(tmp_path,skill,monkeypatch):
+def test_legacy_source_fallback_is_not_a_deliverable_result(tmp_path,skill):
+    from fastapi.testclient import TestClient
+    from sourceloom.app import create_app
+    from sourceloom.config import load_config
+    store,_,project,bundle=prepared(tmp_path,skill)
+    job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    source=store.get(project['id'])['inventory']['objects'][0]['text']
+    recovered={'blocks':[dict(id='old-source',unit_id='recovered-source',kind='source',
+        markdown=source,object_ids=[],obligation_ids=[],evidence=[],embedded_object_ids=[])]}
+    store.change(project['id'],lambda p:p.update(draft=recovered,
+        production={'job':job['id'],'status':'ready_for_review',
+                    'delivery_state':'recovered_ready_for_review'}))
+    old=store.job(job['id']);old['delivery_state']='recovered_ready_for_review'
+    old['draft']=recovered;store.put_job(old)
+    config=load_config()|{'data_dir':str(store.root),'provider':'manual',
+                          'auth_mode':'local','writing_skill_dir':str(skill)}
+    with TestClient(create_app(config)) as client:
+        base=f"/api/projects/{project['id']}"
+        status=client.get(base+'/production').json()
+        reader=client.get(base+'/reader').json()
+        assert status['status']=='failed' and not status['has_output']
+        assert not status['delivery_complete'] and not status['formal']
+        assert reader['draft'] is False
+        for path in ('/output?format=markdown','/preview','/export',
+                     f"/attempts/{job['id']}/output?format=markdown"):
+            assert client.get(base+path).status_code==409
+
+
+@pytest.mark.parametrize('status',[520,524])
+def test_v2_explicit_gateway_timeout_retries_current_saved_stage_three_times(tmp_path,skill,monkeypatch,status):
     from sourceloom.providers import Uncertain
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    job['core_chain_version']=0
+    store.put_job(job)
     engine=Production(store,{'generation_pipeline':'active_composition_v2'})
 
     def gateway_timeout(claimed):
         key='active-plan-p1'
         claimed.update(stage='active_plan',pending=key)
         claimed['calls'].append(dict(id='gateway-call',role='active_plan',status='uncertain',
-            step_key=key,http_status=524,response_blob=store.blob(b'gateway timeout')))
-        raise Uncertain('模型请求返回 524，本次未自动重发')
+            step_key=key,http_status=status,response_blob=store.blob(b'gateway timeout')))
+        raise Uncertain(f'模型请求返回 {status}，本次未自动重发')
 
     monkeypatch.setattr(engine,'step',gateway_timeout)
     assert engine.run_once()
@@ -1752,20 +2350,25 @@ def test_v2_explicit_gateway_timeout_retries_current_saved_stage_once(tmp_path,s
     assert saved['status']=='queued' and published['active_job']==job['id']
     assert 'pending' not in saved
     assert saved['transient_gateway_retries']['active-plan-p1']['attempts']==1
-    assert saved['internal_recoveries'][0]['http_status']==524
+    assert saved['internal_recoveries'][0]['http_status']==status
 
-    # A second explicit timeout preserves source and checkpoints while still
-    # exposing the best saved result for review
+    # Three fresh attempts are allowed from the exact saved stage. A fourth
+    # transient response still terminates predictably without an infinite loop.
+    assert engine.run_once() and store.job(job['id'])['status']=='queued'
+    assert engine.run_once() and store.job(job['id'])['status']=='queued'
+    assert store.job(job['id'])['transient_gateway_retries']['active-plan-p1']['attempts']==3
     assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
-    assert saved['status']=='ready_for_review'
-    assert published['delivery_state']=='recovered_ready_for_review'
+    assert saved['status']=='uncertain'
+    assert not published.get('draft')
 
 
-def test_v2_stateless_transport_uncertainty_retries_twice_before_delivery(tmp_path,skill,monkeypatch):
+def test_v2_stateless_transport_uncertainty_retries_three_times_before_delivery(tmp_path,skill,monkeypatch):
     from sourceloom.providers import Uncertain
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    job['core_chain_version']=0
+    store.put_job(job)
     engine=Production(store,{'generation_pipeline':'active_composition_v2'})
     def timeout(claimed):
         key='active-plan-p1-turn-1';claimed.update(stage='active_plan',pending=key)
@@ -1784,9 +2387,13 @@ def test_v2_stateless_transport_uncertainty_retries_twice_before_delivery(tmp_pa
     assert saved['status']=='queued'
     assert saved['transient_gateway_retries']['active-plan-p1-turn-1']['attempts']==2
     assert engine.run_once()
+    saved=store.job(job['id'])
+    assert saved['status']=='queued'
+    assert saved['transient_gateway_retries']['active-plan-p1-turn-1']['attempts']==3
+    assert engine.run_once()
     saved=store.job(job['id']);published=store.get(project['id'])
-    assert saved['status']=='ready_for_review'
-    assert published['delivery_state']=='recovered_ready_for_review'
+    assert saved['status']=='uncertain'
+    assert not published.get('draft')
 
 
 def test_active_retry_uses_the_configured_transport_fallback(tmp_path,skill,monkeypatch):
@@ -1795,7 +2402,9 @@ def test_active_retry_uses_the_configured_transport_fallback(tmp_path,skill,monk
         answer:str
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    job['core_chain_version']=0
     job['transport_fallback_steps']={'step-1':'uncertain-call'}
+    store.put_job(job)
     observed={}
     def call(provider,pid,role,payload,schema,claimed,cancelled):
         observed.update(role=role,model=provider.config.get('model'))
@@ -1812,6 +2421,8 @@ def test_active_retry_uses_the_configured_transport_fallback(tmp_path,skill,monk
 def test_v2_truncated_output_retries_once_with_the_saved_stage(tmp_path,skill,monkeypatch):
     store,_,project,bundle=prepared(tmp_path,skill)
     job=Queue(store,pipeline='active_composition_v2').enqueue(project['id'],bundle)
+    job['core_chain_version']=0
+    store.put_job(job)
     engine=Production(store,{'generation_pipeline':'active_composition_v2'})
     def truncated(claimed):
         key='active-plan-p1-turn-0';claimed.update(stage='active_plan',pending=key)
@@ -1825,7 +2436,8 @@ def test_v2_truncated_output_retries_once_with_the_saved_stage(tmp_path,skill,mo
     assert saved['internal_recoveries'][0]['type']=='incomplete_model_output'
     assert saved['transport_fallback_steps']['active-plan-p1-turn-0']=='truncated-call'
     assert engine.run_once()
-    assert store.job(job['id'])['status']=='ready_for_review'
+    assert store.job(job['id'])['status']=='failed'
+    assert not store.get(project['id']).get('draft')
 
 
 def test_spacing_normalization_and_scan_exemptions_preserve_exact_original_code():
@@ -2212,6 +2824,46 @@ def test_catalogued_numeronyms_need_name_plan_before_writer():
     declared=[{'abbreviations':[{'short':'I18N'},{'short':'L10N'}]}]
     assert missing_catalogued_numeronyms(src,['text','code'],declared)==[]
 
+
+def test_rewrite_numeronym_validation_uses_reader_facing_responsibilities():
+    from sourceloom.active_composition import missing_catalogued_numeronyms
+
+    material=source()
+    material['objects'][1]['text']='html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"'
+    candidate=plan()
+    candidate['obligations'][1].update(quote=material['objects'][1]['text'],
+        meaning='Preserve the original doctype bytes',conditions=[],negations=[],
+        narrator='document markup',referents=[])
+    candidate['object_responsibilities']=[
+        dict(source_id='s1',present=True,explain=False),
+        dict(source_id='s2',present=False,explain=False)]
+    checked=validate_plan(candidate,material,['s1','s2'],
+        require_object_responsibilities=True,default_reference_links=True)
+    assert checked['object_responsibilities'][1]==candidate['object_responsibilities'][1]
+    assert checked['concepts']==[]
+
+    candidate['object_responsibilities'][1]['present']=True
+    with pytest.raises(ValueError,match='w3c'):
+        validate_plan(candidate,material,['s1','s2'],
+            require_object_responsibilities=True,default_reference_links=True)
+    candidate['object_responsibilities'][1].update(present=False,explain=True)
+    with pytest.raises(ValueError,match='w3c'):
+        validate_plan(candidate,material,['s1','s2'],
+            require_object_responsibilities=True,default_reference_links=True)
+
+    material['objects'][0]['text']='The page discusses i18n.'
+    candidate['obligations'][0]['quote']=material['objects'][0]['text']
+    with pytest.raises(ValueError,match='i18n'):
+        validate_plan(candidate,material,['s1','s2'],
+            require_object_responsibilities=True,default_reference_links=True)
+
+    reference={'objects':[dict(id='link',kind='link',text='W3C',
+        target='https://example.org/i18n',source_scope='source_metadata')]}
+    duties={'link':dict(source_id='link',present=True,explain=False)}
+    assert missing_catalogued_numeronyms(reference,['link'],[],duties)==[]
+    duties['link']['explain']=True
+    assert missing_catalogued_numeronyms(reference,['link'],[],duties)==['w3c']
+
 def test_confirmed_existing_term_pair_is_a_bounded_format_patch():
     from sourceloom.active_composition import compiled_term_format_proposal
     from sourceloom.writing import canonical
@@ -2263,7 +2915,7 @@ def test_term_pair_compiler_leaves_word_changing_proposals_for_recheck():
 
 def test_active_composition_loads_verified_names_once_before_generation(tmp_path,skill,monkeypatch):
     store,queue,p,bundle=prepared(tmp_path,skill)
-    job=Queue(store,pipeline='active_composition_v1').enqueue(p['id'],bundle)
+    job=saved_legacy_v1_job(store,p['id'],bundle)
     calls=[]
     def lookup(store,source):
         calls.append(source['id']);return [{'abbr':'EX','quote':'Synthetic exact evidence'}]
@@ -2280,7 +2932,7 @@ def test_resource_rounds_keep_prior_queries_and_negative_results(tmp_path,skill,
     class Answer(BaseModel):
         value:int
     store,queue,p,bundle=prepared(tmp_path,skill)
-    job=Queue(store,pipeline='active_composition_v1').enqueue(p['id'],bundle)
+    job=saved_legacy_v1_job(store,p['id'],bundle)
     engine=ActiveComposition(Production(store,{}));requests=[]
     def call(job,key,role,payload,schema):
         requests.append(copy.deepcopy(payload))

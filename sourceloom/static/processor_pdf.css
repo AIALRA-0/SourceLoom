@@ -1,0 +1,16 @@
+.pdf-document{align-items:center;gap:12px;position:relative}
+.pdf-sheet{isolation:isolate;flex:none;overflow:hidden;background:#fff;--total-scale-factor:1;--scale-round-x:1px;--scale-round-y:1px}
+.pdf-frame{position:absolute;inset:0;transform-origin:0 0}
+.pdf-canvas{position:absolute;inset:0;display:block;z-index:1}
+.source-viewer .pdf-sheet img.pdf-fallback{position:absolute;inset:0;z-index:0}
+.pdf-sheet .textLayer{z-index:2;user-select:text;touch-action:pan-x pan-y}
+.pdf-links{position:absolute;inset:0;z-index:3;pointer-events:none}
+.pdf-annotation{position:absolute;display:block;pointer-events:auto;background:transparent;border:0;cursor:pointer}
+.pdf-annotation:focus-visible{outline:2px solid #111;background:#ffff0030}
+.pdf-annotation:hover{background:#0000000c}
+.pdf-search-highlights{position:absolute;inset:0;z-index:4;pointer-events:none}
+.pdf-search-hit{position:absolute;background:#ffdc0060;outline:1px solid #cbb800;pointer-events:none}
+.pdf-search-hit-current{background:#ff980080;outline:2px solid #111}
+.pdf-text-status{position:absolute;bottom:8px;left:8px;padding:4px 8px;background:white;color:#555;font:13px system-ui;z-index:5}
+.pdf-hand,.pdf-hand .textLayer span{cursor:grab!important;user-select:none!important}
+.pdf-hand:active,.pdf-hand:active .textLayer span{cursor:grabbing!important}

@@ -2,6 +2,7 @@
 
 import json
 import time
+from contextlib import contextmanager
 from .store import Conflict, identity
 
 
@@ -9,16 +10,23 @@ class Library:
     def __init__(self, store):
         self.store=store
         with store.connect() as cx:
+            cx.execute('CREATE TABLE IF NOT EXISTS library_folders(id TEXT PRIMARY KEY,parent TEXT,name TEXT NOT NULL)')
             columns={r[1] for r in cx.execute('PRAGMA table_info(library_folders)')}
-            for name,definition in [('trashed','INTEGER NOT NULL DEFAULT 0'),('trash_group','TEXT'),('revision','INTEGER NOT NULL DEFAULT 0')]:
+            for name,definition in [('trashed','INTEGER NOT NULL DEFAULT 0'),('trash_group','TEXT'),('revision','INTEGER NOT NULL DEFAULT 0'),('scope',"TEXT NOT NULL DEFAULT 'legacy'"),('created','REAL NOT NULL DEFAULT 0'),('trash_parent','TEXT'),('trashed_at','REAL'),('position','INTEGER NOT NULL DEFAULT 0')]:
                 if name not in columns:
                     cx.execute(f'ALTER TABLE library_folders ADD COLUMN {name} {definition}')
+
+    @contextmanager
+    def transaction(self):
+        """The same atomic library boundary serves current and archived tools."""
+        with self.store.connect() as cx:
+            cx.execute('BEGIN IMMEDIATE')
+            yield cx
 
     def apply(self, action, items, destination=None, confirm=False):
         if action not in {'move','trash','restore','purge'} or not items:
             raise ValueError('请选择材料和有效操作')
-        with self.store.connect() as cx:
-            cx.execute('BEGIN IMMEDIATE')
+        with self.transaction() as cx:
             folders={r['id']:dict(r) for r in cx.execute('SELECT * FROM library_folders')}
             docs={r['id']:json.loads(r['body']) for r in cx.execute('SELECT id,body FROM projects')}
             changes={'folders':set(),'documents':set()}
@@ -27,6 +35,8 @@ class Library:
                 kind=item.get('kind');key=item.get('id')
                 collection=folders if kind=='folder' else docs if kind=='document' else {}
                 if key not in collection:raise KeyError(key)
+                if (kind=='folder' and collection[key].get('scope')=='processor') or (kind=='document' and 'processor' in collection[key]):
+                    raise Conflict('当前材料请使用处理器材料树整理')
                 if (kind,key) in selected:raise ValueError('操作对象重复')
                 selected.add((kind,key))
                 version=collection[key].get('revision' if kind=='folder' else 'library_revision',0)
@@ -42,6 +52,8 @@ class Library:
             direct={key for kind,key in selected if kind=='document'}
             affected_folders=set().union(*(descendants(fid) for fid in roots)) if roots else set()
             affected_docs=direct|{d['id'] for d in docs.values() if d.get('folder') in affected_folders}
+            if any(folders[i].get('scope')=='processor' for i in affected_folders) or any('processor' in docs[i] for i in affected_docs):
+                raise Conflict('操作包含当前处理器材料，请在处理器材料树整理')
             fallback=[]
             if action=='move':
                 if destination is not None and (destination not in folders or folders[destination]['trashed']):

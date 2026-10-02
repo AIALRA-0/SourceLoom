@@ -52,7 +52,7 @@ def capture(url: str, timeout_ms: int = 30000):
         }""")
         rows = page.evaluate(r"""() => {
           const selector='img,svg,canvas,video,audio,iframe,table,object,embed,a[href]';
-          const seen=new Set(); const out=[];
+          const seen=new Set(); const out=[]; const elements=new Map();
           for (const el of document.querySelectorAll(selector)) {
             const rect=el.getBoundingClientRect(), cs=getComputedStyle(el);
             if (rect.width<1 || rect.height<1 || cs.display==='none' || cs.visibility==='hidden') continue;
@@ -71,6 +71,7 @@ def capture(url: str, timeout_ms: int = 30000):
               text:(el.innerText||el.textContent||'').trim().slice(0,4000),
               x:rect.x+scrollX,y:rect.y+scrollY,width:rect.width,height:rect.height,
               tag:el.tagName.toLowerCase()});
+            elements.set(id,el);
           }
           for (const el of document.querySelectorAll('*')) {
             const cs=getComputedStyle(el), rect=el.getBoundingClientRect();
@@ -85,6 +86,7 @@ def capture(url: str, timeout_ms: int = 30000):
                 text:(el.innerText||el.textContent||'').trim().slice(0,4000),
                 x:rect.x+scrollX,y:rect.y+scrollY,width:rect.width,height:rect.height,
                 tag:el.tagName.toLowerCase(),captureMode:'background'});
+              elements.set(id,el);
               continue;
             }
             if (cs.animationName==='none' || parseFloat(cs.animationDuration||'0')<=0) continue;
@@ -96,6 +98,18 @@ def capture(url: str, timeout_ms: int = 30000):
               scope:el.closest('article,main')?'article':'page',
               text:(el.innerText||el.textContent||'').trim().slice(0,4000),
               x:rect.x+scrollX,y:rect.y+scrollY,width:rect.width,height:rect.height,tag:el.tagName.toLowerCase()});
+            elements.set(id,el);
+          }
+          // Geometry alone cannot distinguish nested captures from overlapping
+          // siblings. Persist the actual nearest-first DOM ancestry so later
+          // resource binding never guesses between their pixels.
+          for (const row of out) {
+            const ancestors=[];
+            for (let el=elements.get(row.id)?.parentElement; el; el=el.parentElement) {
+              const id=el.getAttribute('data-sourceloom-capture-id');
+              if (id) ancestors.push(id);
+            }
+            row.parent_capture_ids=ancestors;
           }
           return out;
         }""")

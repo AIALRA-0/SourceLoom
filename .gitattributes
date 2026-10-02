@@ -1,4 +1,10 @@
 * text=auto eol=lf
+# Byte-frozen policy snapshots and vendor manifest hashes survive a checkout.
+/sourceloom/prompt_rules/** -text whitespace=cr-at-eol
+/sourceloom/roles/*.md -text whitespace=cr-at-eol
+/sourceloom/processor_prompt.py -text whitespace=cr-at-eol
+/sourceloom/manual_handoff.py -text whitespace=cr-at-eol
+/sourceloom/static/vendor/pdfjs-6.3.289/** -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
 *.png binary
 *.jpg binary
 *.zip binary

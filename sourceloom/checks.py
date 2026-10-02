@@ -9,9 +9,30 @@ from .store import Conflict, digest
 DELIVERY_STATES = {'draft', 'ready_for_review', 'accepted', 'published'}
 
 
+def core_chain_project(project):
+    return (project.get('production') or {}).get('core_chain_version') == 1
+
+
 def transition_delivery(project, event):
     """Apply the explicit review/accept/publish state machine in memory."""
     production=project.setdefault('production', {})
+    if core_chain_project(project):
+        if event=='review_ready':
+            production['publication_status']='Verified' if review_complete(project) else 'Candidate'
+            return production['publication_status']
+        if event=='accept':
+            if production.get('publication_status')!='Verified' or not review_complete(project):
+                raise Conflict('当前候选尚未完成整稿完整性核对，不能正式接受')
+            project['accepted_revision']=project['revision']
+            production['publication_status']='Published'
+            return 'Published'
+        if event=='publish':
+            if (production.get('publication_status')!='Published' or
+                    project.get('accepted_revision')!=project['revision'] or
+                    not review_complete(project)):
+                raise Conflict('只有已接受且完整性通过的当前版本可以发布')
+            return 'Published'
+        raise Conflict('未知交付事件：'+str(event))
     current=production.get('delivery_state','draft')
     if current not in DELIVERY_STATES:
         raise Conflict('未知交付状态：'+str(current))
@@ -47,6 +68,10 @@ def transition_delivery(project, event):
 
 def can_publish(project):
     production=project.get('production') or {}
+    if core_chain_project(project):
+        return (production.get('publication_status')=='Published'
+                and project.get('accepted_revision')==project.get('revision')
+                and review_complete(project))
     return (production.get('delivery_state')=='accepted'
             and project.get('accepted_revision')==project.get('revision')
             and review_complete(project))
@@ -93,6 +118,11 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
     obligations = {o["id"]: o for o in inventory["obligations"]}
     units = {u["id"] for u in plan["units"]} if plan else None
     resources = {r["id"] for r in inventory["resources"]}
+    object_roles = inventory.get('object_responsibilities')
+    if object_roles is not None:
+        for src in inventory['objects']:
+            if src.get('resource_id') and src['resource_id'] not in resources:
+                error('resource','原件资源没有保存在材料清单中')
     earlier=set()
     if prior_draft:
         from .writing import protected_objects
@@ -153,7 +183,9 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
             if src.get('resource_id') and src['resource_id'] not in resources:
                 error('resource','排版资源没有保存在原件资源清单中')
             continue
-        if src["kind"] in {"image", "media", "table", "code", "formula", "link", "page", "attachment", "footnote"} and sid not in object_coverage and sid not in earlier:
+        if (src["kind"] in {"image", "media", "table", "code", "formula", "link", "page", "attachment", "footnote"}
+                and (object_roles is None or object_roles[sid]['present'])
+                and sid not in object_coverage and sid not in earlier):
             error("protected_object", "受保护对象没有插入候选", obligation_id=next((o["id"] for o in obligations.values() if o["object_id"]==sid), ""))
         if require_heading_structure and src['kind']=='heading' and not any(
                 sid in b['object_ids'] and (
@@ -168,6 +200,14 @@ def inspect_draft(inventory, draft, plan=None, require_heading_structure=False, 
 
 def review_complete(project):
     production=project.get('production') or {}
+    if core_chain_project(project):
+        result=project.get('integrity_result') or {}
+        from .writing import canonical
+        return (result.get('verdict')=='PASS'
+                and set(result.get('invariants',{}))=={'I1','I2','I3','I4','I5'}
+                and all(value=='PASS' for value in result['invariants'].values())
+                and result.get('draft_digest')==digest(canonical(project['draft']).encode())
+                and production.get('revision')==project['revision'])
     if production.get('pipeline') in {'active_composition_v1','active_composition_v2'}:
         # Completion means a generated, structurally checked candidate, not an independent semantic pass
         review=project.get('independent_review') or {}
@@ -200,7 +240,11 @@ def release_issues(project):
                            require_heading_structure=(project.get('production') or {}).get('teaching_version',0)>=2)
     if project["inventory"]["unknown"]:
         issues.append(dict(code="unknown",message="仍有接入或对象未知项"))
-    if not project["inventory"].get("inventory_review"):
+    # Active composition has its own source-bound independent review. The
+    # legacy inventory_review field is never populated by that pipeline.
+    active_pipeline = (project.get("production") or {}).get("pipeline") in {
+        "active_composition_v1", "active_composition_v2"}
+    if not active_pipeline and not project["inventory"].get("inventory_review"):
         issues.append(dict(code="inventory_review",message="清单尚未独立核对"))
     if not review_complete(project):
         issues.append(dict(code="review",message="当前版本尚未完成独立语义审核"))

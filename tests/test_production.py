@@ -340,7 +340,8 @@ def test_library_http_survives_new_app_instance(tmp_path,skill):
     with TestClient(create_app(c)) as client:
         tree=client.get('/api/library').json()
         assert tree['documents'][0]['folder']==folder['id']
-        assert 'library.js' in client.get('/').text
+        assert 'library.js' in client.get('/legacy').text
+        assert 'processor.js' in client.get('/').text
 
 
 @pytest.mark.parametrize('thinking',[None,'enabled','disabled'])

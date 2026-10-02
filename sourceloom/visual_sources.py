@@ -16,9 +16,15 @@ def decorative_resource(obj):
     if obj.get('kind')=='text' and not obj.get('text','').strip():return True
     if obj.get('source_scope') in {'site_chrome','source_metadata','layout_decorative'}:return True
     card=obj.get('visual_card') or {}
-    if (obj.get('kind') in {'image','page'} and card.get('role')=='decorative'
-            and not card.get('source_text','').strip()):
-        return True
+    if obj.get('kind') in {'image','page'} and card.get('role')=='decorative':
+        if not card.get('source_text','').strip():return True
+        if obj.get('material_scope')=='page':return True
+        # Inline SVG icons often expose a <title> plus CSS as source_text.
+        # That markup names the layout icon; it does not turn the icon into
+        # article content that needs a prose explanation.
+        label=obj.get('original_extracted_text',obj.get('text','')).strip()
+        if obj.get('source_format')=='inline-svg' and re.search(r'\bicon\b',label,re.I):
+            return True
     if (obj.get('kind')=='link' and not obj.get('text','').strip()
             and '/figure[' in obj.get('locator','')
             and (re.search(r'\.(?:avif|gif|jpe?g|png|svg|webp)(?:[?#]|$)',obj.get('target',''),re.I)

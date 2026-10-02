@@ -203,11 +203,15 @@ def test_existing_acceptance_receipt_can_be_published():
 def test_v2_ready_for_review_saves_candidate_without_acceptance(tmp_path, skill):
     from sourceloom.durable import Queue
     from sourceloom.production import Production
+    from sourceloom.checks import review_complete
     from tests.test_production import prepared
 
     store, _, project, bundle=prepared(tmp_path, skill)
     queue=Queue(store, pipeline=PIPELINE_V2)
     job=queue.enqueue(project['id'], bundle)
+    # A pre-cutover v2 job has no core marker and retains the legacy review path.
+    job.pop('core_chain_version', None)
+    store.put_job(job)
     engine=Production(store, {})
     engine.queue=queue
 
@@ -225,3 +229,7 @@ def test_v2_ready_for_review_saves_candidate_without_acceptance(tmp_path, skill)
     assert saved['draft']['blocks'][0]['markdown']=='candidate'
     assert saved['accepted_revision'] is None
     assert saved['production']['delivery_state']=='ready_for_review'
+    assert 'core_chain_version' not in saved['production']
+    assert 'publication_status' not in saved['production']
+    assert saved['production']['semantic_status']=='not_independently_reviewed'
+    assert not review_complete(saved)

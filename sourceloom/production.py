@@ -31,95 +31,105 @@ def draft_text_view(draft, unit_ids=None):
                       for b in draft['blocks'] if wanted is None or b['unit_id'] in wanted]}
 
 
-def recoverable_delivery(job):
-    """Build a publishable best-effort result from saved work and untouched source."""
-    inventory=copy.deepcopy(job.get('inventory') or job.get('source'))
-    if not inventory or not inventory.get('objects'):
-        raise ValueError('没有可恢复的原件对象')
-    draft=copy.deepcopy(available_draft(job) or {'blocks':[]})
-    # A failure can happen after the writer returned but before its candidate
-    # was committed to job['draft'].  Preserve that candidate in the recovery
-    # result and replace same-ID blocks instead of duplicating them.
-    active_candidate=job.get('active_candidate') or {}
-    candidate_draft=active_candidate.get('draft') or {}
-    blocks_by_id={block.get('id'):block for block in draft.get('blocks',[])
-                  if block.get('id')}
-    for block in candidate_draft.get('blocks',[]):
-        block_id=block.get('id')
-        if block_id and block_id in blocks_by_id:
-            blocks_by_id[block_id]=copy.deepcopy(block)
-        else:
-            blocks_by_id[block_id]=copy.deepcopy(block)
-    draft['blocks']=list(blocks_by_id.values())
-
-    obligations=inventory.get('obligations',[])
-    obligation_to_source={o['id']:o.get('source_id',o.get('object_id'))
-                          for o in obligations if o.get('id')}
-    represented=set()
-    for block in draft['blocks']:
-        represented.update(block.get('object_ids',[]))
-        represented.update(block.get('source_ids',[]))
-        represented.update(block.get('embedded_object_ids',[]))
-        represented.update(e.get('source_id') for e in block.get('evidence',[])
-                           if e.get('source_id'))
-        represented.update(obligation_to_source[fid] for fid in block.get('obligation_ids',[])
-                           if obligation_to_source.get(fid))
-    by_object={}
-    for obligation in obligations:
-        source_id=obligation.get('source_id',obligation.get('object_id'))
-        if source_id:
-            by_object.setdefault(source_id,[]).append(obligation['id'])
-    literals=protected_objects(inventory)
-    used={block['id'] for block in draft['blocks']}
-    for index,obj in enumerate(inventory['objects'],1):
-        sid=obj['id']
-        if sid in represented:
-            continue
-        markdown=literals.get(sid)
-        if markdown is None:
-            markdown=obj.get('text') or obj.get('raw') or ''
-        if not markdown.strip():
-            continue
-        block_id='recovered-'+sid
-        if block_id in used:
-            block_id=f'recovered-{index}-{sid}'
-        used.add(block_id)
-        draft['blocks'].append(dict(id=block_id,unit_id='recovered-source',kind='source',
-            markdown=markdown,obligation_ids=by_object.get(sid,[]),object_ids=[sid],
-            evidence=[{'source_id':sid,'quote':obj.get('text','')}],embedded_object_ids=[sid]))
-    if not draft['blocks']:
-        raise ValueError('原件没有可显示的内容')
-    plan=copy.deepcopy(job.get('plan'))
-    if not plan:
-        plan=dict(title='原件保留稿',objective='按原顺序保留当前材料，供继续编辑或重新生成',
-            research_gaps=[],units=[dict(id='recovered-source',title='原件内容',
-                objective='完整保留当前材料',obligation_ids=[o['id'] for o in obligations],
-                prerequisites=[],stages=['按原顺序保留'],object_ids=[o['id'] for o in inventory['objects']],
-                proof_questions=[],reader_question='',entry_knowledge=[],example_thread='',
-                learning_result='可查看、编辑和重新生成',follows_units=[],bridge_reason='',
-                document_info_ids=[])],teaching_functions=[])
-    return inventory,plan,draft
+def queue_kuafu_responses_stream_recovery(job, config, *, legacy_excess=False):
+    """Queue SSE only when the original KuaFu pair never tried Responses SSE."""
+    from urllib.parse import urlsplit
+    key=job.get('pending') or job.get('current_step_key')
+    if job.get('pipeline')!='active_composition_v2' or not key:
+        return False
+    same_step=[item for item in job.get('calls',[])
+               if item.get('step_key')==key and item.get('dispatch_started')
+               and item.get('dispatch_state')!='confirmed_not_sent']
+    kuafu_calls=[item for item in same_step
+        if urlsplit(str(item.get('upstream_base') or '')).hostname=='api.kuafushe.cc']
+    # A dispatched Responses SSE request with unknown delivery cannot be
+    # replayed as another generation. The legacy one-shot SSE recovery exists
+    # only for older call pairs whose Responses attempt was non-streaming.
+    if any(item.get('protocol')=='responses' and item.get('streaming') is True
+           for item in kuafu_calls):
+        return False
+    response_call=next((item for item in reversed(kuafu_calls)
+        if item.get('protocol')=='responses' and item.get('streaming') is False
+        and item.get('status')=='uncertain'
+        and item.get('http_status') in {520,521,522,523,524}
+        and item.get('response_blob') and item.get('error_code')=='upstream_service_error'),None)
+    if (len(kuafu_calls)<2 or not response_call
+            or len({item.get('provider_id') for item in kuafu_calls if item.get('provider_id')})<2):
+        return False
+    provider_id=response_call.get('provider_id')
+    routes=config.get('provider_routes') if isinstance(config,dict) else None
+    credentials=config.get('provider_credentials') if isinstance(config,dict) else None
+    route=routes.get(provider_id) if isinstance(routes,dict) else None
+    if (not isinstance(route,dict) or route.get('enabled') is False
+            or route.get('provider')!='openai-compatible' or route.get('protocol')!='responses'
+            or not isinstance(credentials,dict) or not credentials.get(provider_id)):
+        return False
+    recoveries=job.setdefault('transport_recovery_routes',{})
+    markers=job.setdefault('kuafu_responses_protocol_retries',{})
+    if key in markers:
+        return False
+    old=recoveries.get(key)
+    if old and (old.get('status')!='failed' or old.get('provider_id')!=provider_id):
+        return False
+    if old:
+        job.setdefault('transport_recovery_history',{}).setdefault(key,[]).append(dict(old))
+    recoveries[key]=dict(status='queued',provider_id=provider_id,protocol='responses',
+        original_call_id=response_call.get('id'),original_provider_id=provider_id,attempts=0,
+        failed_kuafu_call_ids=[item.get('id') for item in kuafu_calls],
+        legacy_excess=bool(legacy_excess or len(kuafu_calls)>2),
+        reason='saved non-stream KuaFu Responses 52x page; one versioned SSE retry is queued',
+        recovery_protocol_version='kuafu-responses-sse-v1',streaming=True)
+    markers[key]=dict(fix_id='kuafu-responses-sse-v1',previous_call_id=response_call.get('id'),queued_at=time.time())
+    job.setdefault('internal_recoveries',[]).append(dict(stage=job.get('stage'),step=key,
+        type='kuafu_responses_stream_retry',original_call_id=response_call.get('id'),
+        provider_id=provider_id,http_status=response_call.get('http_status'),
+        prior_kuafu_dispatches=len(kuafu_calls),legacy_excess=bool(legacy_excess or len(kuafu_calls)>2),
+        at=time.time()))
+    job.pop('pending',None)
+    job.pop('error',None)
+    job.pop('error_type',None)
+    return True
 
 
-def retryable_v2_gateway_timeout(job, error, limit=1):
+def retryable_v2_gateway_timeout(job, error, limit=1, config=None):
     """Release one transient request identity so the saved stage can continue.
 
-    A returned 502/503/504/524 page contains no model artifact to recover.  The
-    completed visual, planning, and writing checkpoints stay in the job; only
-    current step receives a new call identity.  Stateless OpenAI-compatible
-    requests also have no queryable upstream job; one transport retry is safer
-    than publishing untranslated source as the finished rewrite.  Both attempts
-    remain in the spending ledger and no retry loop is possible.
+    For KuaFu, an eligible saved non-stream Responses 52x page can queue only
+    the separately versioned SSE recovery; other KuaFu failures do not re-enter
+    the primary/backup loop. Other providers retain their existing bounded
+    retry count below. Every dispatched identity stays in the spending ledger,
+    and completed stage checkpoints remain in the job.
     """
     call=(job.get('calls') or [{}])[-1]
     key=job.get('pending')
     retries=job.setdefault('transient_gateway_retries',{})
-    explicit_gateway=(call.get('http_status') in {502,503,504,524} and call.get('response_blob'))
+    recovery=job.get('transport_recovery_routes',{}).get(key)
+    if recovery and recovery.get('status') in {'dispatching','failed','completed'}:
+        # A one-shot recovery is never turned into another generation cycle.
+        return False
+    # Cloudflare-style relays use 520-524 for transient origin or streaming
+    # failures.  These responses contain no model artifact and are safe to
+    # retry from the same saved stage, just like ordinary 502/503/504 errors.
+    explicit_gateway=(call.get('http_status') in {502,503,504,520,521,522,523,524}
+                      and call.get('response_blob'))
     unqueryable_transport=(call.get('channel')=='openai-compatible'
         and not call.get('upstream_id') and not call.get('response_blob'))
     incomplete_output=call.get('status') in {'truncated','incomplete','reasoning_exhausted'}
-    retry_limit=limit if explicit_gateway or incomplete_output else max(2,limit)
+    retry_limit=(limit if incomplete_output
+                 else max(3,limit) if (explicit_gateway or unqueryable_transport)
+                 else max(2,limit))
     valid_failure=(isinstance(error,Uncertain) and call.get('status')=='uncertain') or incomplete_output
+    from urllib.parse import urlsplit
+    is_kuafu=(urlsplit(str(call.get('upstream_base') or '')).hostname=='api.kuafushe.cc')
+    if (job.get('pipeline')=='active_composition_v2' and is_kuafu
+            and explicit_gateway and valid_failure and key and call.get('step_key')==key):
+        # Do not repeat KuaFu's primary/backup pair. Reuse the alternate
+        # Responses transport once, and only when a complete non-stream 52x
+        # page was saved for it.
+        return queue_kuafu_responses_stream_recovery(job,config or {})
+    if job.get('pipeline')=='active_composition_v2' and is_kuafu:
+        # Unknown KuaFu deliveries never re-enter another primary/backup round.
+        return False
     if (job.get('pipeline')!='active_composition_v2'
             or not valid_failure or not key or call.get('step_key')!=key
             or not (explicit_gateway or unqueryable_transport or incomplete_output)
@@ -138,6 +148,254 @@ def retryable_v2_gateway_timeout(job, error, limit=1):
         http_status=call.get('http_status'),at=time.time()))
     job.pop('pending',None)
     job.pop('error',None)
+    job.pop('error_type',None)
+    return True
+
+
+def queue_kuafu_response_recovery(job, error, config):
+    """Queue one explicit KuaFu route after its Go transport fallback exhausts reasoning.
+
+    The recovery reuses only the saved current step and a configured, untried
+    model route. Both previous calls keep their own cost records. This is a
+    single bounded dispatch; it never restores source text or repeats Go.
+    """
+    from urllib.parse import urlsplit
+    if job.get('pipeline')!='active_composition_v2' or not isinstance(error,ReasoningExhausted):
+        return False
+    calls=job.get('calls') or []
+    call=calls[-1]
+    key=job.get('pending')
+    if (not key or call.get('status')!='reasoning_exhausted'
+            or not str(call.get('role','')).endswith('__fallback')
+            or urlsplit(call.get('upstream_base') or '').hostname!='opencode.ai'
+            or call.get('step_key')!=key):
+        return False
+    recoveries=job.setdefault('transport_recovery_routes',{})
+    if key in recoveries:
+        return False
+    original_id=job.get('transport_fallback_steps',{}).get(key)
+    original=next((item for item in calls if item.get('id')==original_id),None)
+    if (not original or original.get('status')!='uncertain'
+            or urlsplit(original.get('upstream_base') or '').hostname!='api.kuafushe.cc'):
+        return False
+    route_id=original.get('provider_id')
+    routes=config.get('provider_routes')
+    credentials=config.get('provider_credentials')
+    if not isinstance(routes,dict) or not isinstance(credentials,dict):
+        return False
+    primary=routes.get(route_id,{})
+    model=primary.get('model')
+    if primary.get('provider')!='openai-compatible' or model is None:
+        return False
+    attempted={item.get('provider_id') for item in calls
+        if item.get('step_key')==key and item.get('provider_id')}
+    reciprocal=primary.get('backup_provider_id') or primary.get('backupProviderId')
+    if not reciprocal:
+        return False
+    candidates=[str(reciprocal)]
+    selected=None
+    for provider_id in candidates:
+        route=routes.get(provider_id)
+        if (provider_id in attempted or not isinstance(route,dict)
+                or route.get('enabled') is False
+                or route.get('provider')!='openai-compatible'
+                or route.get('model')!=model
+                or urlsplit(str(route.get('base_url') or '')).hostname!='api.kuafushe.cc'
+                or route.get('protocol') not in {'responses','chat_completions'}
+                or not credentials.get(provider_id)):
+            continue
+        selected=(provider_id,route)
+        break
+    if selected is None:
+        return False
+    provider_id,route=selected
+    recoveries[key]=dict(status='queued',provider_id=provider_id,
+        protocol=route.get('protocol'),original_call_id=original.get('id'),
+        original_provider_id=original.get('provider_id'),
+        exhausted_fallback_call_id=call.get('id'),attempts=0,
+        reason='KuaFu original call uncertain; configured Go fallback exhausted reasoning; one untried KuaFu route queued')
+    job.setdefault('internal_recoveries',[]).append(dict(stage=job.get('stage'),step=key,
+        type='kuafu_route_after_go_reasoning_exhaustion',provider_id=provider_id,
+        original_call_id=original.get('id'),fallback_call_id=call.get('id'),at=time.time()))
+    job.pop('pending',None)
+    job.pop('error',None)
+    job.pop('error_type',None)
+    return True
+
+
+def queue_go_thinking_disabled_retry(job, config, store, billing):
+    """Queue one same-step Go retry after a billed, reasoning-only empty result.
+
+    This is deliberately narrower than ordinary incomplete-output recovery: it
+    applies only to the first KuaFu-pair Go route, only when the complete saved
+    response exhausted its output budget on reasoning, and only if the saved
+    request did not already disable thinking. The old call and its billing
+    receipt remain immutable.
+    """
+    from urllib.parse import urlsplit
+    from .providers import apply_route_override, reasoning_exhausted
+
+    key=job.get('pending')
+    calls=job.get('calls') or []
+    call=calls[-1] if calls else {}
+    state=(job.get('transport_recovery_routes') or {}).get(key)
+    if (job.get('pipeline')!='active_composition_v2' or not key
+            or call.get('step_key')!=key or call.get('status')!='reasoning_exhausted'
+            or not str(call.get('role') or '').endswith('__fallback')
+            or call.get('provider_id')!=((state or {}).get('provider_id'))
+            or urlsplit(str(call.get('upstream_base') or '')).hostname!='opencode.ai'
+            or not call.get('dispatch_started') or not call.get('response_blob')
+            or not isinstance(state,dict) or state.get('status')!='failed'
+            or state.get('attempts')!=1
+            or state.get('recovery_protocol_version')!='kuafu-opencode-go-third-v1'
+            or billing.get('status')!='settled' or billing.get('actual') is None):
+        return False
+
+    fallback=(config.get('fallback_providers') or {}).get(
+        str(call.get('role')).removesuffix('__fallback'))
+    if not isinstance(fallback,dict) or fallback.get('enabled') is False:
+        return False
+    effective=apply_route_override(config,fallback)
+    provider_id=str(effective.get('provider_id') or '')
+    credential=(effective.get('api_key') or
+        (config.get('provider_credentials') or {}).get(provider_id))
+    if (provider_id!=call.get('provider_id') or not credential
+            or effective.get('provider')!='openai-compatible'
+            or urlsplit(str(effective.get('base_url') or '')).hostname!='opencode.ai'
+            or effective.get('protocol','chat_completions')!=call.get('protocol')):
+        return False
+
+    try:
+        response=json.loads(store.read_blob(call['response_blob']))
+        choice=(response.get('choices') or [{}])[0]
+        message=choice.get('message') or {}
+        if (choice.get('finish_reason')!='length' or message.get('refusal')
+                or not reasoning_exhausted(response)):
+            return False
+        prior_request=json.loads(store.read_blob(call['wire_request_blob']))
+    except (KeyError,OSError,TypeError,ValueError,json.JSONDecodeError):
+        return False
+    prior_thinking=prior_request.get('thinking')
+    if isinstance(prior_thinking,dict) and prior_thinking.get('type')=='disabled':
+        return False
+
+    job.setdefault('transport_recovery_history',{}).setdefault(key,[]).append(
+        copy.deepcopy(state))
+    recovery=dict(status='queued',provider_id=provider_id,
+        protocol=effective.get('protocol','chat_completions'),
+        original_provider_id=state.get('original_provider_id'),
+        original_provider_ids=list(state.get('original_provider_ids',[])),
+        original_call_ids=list(state.get('original_call_ids',[])),
+        unknown_call_ids=list(state.get('unknown_call_ids',[])),
+        previous_go_call_id=call['id'],attempts=0,thinking_mode='disabled',
+        recovery_protocol_version='kuafu-opencode-go-thinking-disabled-v1',
+        reason='complete billed Go response used all completion tokens for reasoning and returned no content; one same-step retry with thinking disabled is queued')
+    job['transport_recovery_routes'][key]=recovery
+    job.setdefault('internal_recoveries',[]).append(dict(
+        stage=job.get('stage'),step=key,type='go_reasoning_only_thinking_disabled_retry',
+        version=recovery['recovery_protocol_version'],provider_id=provider_id,
+        previous_call_id=call['id'],at=time.time()))
+    job.pop('pending',None)
+    job.update(status='queued',error=None)
+    job.pop('error_type',None)
+    return True
+
+
+def queue_go_pro_reasoning_escalation(job, config, store, billing):
+    """Queue one stronger Go model after the disabled-thinking Go retry also exhausts output.
+
+    This is restricted to the exact, settled, reasoning-only second Go attempt
+    in the existing KuaFu-pair recovery chain. Earlier attempts and their
+    billing receipts stay immutable; the new model is a single bounded turn.
+    """
+    from urllib.parse import urlsplit
+    from .providers import apply_route_override, reasoning_exhausted
+
+    key=job.get('pending')
+    calls=job.get('calls') or []
+    call=calls[-1] if calls else {}
+    state=(job.get('transport_recovery_routes') or {}).get(key)
+    if (job.get('pipeline')!='active_composition_v2' or not key
+            or call.get('step_key')!=key or call.get('status')!='reasoning_exhausted'
+            or not str(call.get('role') or '').endswith('__fallback')
+            or call.get('provider_id')!=((state or {}).get('provider_id'))
+            or urlsplit(str(call.get('upstream_base') or '')).hostname!='opencode.ai'
+            or not call.get('dispatch_started') or not call.get('response_blob')
+            or not isinstance(state,dict) or state.get('status')!='failed'
+            or state.get('attempts')!=1
+            or state.get('recovery_protocol_version')!='kuafu-opencode-go-thinking-disabled-v1'
+            or billing.get('status')!='settled' or billing.get('actual') is None):
+        return False
+
+    fallback=(config.get('fallback_providers') or {}).get(
+        str(call.get('role')).removesuffix('__fallback'))
+    if not isinstance(fallback,dict) or fallback.get('enabled') is False:
+        return False
+    effective=apply_route_override(config,fallback)
+    provider_id=str(effective.get('provider_id') or '')
+    credential=(effective.get('api_key') or
+        (config.get('provider_credentials') or {}).get(provider_id))
+    if (provider_id!=call.get('provider_id') or not credential
+            or effective.get('provider')!='openai-compatible'
+            or effective.get('model')!='deepseek-v4.1-flash'
+            or urlsplit(str(effective.get('base_url') or '')).hostname!='opencode.ai'
+            or effective.get('protocol','chat_completions')!=call.get('protocol')):
+        return False
+
+    try:
+        response=json.loads(store.read_blob(call['response_blob']))
+        choice=(response.get('choices') or [{}])[0]
+        message=choice.get('message') or {}
+        if (choice.get('finish_reason')!='length' or message.get('refusal')
+                or not reasoning_exhausted(response)):
+            return False
+        prior_request=json.loads(store.read_blob(call['wire_request_blob']))
+        first=next((item for item in calls if item.get('id')==state.get('previous_go_call_id')),None)
+        if (not first or first.get('step_key')!=key or first.get('provider_id')!=provider_id
+                or first.get('status')!='reasoning_exhausted' or not first.get('response_blob')):
+            return False
+        first_response=json.loads(store.read_blob(first['response_blob']))
+        first_request=json.loads(store.read_blob(first['wire_request_blob']))
+        with store.connect() as cx:
+            first_bill=cx.execute('SELECT actual,status FROM spending WHERE id=?',
+                                  (first.get('id',''),)).fetchone()
+        if (first_request.get('model')!='deepseek-v4.1-flash'
+                or first_request.get('thinking')=={'type':'disabled'}
+                or first.get('finish_reason')!='length'
+                or not reasoning_exhausted(first_response)
+                or not first_bill or first_bill['status']!='settled' or first_bill['actual'] is None
+                or prior_request.get('model')!='deepseek-v4.1-flash'
+                or prior_request.get('thinking')!={'type':'disabled'}):
+            return False
+        go_calls=[item for item in calls if item.get('step_key')==key
+            and item.get('provider_id')==provider_id
+            and str(item.get('role') or '').endswith('__fallback')]
+        if len(go_calls)!=2 or go_calls[0].get('id')!=first['id'] or go_calls[1].get('id')!=call.get('id'):
+            return False
+    except (KeyError,OSError,TypeError,ValueError,json.JSONDecodeError):
+        return False
+
+    now=time.time()
+    job.setdefault('transport_recovery_history',{}).setdefault(key,[]).append(
+        copy.deepcopy(state))
+    recovery=dict(status='queued',provider_id=provider_id,
+        protocol=effective.get('protocol','chat_completions'),
+        model='deepseek-v4-pro',
+        original_provider_id=state.get('original_provider_id'),
+        original_provider_ids=list(state.get('original_provider_ids',[])),
+        original_call_ids=list(state.get('original_call_ids',[])),
+        unknown_call_ids=list(state.get('unknown_call_ids',[])),
+        previous_go_call_id=call['id'],attempts=0,thinking_mode='disabled',
+        recovery_protocol_version='kuafu-opencode-go-pro-escalation-v1',
+        reason='the exact second Go response was fully billed and spent its output budget on reasoning; one stronger configured Go model attempt is queued',
+        queued_at=now)
+    job['transport_recovery_routes'][key]=recovery
+    job.setdefault('internal_recoveries',[]).append(dict(
+        stage=job.get('stage'),step=key,type='go_reasoning_only_pro_escalation',
+        version=recovery['recovery_protocol_version'],provider_id=provider_id,
+        model=recovery['model'],previous_call_id=call['id'],at=now))
+    job.pop('pending',None)
+    job.update(status='queued',error=None)
     job.pop('error_type',None)
     return True
 
@@ -1660,7 +1918,7 @@ class Production:
     def run_once(self):
         if self.config.get('generation_pause_reason'):
             return False
-        job=self.queue.claim(self.owner,project=self.project)
+        job=self.queue.claim(self.owner,project=self.project,recovery_config=self.config)
         if not job:
             return False
         stop=threading.Event()
@@ -1683,13 +1941,21 @@ class Production:
                     skill_digest=job['writing_skill']['instruction_digest'],issues=job.get('quality_issues',[]),
                     automatic=True,manual_edits=0,revision=job['base_revision']+1,
                     teaching_version=job.get('teaching_version',0))
-                if job.get('pipeline') in {'active_composition_v1','active_composition_v2'}:
+                if job.get('core_chain_version')==1:
+                    receipt.update(core_chain_version=1,pipeline=job['pipeline'],
+                        execution_status='unknown' if status=='uncertain' else status,
+                        delivery_checks=job.get('delivery_checks'),
+                        integrity_verdict=job['integrity_result']['verdict'],
+                        publication_status=job['publication_status'])
+                elif job.get('pipeline') in {'active_composition_v1','active_composition_v2'}:
                     receipt.update(pipeline=job['pipeline'], delivery_checks=job.get('delivery_checks'),
                                    semantic_status=(job.get('delivery_checks') or {}).get(
                                        'semantic_status','not_independently_reviewed'),
                                    delivery_state=job.get('delivery_state','draft'))
                 publish=dict(inventory=job['inventory'],plan=job['plan'],draft=job['draft'],production=receipt,
                              review=None,accepted_revision=None,repair_rounds=job['repair_rounds'])
+                if job.get('core_chain_version')==1:
+                    publish['integrity_result']=job['integrity_result']
                 if job.get('pipeline') == 'active_composition_v2' and status == 'ready_for_review':
                     publish['delivery_state']='ready_for_review'
                     publish['independent_review']=job.get('independent_review')
@@ -1697,34 +1963,45 @@ class Production:
         except Exception as exc:
             detail=str(exc).strip()
             cancelled=self.queue.cancelled(job['id'],self.owner)
-            if retryable_v2_gateway_timeout(job,exc) and not cancelled:
+            if job.get('core_chain_version')==1:
+                # Provider has already classified and recorded any transport
+                # recovery. The content worker must not queue another route.
+                job['error']=detail[:500] if detail else type(exc).__name__
+                job['error_type']=type(exc).__name__
+                job.setdefault('internal_failures',[]).append(dict(
+                    stage=job.get('stage'),type=type(exc).__name__,
+                    detail=job['error'],failed_at=time.time()))
+                self.queue.finish(job,self.owner,
+                    'cancelled' if cancelled else 'uncertain' if isinstance(exc,Uncertain) else 'failed')
+                return True
+            go_retry_queued=False
+            if isinstance(exc,ReasoningExhausted) and not cancelled and job.get('calls'):
+                last_call=job['calls'][-1]
+                with self.store.connect() as cx:
+                    billing=cx.execute('SELECT actual,status,body FROM spending WHERE id=?',
+                                       (last_call.get('id',''),)).fetchone()
+                if billing:
+                    go_retry_queued=queue_go_thinking_disabled_retry(
+                        job,self.config,self.store,dict(billing))
+                    if not go_retry_queued:
+                        go_retry_queued=queue_go_pro_reasoning_escalation(
+                            job,self.config,self.store,dict(billing))
+            if go_retry_queued:
+                self.queue.finish(job,self.owner,'queued')
+            elif queue_kuafu_response_recovery(job,exc,self.config) and not cancelled:
+                self.queue.finish(job,self.owner,'queued')
+            elif retryable_v2_gateway_timeout(job,exc,config=self.config) and not cancelled:
                 self.queue.finish(job,self.owner,'queued')
             elif job.get('pipeline')=='active_composition_v2' and not cancelled:
-                try:
-                    inventory,plan,draft=recoverable_delivery(job)
-                    job.setdefault('internal_failures',[]).append(dict(stage=job.get('stage'),
-                        type=type(exc).__name__,detail=(detail[:500] if detail else type(exc).__name__),
-                        recovered_at=time.time()))
-                    job.update(inventory=inventory,plan=plan,draft=draft,
-                        error=(detail[:500] if detail else type(exc).__name__),error_type=type(exc).__name__,
-                        quality_issues=['自动恢复已保留当前最完整稿，原始问题已记录供后续核对'],
-                        delivery_state='recovered_ready_for_review')
-                    receipt=dict(job=job['id'],status='ready_for_review',
-                        canonical_digest=digest(canonical(draft).encode()),
-                        skill_digest=job['writing_skill']['instruction_digest'],issues=[],automatic=True,
-                        manual_edits=0,revision=job['base_revision']+1,
-                        teaching_version=job.get('teaching_version',0),pipeline=job['pipeline'],
-                        delivery_checks=dict(structural_status='source_preserved_after_interruption',
-                            semantic_status='not_independently_reviewed',publication_status='ready_for_review'),
-                        semantic_status='not_independently_reviewed',delivery_state='recovered_ready_for_review')
-                    publish=dict(inventory=inventory,plan=plan,draft=draft,production=receipt,
-                        review=None,accepted_revision=None,repair_rounds=job.get('repair_rounds',0),
-                        delivery_state='recovered_ready_for_review',independent_review=None)
-                    self.queue.finish(job,self.owner,'ready_for_review',publish)
-                except Exception as recovery_error:
-                    job['error']=((detail or type(exc).__name__)+'；自动恢复失败：'+str(recovery_error))[:500]
-                    job['error_type']=type(recovery_error).__name__
-                    self.queue.finish(job,self.owner,'failed')
+                # A saved writer candidate is available through the attempt
+                # endpoint for diagnosis.  It is not a completed rewrite, and
+                # missing sections must never be filled with original text.
+                job.setdefault('internal_failures',[]).append(dict(stage=job.get('stage'),
+                    type=type(exc).__name__,detail=(detail[:500] if detail else type(exc).__name__),
+                    failed_at=time.time()))
+                job['error']=detail[:500] if detail else type(exc).__name__
+                job['error_type']=type(exc).__name__
+                self.queue.finish(job,self.owner,'uncertain' if isinstance(exc,Uncertain) else 'failed')
             else:
                 job['error']=(detail[:500] if detail else type(exc).__name__)
                 job['error_type']=type(exc).__name__

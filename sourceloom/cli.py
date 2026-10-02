@@ -36,7 +36,12 @@ def main():
             print(json.dumps({k:v for k,v in create_demo(store).items() if k in {"id","title","state"}},ensure_ascii=False))
         elif args.command=="export":
             path=Path(args.output)
-            raw=export_zip(store,store.get(args.project))
+            project=store.get(args.project)
+            if 'processor' in project:
+                from .processor import export_package
+                raw=export_package(store,project)
+            else:
+                raw=export_zip(store,project)
             with path.open("xb") as f:
                 f.write(raw)
             print(str(path.resolve()))

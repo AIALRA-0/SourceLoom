@@ -101,7 +101,25 @@ class IntakeQueue:
                 inv['web_snapshot']={'asset_aliases':aliases,'fetch_failures':failures,'scope':'complete supplied HTML body'}
                 from .materials import bind_web_material_manifest
                 inv=bind_web_material_manifest(inv,manifest)
-            else:inv=isolated_intake(self.store,[(f['name'],self.store.read_blob(f['sha256'])) for f in job['files']])
+            else:
+                from .network import fetch_uploaded_assets
+                if job.get('upload_assets_collected'):
+                    bundle=[(f['name'],self.store.read_blob(f['sha256'])) for f in job['files']]
+                    aliases=job.get('upload_asset_aliases') or {}
+                    failures=job.get('upload_fetch_failures') or []
+                else:
+                    bundle,aliases,failures=fetch_uploaded_assets(
+                        [(f['name'],self.store.read_blob(f['sha256'])) for f in job['files']])
+                    # Freeze acquired bytes before isolated parsing. A worker
+                    # restart must not re-fetch a changed remote image for the
+                    # same accepted upload/request ID.
+                    job['files']=[{'name':name,'sha256':self.store.blob(raw),'bytes':len(raw)}
+                                  for name,raw in bundle]
+                    job.update(upload_assets_collected=True,upload_asset_aliases=aliases,
+                               upload_fetch_failures=failures)
+                    self.save_owned(job,owner)
+                inv=isolated_intake(self.store,bundle,asset_aliases=aliases)
+                inv['upload_snapshot']={'asset_aliases':aliases,'fetch_failures':failures}
             with self.store.connect() as cx:
                 cx.execute('BEGIN IMMEDIATE')
                 lease=cx.execute('SELECT owner FROM intake_control WHERE id=?',(job['id'],)).fetchone()

@@ -86,6 +86,67 @@ def test_explicit_bibliographic_section_folds_without_changing_saved_words_or_an
         assert reading_draft(p)==p['draft']
 
 
+def test_document_info_is_end_matter_in_markdown_and_readweave_projection():
+    from sourceloom.writing import canonical
+    info_markdown='Perkins · Informational · Page 7'
+    info_evidence=[{'source_id':'pdf-page-7','quote':info_markdown}]
+    p={'id':'metadata-order','title':'Metadata ordering',
+       'inventory':{'objects':[],'resources':[],'originals':[]},
+       'draft':{'blocks':[
+           {'id':'p7-topic','unit_id':'p7','kind':'explanation','object_ids':[],
+            'embedded_object_ids':[],'evidence':[],
+            'markdown':'## 页面上的三个注解链接及其去向\n\n三个链接分别指向不同位置。'},
+           {'id':'p7-n-002-b10','unit_id':'p7','kind':'document_info','object_ids':[],
+            'embedded_object_ids':[],'evidence':info_evidence,'markdown':info_markdown},
+           {'id':'p8-followup','unit_id':'p8','kind':'explanation','object_ids':[],
+            'embedded_object_ids':[],'evidence':[],
+            'markdown':'## 后续正文\n\n这里继续解释主题。'}]}}
+    before=copy.deepcopy(p)
+
+    projected=reading_draft(p)
+    assert [b['id'] for b in projected['blocks']]==[
+        'p7-topic','p8-followup','p7-n-002-b10']
+    moved=projected['blocks'][-1]
+    assert moved['evidence']==info_evidence and info_markdown in moved['markdown']
+    assert p==before
+    markdown=canonical(projected)
+    assert markdown.index('后续正文') < markdown.index('查看材料附记')
+    assert markdown.index('查看材料附记') < markdown.index(info_markdown)
+
+    doc=BeautifulSoup(render(p,target='readweave'),'html.parser')
+    anchors=doc.select('[data-readweave-anchor-id]')
+    assert [anchor['data-readweave-anchor-id'] for anchor in anchors]==[
+        'p7-topic','p8-followup','p7-n-002-b10']
+    disclosure=anchors[-1].find_parent('section').find('details')
+    assert disclosure and not disclosure.has_attr('open')
+    assert disclosure.find('summary').get_text(strip=True)=='查看材料附记'
+    assert info_markdown in disclosure.get_text()
+
+
+def test_only_document_info_heading_scope_note_retires_after_end_matter_projection():
+    from sourceloom.active_composition import retire_projected_document_info_gap_notes
+    info={'id':'p7-n-002-b10','unit_id':'p7-n-002','kind':'document_info',
+          'markdown':'Perkins · Informational · Page 7','object_ids':[],
+          'embedded_object_ids':[],'evidence':[{'source_id':'pdf-page-7','quote':'Page 7'}]}
+    prose={'id':'p7-n-002-b1','unit_id':'p7-n-002','kind':'explanation',
+           'markdown':'## 页面上的三个注解链接及其去向','object_ids':[],
+           'embedded_object_ids':[],'evidence':[]}
+    known='active-patch-p7-n-002：范围外缺口待核查：p7-n-002-b10 不在 editable_block_ids 内，仍位于错误标题之下'
+    content='active-patch-p7-n-002：范围外缺口待核查：p7-n-002-b1 的数字遗漏，需补标题和正文'
+    unknown='active-patch-p7-n-002：范围外缺口待核查：p7-n-002-b99 仍需补标题'
+    mixed='active-patch-p7-n-002：范围外缺口待核查：p7-n-002-b10 与 p7-n-002-b1 均需补标题'
+    job={'draft':{'blocks':[prose,info]},
+         'inventory':{'objects':[],'resources':[],'originals':[]},
+         'quality_issues':[known,content,unknown,mixed]}
+    before=copy.deepcopy(job['draft'])
+    retired=retire_projected_document_info_gap_notes(job)
+    assert len(retired)==1 and retired[0]['issue']==known
+    assert retired[0]['block_ids']==['p7-n-002-b10']
+    assert job['quality_issues']==[content,unknown,mixed]
+    assert job['draft']==before
+    assert not retire_projected_document_info_gap_notes(job)
+
+
 def test_native_money_never_relabels_historical_dollars_or_subscription_allocation():
     from sourceloom.money import summary,usage_cost
     assert usage_cost({'prompt_tokens':1000,'completion_tokens':200,'prompt_cache_hit_tokens':500}, {'input':9,'cached_input':.3,'output':27})==pytest.approx(.01005)

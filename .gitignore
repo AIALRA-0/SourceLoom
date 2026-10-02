@@ -9,7 +9,25 @@ node_modules/
 data/
 dist/
 build/
+# PDF.js legacy/build is required runtime code, not a disposable project build.
+!sourceloom/static/vendor/pdfjs-6.3.289/legacy/build/
+!sourceloom/static/vendor/pdfjs-6.3.289/legacy/build/**
 *.egg-info/
 .pytest_cache/
 test-results/
 playwright-report/
+.ruff_cache/
+# Private fixtures, returns, diagnostics and acceptance media stay on the host.
+reports/
+fixtures/
+ROUND3_B_FINAL_REPORT.md
+scripts/router-diagnostics-20260915/
+scripts/processor*.py
+!scripts/processor_user_entry.py
+scripts/seal_continuous_reader.py
+scripts/seal_issue_workflow.py
+scripts/seal_reader_productization.py
+docs/ARCHITECTURE_ADJUDICATION.md
+docs/MAIN_CHAIN_AND_GATES_AUDIT.md
+docs/PROCESSOR_V1_1_PROMPT.md
+docs/ROUND_2_PROVIDER_SPEC.md

@@ -52,7 +52,9 @@ def candidate(cx,jid):
 
 STEPS=['保存原件','清点信息','整理结构','改写正文','核对与修正','交付结果']
 STAGES={'fetch':0,'intake':0,'received':1,'active_index':1,'active_visual':1,'active_plan':2,
-        'active_write':3,'active_review':4,'active_revision':4,'active_format':4,'active_deliver':5,'visual_extract':1,'visual_audit':1,'inventory':1,'inventory_audit':1,
+        'active_write':3,'active_review':4,'active_revision':4,'active_format':4,
+        'active_integrity':4,'active_integrity_repair':4,'active_deliver':5,
+        'visual_extract':1,'visual_audit':1,'inventory':1,'inventory_audit':1,
         'planner':2,'plan_review':2,'writer':3,'style':4,'fidelity':4,'repair':4,'teaching':4,
         'teaching_replan':4,'teaching_replan_review':4,'publish':5}
 
@@ -67,6 +69,8 @@ def summary(job):
             'active_format':'正在检查当前部分的排版并做局部修正',
             'active_review':'正在对照原文核对当前部分，定位具体内容问题',
             'active_revision':'正在修正当前部分已定位的问题，保留其他正文',
+            'active_integrity':'正在对照完整候选稿与原件核对关键含义',
+            'active_integrity_repair':'正在集中修正整稿已定位的问题',
             'active_deliver':'正在核对完整覆盖与原件资源，保存阅读结果',
             'visual_extract':'正在识别原文中的图片和页面','visual_audit':'正在核对图片和页面的识别结果',
             'inventory':'正在清点原文中的信息','inventory_audit':'正在检查信息清单是否遗漏',
@@ -74,7 +78,7 @@ def summary(job):
             'style':'正在核对术语、缩写和写作格式','fidelity':'正在逐项对照原文与新稿',
             'repair':'正在修正核对发现的问题','teaching':'正在检查全文是否易读、连贯',
             'publish':'正在保存正文与阅读包'}.get(stage,'正在处理材料')
-    units=job.get('unit_count') or len(job.get('plan',{}).get('units',[]))
+    units=job.get('unit_count') or len((job.get('plan') or {}).get('units',[]))
     if stage in {'writer','active_write'}:detail=f"正在改写第 {min(job.get('unit_index',0)+1,units)} / {units} 部分" if units else '正在生成改写正文'
     if stage in {'active_review','active_revision','active_format'} and units:
         action={'active_review':'核对','active_revision':'修正','active_format':'整理排版'}[stage]

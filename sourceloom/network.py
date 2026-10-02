@@ -29,12 +29,28 @@ def rasterize_svg(image):
     the document.
     """
     from defusedxml import ElementTree
+    from defusedxml.common import DefusedXmlException
+    from xml.etree.ElementTree import ParseError
     import cairosvg
     if len(image)>2_000_000:
         raise ValueError('SVG 源文件超过安全处理上限')
-    root=ElementTree.fromstring(image)
+    try:
+        root=ElementTree.fromstring(image)
+    except (ParseError, DefusedXmlException) as exc:
+        raise ValueError('SVG 原始结构无法安全解析') from exc
     if root.tag.rsplit('}',1)[-1].lower()!='svg':
         raise ValueError('SVG 根元素无效')
+    identifiers={element.get('id') for element in root.iter() if element.get('id')}
+    def safe_css_urls(value):
+        # Local paint servers such as gradients are ordinary SVG structure.
+        # Accept only fragment URLs that resolve inside this document; remote
+        # URLs and malformed references remain blocked before CairoSVG runs.
+        starts=list(re.finditer(r'url\s*\(',value or '',re.I))
+        references=list(re.finditer(
+            r'''url\(\s*(?P<quote>["']?)#(?P<id>[A-Za-z0-9_][\w:.-]*)(?P=quote)\s*\)''',
+            value or '',re.I))
+        return (len(starts)==len(references) and
+                all(match['id'] in identifiers for match in references))
     for parent in list(root.iter()):
         children=list(parent)
         if not any(child.tag.rsplit('}',1)[-1].lower()=='foreignobject' for child in children):
@@ -47,11 +63,12 @@ def rasterize_svg(image):
     if any(
         element.tag.rsplit('}',1)[-1].lower() in {'script','foreignobject','use'} or
         (element.tag.rsplit('}',1)[-1].lower()=='style' and
-         re.search(r'url\s*\(|@import\b',element.text or '',re.I)) or
+         (re.search(r'@import\b',element.text or '',re.I) or
+          not safe_css_urls(element.text or ''))) or
         any((key.rsplit('}',1)[-1].lower()=='href' and value and
              not (element.tag.rsplit('}',1)[-1].lower()=='image' and
                   value.startswith(('data:image/png;base64,','data:image/jpeg;base64,')))) or
-            (key.rsplit('}',1)[-1].lower()=='style' and 'url(' in value.lower())
+            (re.search(r'url\s*\(',value,re.I) and not safe_css_urls(value))
             for key,value in element.attrib.items())
         for element in root.iter()):
         raise ValueError('SVG 包含不可安全栅格化的外部或脚本内容')
@@ -212,10 +229,16 @@ def _srcset_urls(value):
 
 
 def _looks_like_image_url(value):
-    parsed=urlsplit(value or '')
+    try:parsed=urlsplit(value or '')
+    except ValueError:return False
     decoded=unquote(parsed.path).lower()
     return bool(re.search(r'\.(?:avif|gif|jpe?g|png|svg|webp)(?:$|[?#])',decoded)
                 or '/image/' in parsed.path.lower())
+
+
+def _safe_urljoin(base,ref):
+    try:return urljoin(base,ref)
+    except ValueError:return ref
 
 
 def _html_image_groups(raw,base):
@@ -227,7 +250,7 @@ def _html_image_groups(raw,base):
     """
     soup=BeautifulSoup(raw,'html.parser')
     document_base=base
-    if soup.find('base',href=True):document_base=urljoin(base,soup.find('base',href=True)['href'])
+    if soup.find('base',href=True):document_base=_safe_urljoin(base,soup.find('base',href=True)['href'])
     article=soup.find('article') or soup.find('main')
     ordered=[]
     seen_nodes=set()
@@ -241,7 +264,7 @@ def _html_image_groups(raw,base):
             refs=[]
             figure=image.find_parent('figure')
             anchor=image.find_parent('a',href=True)
-            if figure and anchor and _looks_like_image_url(urljoin(document_base,anchor.get('href',''))):
+            if figure and anchor and _looks_like_image_url(_safe_urljoin(document_base,anchor.get('href',''))):
                 refs.append(anchor.get('href',''))
             for source in (image.find_parent('picture') or image).find_all('source') if image.find_parent('picture') else []:
                 refs.extend(_srcset_urls(source.get('srcset','')))
@@ -251,7 +274,7 @@ def _html_image_groups(raw,base):
             urls=[]
             for ref in refs:
                 if not ref or ref.startswith('data:'):continue
-                target=urljoin(document_base,ref)
+                target=_safe_urljoin(document_base,ref)
                 if target not in urls:urls.append(target)
             if not urls:continue
             caption=figure.find('figcaption').get_text(' ',strip=True) if figure and figure.find('figcaption') else ''
@@ -261,33 +284,212 @@ def _html_image_groups(raw,base):
     return ordered
 
 
+def fetch_uploaded_assets(uploads):
+    """Collect absolute image references in uploaded Markdown/HTML before parsing.
+
+    Relative references are already resolved against companion uploaded files by
+    ``ingest.intake``. Failed remote fetches remain explicit source gaps; the
+    original URL and alt text are never replaced or inferred.
+    """
+    groups=[]
+    for name,raw in uploads:
+        suffix=PurePosixPath(name).suffix.lower()
+        if suffix in {'.md','.markdown'}:
+            text=raw.decode('utf-8',errors='replace')
+            tokens=MarkdownIt('commonmark').parse(text)
+            groups.extend([child.attrGet('src') or ''] for token in tokens
+                          for child in token.children or [] if child.type=='image')
+            groups.extend(group['urls'] for group in _html_image_groups(text,''))
+        elif suffix in {'.html','.htm'}:
+            groups.extend(group['urls'] for group in _html_image_groups(raw,''))
+    result=list(uploads);aliases={};failures=[];total=sum(len(raw) for _,raw in uploads)
+    deadline=time.monotonic()+60
+    types={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp','image/svg+xml':'png'}
+    known={}
+    for refs in groups[:64]:
+        targets=[]
+        for ref in refs:
+            try:
+                if urlsplit(ref).scheme=='https' and ref not in targets:targets.append(ref)
+            except ValueError as exc:
+                failures.append(dict(target=ref,reason=type(exc).__name__))
+        last_error=None
+        for target in targets:
+            if target in known:
+                name=known[target]
+                for alias in targets:aliases[alias]=name
+                break
+            try:
+                remaining=deadline-time.monotonic()
+                if remaining<=0:raise ValueError('上传材料图片获取已达到等待上限')
+                image,kind,resolved=fetch(target,set(types),min(12,remaining))
+                if kind=='image/svg+xml':image=rasterize_svg(image);kind='image/png'
+                if total+len(image)>MAX_FILE*4:raise ValueError('材料与资源超过 100 MB 总量')
+                name='uploaded-assets/'+hashlib.sha256(target.encode()).hexdigest()+'.'+types[kind]
+                result.append((name,image));total+=len(image)
+                for alias in targets:aliases[alias]=name;known[alias]=name
+                aliases[resolved]=name;known[resolved]=name
+                break
+            except (ValueError,OSError,http.client.HTTPException) as exc:
+                last_error=exc
+        else:
+            if last_error is not None:
+                failures.append(dict(target=targets[0],reason=type(last_error).__name__))
+    return result,aliases,failures
+
+
+def _web_document_text(raw):
+    """Return conservative visible-text evidence for comparing two HTML pages."""
+    soup=BeautifulSoup(raw,'html.parser')
+    title=soup.title.get_text(' ',strip=True) if soup.title else ''
+    for node in soup(['script','style','noscript','template','svg']):node.decompose()
+    candidates=soup.find_all(['article','main'])
+    text=max((node.get_text(' ',strip=True) for node in candidates),key=len,default='')
+    if len(text)<160:
+        body=soup.body or soup
+        text=body.get_text(' ',strip=True)
+    text=re.sub(r'\s+',' ',text).strip().lower()
+    tokens=re.findall(r"[a-z0-9]{2,}|[^\W\d_]{2,}|\d+",text,re.I)
+    return title.strip().lower(),text,tokens
+
+
+def _substantive_original_html(raw, text, tokens):
+    """Require article structure before treating a failed render as dispensable."""
+    if len(text)<300 or len(set(tokens))<24:
+        return False
+    soup=BeautifulSoup(raw,'html.parser')
+    for node in soup(['script','style','noscript','template']):node.decompose()
+    article=soup.find(['main','article'])
+    if article and len(article.get_text(' ',strip=True))>=300:
+        return True
+    paragraphs=[node.get_text(' ',strip=True) for node in soup.find_all('p')]
+    return len([item for item in paragraphs if len(item)>=80])>=2 and sum(map(len,paragraphs))>=300
+
+
+def _rendered_continuity(original,rendered,original_url,rendered_url):
+    """Reject obvious error pages and materially unrelated browser documents."""
+    title,source_text,source_tokens=_web_document_text(original)
+    rendered_title,rendered_text,rendered_tokens=_web_document_text(rendered)
+    source_words=set(source_tokens);rendered_words=set(rendered_tokens)
+    overlap=(len(source_words & rendered_words)/len(source_words)) if source_words else 1.0
+    error_text=rendered_text[:5000]
+    error_patterns=(
+        r'\b403\s+error\b',r'\b404\s+not found\b',r'\b502\s+bad gateway\b',
+        r'\b503\s+service unavailable\b',r'\baccess denied\b',
+        r'\brequest could not be satisfied\b',r'\bthis site can.t be reached\b',
+    )
+    cloudfront_error=('cloudfront' in error_text and
+                      any(phrase in error_text for phrase in
+                          ('access denied','request could not be satisfied','403 error','generated by cloudfront')))
+    source_substantive=_substantive_original_html(original,source_text,source_tokens)
+    has_error_phrase=cloudfront_error or any(re.search(pattern,error_text,re.I) for pattern in error_patterns)
+    error_title=bool(re.search(r'^(?:403\s+error|404\s+not found|502\s+bad gateway|503\s+service unavailable|access denied)$',
+                               rendered_title,re.I))
+    explicit_error=((not source_substantive and (error_title or cloudfront_error))
+                    or (has_error_phrase and overlap<0.30))
+    if explicit_error:
+        reason='rendered_error_page'
+    elif source_substantive and len(rendered_text)<max(160,len(source_text)*0.35) and overlap<0.45:
+        reason='rendered_document_lost_source_content'
+    elif source_substantive and len(source_words)>=50 and len(rendered_words)>=10 and overlap<0.12:
+        reason='rendered_document_content_mismatch'
+    elif source_substantive and title and rendered_title and title!=rendered_title and overlap<0.2:
+        reason='rendered_document_title_mismatch'
+    else:
+        reason='source_content_continuity'
+    accepted=reason=='source_content_continuity'
+    return dict(accepted=accepted,reason=reason,
+        original_url=original_url,rendered_url=rendered_url,
+        original_title=title,rendered_title=rendered_title,
+        original_substantive=source_substantive,
+        original_text_chars=len(source_text),rendered_text_chars=len(rendered_text),
+        shared_source_word_ratio=round(overlap,4))
+
+
 def fetch_bundle(url,include_manifest=False,rendered=False):
     """Snapshot original HTML/Markdown and bounded referenced images."""
     deadline=time.monotonic()+60
     raw,mime,final=fetch(url)
+    original_raw=raw
+    original_sha256=hashlib.sha256(raw).hexdigest()
     suffix=DOCUMENT_TYPES[mime]
     if mime=='text/plain':
         source_suffix=PurePosixPath(urlsplit(final).path).suffix.lower()
         if source_suffix in {'.md','.markdown'}:suffix='md'
         elif source_suffix in {'.rst','.rest'}:suffix='rst'
     uploads=[('snapshot.'+suffix,raw)];aliases={};failures=[];rendered_manifest=[];rendered_success=False
+    rendered_outcome=None
+    continuity=dict(status='not_attempted',basis='original_response',
+                    original_response_sha256=original_sha256,
+                    snapshot_name='snapshot.'+suffix,snapshot_sha256=original_sha256,
+                    rendered_candidate_sha256='',rendered_candidate_url='',reason='browser_capture_not_requested')
     targets=[];image_groups=[]
     if mime=='text/html':
         if rendered:
-            try:
-                from .web_capture import capture
-                rendered_html,rendered_final,rendered_manifest,capture_assets=capture(final)
-                rendered_success=True
-                uploads=[('web-original.bin',raw),('snapshot.html',rendered_html),*capture_assets]
-                raw=rendered_html;final=rendered_final
-                for item in rendered_manifest:
-                    if item.get('preview_name'):
-                        aliases['capture://'+item['id']]=item['preview_name']
-            except Exception as exc:
-                # A raw response is retained, but this is an acquisition gap,
-                # never evidence that a dynamic page was completely collected
-                failures.append(dict(target=final,reason='rendered_capture_failed:'+type(exc).__name__,
-                                     scope='rendered_page'))
+            last_capture_error=None
+            candidate_continuity=None
+            for _capture_attempt in range(3):
+                try:
+                    from .web_capture import capture
+                    rendered_html,rendered_final,rendered_manifest,capture_assets=capture(final)
+                    candidate_continuity=_rendered_continuity(original_raw,rendered_html,final,rendered_final)
+                    candidate_sha256=hashlib.sha256(rendered_html).hexdigest()
+                    continuity=dict(status='continuous' if candidate_continuity['accepted'] else 'rejected',
+                        basis='browser_render' if candidate_continuity['accepted'] else 'original_response',
+                        original_response_sha256=original_sha256,
+                        snapshot_name='snapshot.html',
+                        snapshot_sha256=candidate_sha256 if candidate_continuity['accepted'] else original_sha256,
+                        rendered_candidate_sha256=candidate_sha256,
+                        rendered_candidate_url=rendered_final,
+                        reason=candidate_continuity['reason'],
+                        comparison={key:value for key,value in candidate_continuity.items()
+                                    if key not in {'accepted','original_url','rendered_url'}})
+                    if not candidate_continuity['accepted']:
+                        rendered_manifest=[]
+                        uploads=[('web-original.bin',original_raw),('snapshot.html',original_raw)]
+                        if candidate_continuity.get('original_substantive'):
+                            # The static response is complete enough to remain
+                            # the source while browser-only additions are recorded
+                            # as a rejected provenance candidate.
+                            rendered_outcome=None
+                            failures.append(dict(target=rendered_final,
+                                reason='rendered_snapshot_rejected:'+candidate_continuity['reason'],
+                                scope='rendered_page'))
+                        else:
+                            # A thin JavaScript shell cannot establish article
+                            # completeness. Keep its bytes, but retain an explicit
+                            # unresolved render gap so generation remains blocked.
+                            continuity['status']='unresolved'
+                            rendered_outcome=False
+                            failures.append(dict(target=rendered_final,
+                                reason='rendered_snapshot_unresolved:'+candidate_continuity['reason'],
+                                scope='rendered_page'))
+                        raw=original_raw
+                    else:
+                        rendered_success=True
+                        rendered_outcome=True
+                        uploads=[('web-original.bin',original_raw),('snapshot.html',rendered_html),*capture_assets]
+                        raw=rendered_html;final=rendered_final
+                        for item in rendered_manifest:
+                            if item.get('preview_name'):
+                                aliases['capture://'+item['id']]=item['preview_name']
+                    break
+                except Exception as exc:
+                    last_capture_error=exc
+            if not rendered_success:
+                if candidate_continuity is None:
+                    # Keep the original response as the parse target. A failed
+                    # browser launch cannot invalidate already fetched static
+                    # content or its ordinary image references.
+                    reason='rendered_capture_failed:'+type(last_capture_error).__name__
+                    failures.append(dict(target=final,reason=reason,scope='rendered_page'))
+                    continuity=dict(status='capture_failed',basis='original_response',
+                        original_response_sha256=original_sha256,snapshot_name='snapshot.html',
+                        snapshot_sha256=original_sha256,rendered_candidate_sha256='',
+                        rendered_candidate_url='',reason=reason)
+                    _,source_text,source_tokens=_web_document_text(original_raw)
+                    source_substantive=_substantive_original_html(original_raw,source_text,source_tokens)
+                    if not source_substantive:rendered_outcome=False
         soup=BeautifulSoup(raw,'html.parser')
         base=final
         if soup.find('base',href=True):base=urljoin(final,soup.find('base',href=True)['href'])
@@ -309,7 +511,7 @@ def fetch_bundle(url,include_manifest=False,rendered=False):
         return result+(manifest,) if include_manifest else result
     for ref in references:
         if ref and not ref.startswith('data:'):
-            target=urljoin(base,ref)
+            target=_safe_urljoin(base,ref)
             if target not in targets:targets.append(target)
     total=len(raw)
     types={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp',
@@ -372,10 +574,12 @@ def fetch_bundle(url,include_manifest=False,rendered=False):
                 uploads.append((name,image));aliases[target]=name;aliases[resolved]=name;total+=len(image)
             except (ValueError,OSError,http.client.HTTPException) as exc:
                 failures.append(dict(target=target,reason=type(exc).__name__))
+    continuity['snapshot_sha256']=hashlib.sha256(raw).hexdigest()
     manifest={'images':image_groups,'rendered_objects':rendered_manifest,
               # Browser-rendering completeness applies only to HTML.  A PDF,
               # DOCX, TXT, RST, or Markdown snapshot is already the fetched
               # source document and must not acquire a false render failure.
-              'rendered':rendered_success if rendered and mime=='text/html' else None}
+              'rendered':rendered_outcome if rendered and mime=='text/html' else None}
+    if mime=='text/html':manifest['source_continuity']=continuity
     result=(uploads,final,aliases,failures)
     return result+((manifest if rendered else image_groups),) if include_manifest else result

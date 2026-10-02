@@ -49,7 +49,9 @@ python scripts/v2_real_eval.py private-manifest.json `
   --output .local/v2-real-eval
 ```
 
-每个来源有独立 checkpoint。工具会按以下顺序推进：创建项目、后台上传或 URL 导入、轮询 intake、提交一次生成、轮询原 production 任务、导出结果。`project_id`、`intake_run_id`、`run_id` 和请求尝试标记会在每个外部写操作前后保存。重启时只轮询已经记录的任务；如果进程在请求返回前中断，工具会进入 `manual_review`，不会猜测请求是否送达，也不会自动再次创建或生成。
+每个来源有独立 checkpoint。工具会按以下顺序推进：创建项目、后台上传或 URL 导入、轮询 intake、提交生成、核对交付状态、导出结果。`project_id`、`intake_run_id`、`run_id` 和请求尝试标记会在每个外部写操作前后保存。连接建立失败会有限重试并留下 `retry_pending`，再次运行同一命令即可从原 checkpoint 续跑。中断发生在导入或生成响应附近时，工具会先从项目当前任务和材料清单恢复任务身份，不会新建第二个项目。
+
+`completed` 或 `ready_for_review` 只代表任务停止运行，不单独算通过。只有 `delivery_state` 是正常的 `ready_for_review`、`accepted` 或 `published`，Markdown 非空，并且阅读包返回 ZIP 内容时，材料才会记录 `verified_success: true`。`recovered_ready_for_review` 会在 `--max-rewrites` 上限内自动调用重新改写，达到上限后记录 `quality_retry_exhausted`，不会混入通过数。总报告提供 `verified_success_count` 和 `all_verified`。
 
 每篇完成材料会输出：
 
