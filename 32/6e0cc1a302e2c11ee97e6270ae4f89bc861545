@@ -1,0 +1,33 @@
+deploy/README.md
+  s_36a381ab4bccf9::t_e3d4a091dea96f 7,84-85
+tests/test_processor_readweave.py
+  s_36a381ab4bccf9::t_50ba293ed87a9d 90-92,96,104,117-119,133-134,151-161
+  s_36a381ab4bccf9::t_82078bd62e3480 78,85,100
+sourceloom/processor.py
+  s_36a381ab4bccf9::t_9d3a6761111b25 62,68,70-72,254-263,265,268-308
+  s_36a381ab4bccf9::t_fa4322e21aaadd 74-75,81-82
+tests/test_processor_pdf_geometry_reuse.py
+  s_36a381ab4bccf9::t_b3408106560d9b 1-49,56-90,92-180
+  s_36a381ab4bccf9::t_1f94d63513e986 50-55,91
+SECURITY.md
+  s_36a381ab4bccf9::t_e3d4a091dea96f 17
+sourceloom/readweave.py
+  s_36a381ab4bccf9::t_1b460e65482a97 229,236
+  s_36a381ab4bccf9::t_fbf95a6768d346 230-235,237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "326e0cc1a302e2c11ee97e6270ae4f89bc861545",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
