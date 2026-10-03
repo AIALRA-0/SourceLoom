@@ -59,23 +59,27 @@ def set_resource_usages(store, pid, changes, base_pack_digest=None):
         pack_digest=pack['digest'], policy_digest=pack['template_digest']))
 
 
-def pdf_image_placements(raw, page_index, image):
+def pdf_image_placements(raw, page_index, image, page=None):
     """Capture source display geometry, retaining each occurrence of one bitmap."""
     ref = getattr(image, 'indirect_reference', None)
     xref = getattr(ref, 'idnum', None)
     if not xref:
         return []
+    doc = None
     try:
-        import fitz
-        doc = fitz.open(stream=raw, filetype='pdf')
+        if page is None:
+            import fitz
+            doc = fitz.open(stream=raw, filetype='pdf')
         try:
-            page = doc[page_index]
+            if page is None:
+                page = doc[page_index]
             return [dict(page=page_index+1, bbox=[round(v, 3) for v in rect],
                          page_width=round(page.rect.width, 3),
                          page_height=round(page.rect.height, 3), unit='pdf_point')
                     for rect in page.get_image_rects(xref)]
         finally:
-            doc.close()
+            if doc is not None:
+                doc.close()
     except (ImportError, ValueError, RuntimeError):
         return []
 
@@ -247,42 +251,61 @@ def prepare(store, pid, uploads, source_url=None, asset_aliases=None, web_manife
         reader = PdfReader(BytesIO(pdf_bytes))
         if reader.is_encrypted:
             reader.decrypt('')
-        for page_no, page in enumerate(reader.pages, 1):
-            try:
-                images = list(page.images)
-            except Exception:
-                continue
-            for index, image in enumerate(images, 1):
+        # One Page object per source page retains PyMuPDF's image-info cache.
+        # Geometry is optional; source image bytes still use the existing parser.
+        geometry_doc = None
+        try:
+            import fitz
+            geometry_doc = fitz.open(stream=pdf_bytes, filetype='pdf')
+        except (ImportError, ValueError, RuntimeError):
+            pass
+        try:
+            for page_no, page in enumerate(reader.pages, 1):
                 try:
-                    from PIL import Image
-                    picture = Image.open(BytesIO(image.data))
-                    picture.load()
-                    if picture.width * picture.height > 40_000_000:
-                        continue
-                    mime = Image.MIME.get(picture.format)
-                    if mime in {'image/png','image/jpeg','image/gif','image/webp'}:
-                        raw = image.data
-                        suffix = {'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp'}[mime]
-                    else:
-                        buf = BytesIO()
-                        picture.convert('RGBA').save(buf, 'PNG')
-                        raw, mime, suffix = buf.getvalue(), 'image/png', 'png'
+                    images = list(page.images)
                 except Exception:
                     continue
-                key = store.blob(raw)
-                name = f'figure-{page_no}-{index}.'+suffix
-                inv['resources'].append(dict(id=key, name=name, sha256=key, mime=mime, size=len(raw)))
-                placements = pdf_image_placements(pdf_bytes, page_no-1, image)
-                tiny = bool(placements) and all(
-                    max(place['bbox'][2]-place['bbox'][0], place['bbox'][3]-place['bbox'][1]) < 24
-                    for place in placements)
-                inv['objects'].append(dict(id=f'src-{len(inv["objects"])+1:05d}', kind='image',
-                    text=f'{original["name"]} 第 {page_no} 页原图 {index}', resource_id=key,
-                    locator=f'{original["name"]}/page[{page_no}]/image[{index}]',
-                    placements=placements, placement_count=len(placements),
-                    purpose_hint=('小尺寸行内组件候选；用途待对照原页确认' if tiny else
-                                  '复用资源；逐个原页位置待对照' if len(placements)>1 else
-                                  '用途待对照原页确认')))
+                geometry_page = None
+                if geometry_doc is not None:
+                    try:
+                        geometry_page = geometry_doc[page_no-1]
+                    except (ValueError, RuntimeError):
+                        pass
+                for index, image in enumerate(images, 1):
+                    try:
+                        from PIL import Image
+                        picture = Image.open(BytesIO(image.data))
+                        picture.load()
+                        if picture.width * picture.height > 40_000_000:
+                            continue
+                        mime = Image.MIME.get(picture.format)
+                        if mime in {'image/png','image/jpeg','image/gif','image/webp'}:
+                            raw = image.data
+                            suffix = {'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp'}[mime]
+                        else:
+                            buf = BytesIO()
+                            picture.convert('RGBA').save(buf, 'PNG')
+                            raw, mime, suffix = buf.getvalue(), 'image/png', 'png'
+                    except Exception:
+                        continue
+                    key = store.blob(raw)
+                    name = f'figure-{page_no}-{index}.'+suffix
+                    inv['resources'].append(dict(id=key, name=name, sha256=key, mime=mime, size=len(raw)))
+                    placements = (pdf_image_placements(pdf_bytes, page_no-1, image, page=geometry_page)
+                                  if geometry_page is not None else [])
+                    tiny = bool(placements) and all(
+                        max(place['bbox'][2]-place['bbox'][0], place['bbox'][3]-place['bbox'][1]) < 24
+                        for place in placements)
+                    inv['objects'].append(dict(id=f'src-{len(inv["objects"])+1:05d}', kind='image',
+                        text=f'{original["name"]} 第 {page_no} 页原图 {index}', resource_id=key,
+                        locator=f'{original["name"]}/page[{page_no}]/image[{index}]',
+                        placements=placements, placement_count=len(placements),
+                        purpose_hint=('小尺寸行内组件候选；用途待对照原页确认' if tiny else
+                                      '复用资源；逐个原页位置待对照' if len(placements)>1 else
+                                      '用途待对照原页确认')))
+        finally:
+            if geometry_doc is not None:
+                geometry_doc.close()
     resources, locations = [], []
     object_index = {obj['id']:obj for obj in inv['objects']}
     excluded = {'site_chrome', 'source_metadata', 'layout_decorative'}

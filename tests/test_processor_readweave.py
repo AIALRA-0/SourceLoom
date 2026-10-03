@@ -75,30 +75,33 @@ def test_processor_readweave_status_is_exact_and_import_is_idempotent(tmp_path,m
 def test_unknown_native_import_remains_queryable_without_second_post(tmp_path,monkeypatch):
     store,p=candidate(tmp_path)
     posts=[]
-    found=False
+    claims=[]
     def handler(request):
-        nonlocal found
         path=request.url.path
         if path=='/etapi/notes' and request.method=='GET':
             return httpx.Response(200,json={'results':[]})
         if path=='/etapi/notes/test-parent/import' and request.method=='POST':
             posts.append(digest(request.content))
+            claims.append(next((store.root/'readweave').glob('*.json')).read_bytes())
             raise httpx.ReadTimeout('The request may have reached ReadWeave')
         raise AssertionError(f'Unexpected request: {request.method} {path}')
     client=httpx.Client
     monkeypatch.setattr(httpx,'Client',lambda **kw:client(**kw,transport=httpx.MockTransport(handler)))
-    with pytest.raises(httpx.ReadTimeout):
-        import_candidate(store,config(),p['id'])
+    result=import_candidate(store,config(),p['id'])
+    assert result['status']=='submitted' and result['phase']=='remote_import'
+    assert result['note_url'] is None and '未再次提交' in result['message']
     status=import_status(store,config(),p['id'])
     assert status['status']=='submitted' and status['phase']=='remote_import'
     assert status['note_url'] is None
+    assert 'message' not in status  # No rewriting the durable original claim.
     with pytest.raises(Conflict,match='不确定'):
         import_candidate(store,config(),p['id'])
     assert len(posts)==1
+    assert next((store.root/'readweave').glob('*.json')).read_bytes()==claims[0]
 
 
 @pytest.mark.parametrize('fault',['post500_committed','post500_committed_readback500',
-                                  'post500_absent','attachment500'])
+                                  'post500_absent','attachment500','post_timeout_committed'])
 def test_ambiguous_or_partial_import_recovers_by_read_only_lookup(tmp_path,monkeypatch,fault):
     store,p=candidate(tmp_path)
     sent=[]
@@ -111,6 +114,9 @@ def test_ambiguous_or_partial_import_recovers_by_read_only_lookup(tmp_path,monke
             return httpx.Response(200,json={'results':[remote['entry']] if 'entry' in remote else []})
         if path=='/etapi/notes/test-parent/import' and request.method=='POST':
             sent.append(digest(request.content))
+            if fault=='post_timeout_committed':
+                record=next((store.root/'readweave').glob('*.json'))
+                remote['original_claim_bytes']=record.read_bytes()
             with zipfile.ZipFile(BytesIO(request.content)) as z:
                 meta=json.loads(z.read('!!!meta.json'))['files'][0]
                 remote['html']=z.read('material.html')
@@ -124,6 +130,8 @@ def test_ambiguous_or_partial_import_recovers_by_read_only_lookup(tmp_path,monke
                         attributes=[{'name':'sourceloomCandidate','value':key}])
             if fault.startswith('post500'):
                 return httpx.Response(500)
+            if fault=='post_timeout_committed':
+                raise httpx.ReadTimeout('Committed remotely, response unavailable',request=request)
             return httpx.Response(200,json={'note':{'noteId':'noteA'}})
         if path=='/etapi/notes/noteA/content':
             if fault=='post500_committed_readback500' and not failed_once:
@@ -140,8 +148,17 @@ def test_ambiguous_or_partial_import_recovers_by_read_only_lookup(tmp_path,monke
         raise AssertionError(f'Unexpected request: {request.method} {path}')
     client=httpx.Client
     monkeypatch.setattr(httpx,'Client',lambda **kw:client(**kw,transport=httpx.MockTransport(handler)))
-    with pytest.raises(httpx.HTTPStatusError):
-        import_candidate(store,config(),p['id'])
+    if fault=='post_timeout_committed':
+        first=import_candidate(store,config(),p['id'])
+        assert first['status']=='submitted' and first['phase']=='remote_import'
+        assert first['note_url'] is None and 'checks' not in first
+        assert first['candidate']==remote['entry']['attributes'][0]['value']
+        assert first['parent']=='test-parent' and first['instance']==config()['readweave_url']
+        assert next((store.root/'readweave').glob('*.json')).read_bytes()==remote['original_claim_bytes']
+        assert 'readweave' not in store.get(p['id'])
+    else:
+        with pytest.raises(httpx.HTTPStatusError):
+            import_candidate(store,config(),p['id'])
     pending=import_status(store,config(),p['id'])
     assert pending['status']==('imported' if fault=='attachment500' else 'submitted')
     assert pending['note_url'] is None

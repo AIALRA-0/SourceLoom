@@ -226,7 +226,15 @@ def import_candidate(store,config,pid):
                                            'created':time.time()}))
             except FileExistsError:
                 raise Conflict('该导入已被另一请求提交，先查询原记录，未重复导入')
-            r=c.post(f'notes/{parent}/import',content=raw,headers={'Content-Type':'application/octet-stream','Content-Transfer-Encoding':'binary'})
+            submitted=_read_receipt(record)
+            try:
+                r=c.post(f'notes/{parent}/import',content=raw,headers={'Content-Type':'application/octet-stream','Content-Transfer-Encoding':'binary'})
+            except httpx.TransportError:
+                # The remote import may have committed. Keep the original
+                # durable claim unchanged and expose its pending identity to
+                # the normal query action; native POST is never replayed here.
+                return dict(submitted,note_url=None,
+                            message='ReadWeave 未返回可确认的导入响应；原请求已保留，请查询原操作结果，未再次提交')
             r.raise_for_status();nid=r.json()['note']['noteId']
             _save_receipt(record,{'status':'imported','phase':'readback',
                                   'candidate':key,'parent':parent,'instance':_instance(config),
