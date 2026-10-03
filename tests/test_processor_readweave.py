@@ -162,6 +162,10 @@ def test_ambiguous_or_partial_import_recovers_by_read_only_lookup(tmp_path,monke
 
 
 def test_note_url_requires_real_usable_target():
+    assert note_url({'readweave_url':'http://127.0.0.1:11802',
+                     'readweave_public_url':'https://reader.example'},'note A') == 'https://reader.example/#root/note%20A'
+    assert note_url({'readweave_url':'http://127.0.0.1:11802',
+                     'readweave_public_url':'https://reader.example/?token=secret'},'noteA') is None
     assert note_url(config(),'note A')=='https://reader.example/#root/note%20A'
     assert note_url(config(),'') is None
     assert note_url({'readweave_url':'https://reader.example/?token=secret'},'noteA') is None

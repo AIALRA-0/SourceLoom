@@ -47,7 +47,7 @@ def load_config():
             "external_worker":True,
             "writing_skill_dir":os.environ.get("HUMAN_READABLE_SKILL_DIR", ""),
             "auth_mode":"local", "allowed_subject":"", "public_origin":"",
-            "readweave_url":"", "readweave_token":"", "readweave_parent":"",
+            "readweave_url":"", "readweave_public_url":"", "readweave_token":"", "readweave_parent":"",
             "readweave_registry_path":"",
             "fetch_enabled":False, **private}
     # Both the web process and the detached worker must use the same activated

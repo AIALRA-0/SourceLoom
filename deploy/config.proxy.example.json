@@ -1,0 +1,12 @@
+{
+  "provider": "manual",
+  "auth_mode": "proxy",
+  "allowed_subject": "",
+  "public_origin": "https://sourceloom.example.invalid",
+  "fetch_enabled": false,
+  "readweave_url": "",
+  "readweave_public_url": "",
+  "readweave_token": "",
+  "readweave_parent": "",
+  "readweave_registry_path": ""
+}

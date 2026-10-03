@@ -1,7 +1,7 @@
 import { MaterialLibrary } from './processor_library.js?v=non-generation-baseline-20261002';
 import { LinkedReader } from './processor_reader.js?v=non-generation-baseline-20261002';
-import { ReadingWorkbench } from './processor_workbench.js?v=non-generation-baseline-20261002';
-import { IssueDrawer } from './processor_issues.js?v=visual-unification-20260930';
+import { ReadingWorkbench } from './processor_workbench.js?v=official-golive-20261002';
+import { IssueDrawer } from './processor_issues.js?v=official-golive-20261002';
 import { ManualHandoff } from './processor_manual_handoff.js?v=manual-handoff-20261001';
 const $ = selector => document.querySelector(selector);
 const base = '/api/processor';
@@ -98,6 +98,7 @@ function restoreIssueReading(saved) {
 const issueDrawer = new IssueDrawer({host:$('#issues-host'),
   onCapture:()=>({positions:reader.capture(),projectId:project?.id,sourceDigest:processor().source_digest,mode:reader.mode,driver:reader.driver}),
   onRestore:restoreIssueReading,
+  onViewOriginal:(reference,trigger)=>workbench.loupe.openIssue(reference,trigger),
   onApplied:async()=>{
     const saved=issueDrawer.readingSnapshot,epoch=openEpoch,id=project?.id,priorLoad=versionEpoch;
     issueApplying=true;
@@ -179,11 +180,7 @@ function showSourcePage(page, origin = 'manual') {
 function showImage(resource) {
   const url = safeURL(resource.url || (resource.sha256 && pidPath(`/files/${resource.sha256}`)));
   if (!url) return;
-  $('#image-dialog-title').textContent = resource.label || '原始资源';
-  $('#image-dialog-caption').textContent = [resource.locator,resource.purpose,resource.placement].filter(Boolean).join(' · ');
-  $('#image-dialog-image').src = url;
-  $('#image-dialog-image').alt = resource.label || resource.id;
-  $('#image-dialog').showModal();
+  workbench.loupe.openResource({...resource,url},document.activeElement);
 }
 function resourceUsage(resource) {return resource.usage || (resource.kind === 'page' ? 'reference' : 'body');}
 function filteredResources() {

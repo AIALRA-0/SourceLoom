@@ -1,5 +1,5 @@
 [Unit]
-Description=SourceLoom content preparation
+Description=SourceLoom authenticated single-user processor workbench
 After=network.target
 
 [Service]

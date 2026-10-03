@@ -198,7 +198,7 @@ def register(app, store, config):
         result = channel_capabilities(config)
         result['environment'] = 'development_acceptance' if os.environ.get('SOURCELOOM_ACCEPTANCE') == '1' else 'user'
         result['readweave_configured'] = all(config.get(k) for k in ('readweave_url','readweave_token','readweave_parent'))
-        remote = urlsplit(str(config.get('readweave_url') or ''))
+        remote = urlsplit(str(config.get('readweave_public_url') or config.get('readweave_url') or ''))
         result['readweave_target'] = (dict(instance_url=f'{remote.scheme}://{remote.hostname}' +
             (f':{remote.port}' if remote.port else ''), parent_note_id=config.get('readweave_parent'))
             if result['readweave_configured'] and remote.scheme in {'http','https'} and remote.hostname else None)

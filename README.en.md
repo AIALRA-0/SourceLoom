@@ -4,9 +4,9 @@
 
 <p><strong>Keep originals and turn model returns into readable, traceable document packages</strong></p>
 
-<p>A local material workbench · Shared processing for manual and automatic handoff</p>
+<p>A material workbench · Local use or an authenticated single-user remote service</p>
 
-<p><a href="README.md">简体中文</a> · <a href="docs/PROCESSOR_V11_USE.md">Usage guide</a> · <a href="SECURITY.md">Security</a></p>
+<p><a href="README.md">简体中文</a> · <a href="docs/PROCESSOR_V11_USE.md">Usage guide</a> · <a href="deploy/README.md">Production deployment</a> · <a href="SECURITY.md">Security</a></p>
 
 </div>
 
@@ -53,6 +53,8 @@ Open <http://127.0.0.1:8765/>. No API key is needed for import, manual handoff, 
 
 The default store is `data/`; private configuration is read from `.local/config.json`. Override with `SOURCELOOM_DATA` and `SOURCELOOM_CONFIG`. Stop the relevant service and back up before changing stores; do not run multiple writers against the same store
 
+The official site uses the same processor through one web service behind the existing HTTPS and login proxy. Normal manual processing needs no generation Worker. See the [deployment guide](deploy/README.md) for authentication, required-material migration, public links, and rollback that preserves new writes. A repository commit and passing CI do not establish that an instance is deployed
+
 ## 3 Complete your first material
 
 1. Import the original and inspect its files, extracted text, and resources
@@ -71,7 +73,7 @@ Receiving a ZIP does not prove that a model unpacked it or inspected its images.
 - ReadWeave import and readback require external configuration; its initialization performance is separate from SourceLoom reading
 - Deletion normally moves materials to trash. Permanent deletion needs separate confirmation and never deletes ReadWeave notes
 
-Originals, drafts, databases, sessions, private configuration, and acceptance videos stay local. The repository distributes code, pinned dependencies, synthetic tests, and necessary static assets. See [third-party notices](THIRD_PARTY_NOTICES.md)
+Originals, drafts, databases, sessions, private configuration, and acceptance videos stay in the corresponding private runtime environment. The repository distributes code, pinned dependencies, synthetic tests, and necessary static assets. See [third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## 5 Development and verification
 
@@ -83,6 +85,8 @@ python scripts/verify.py
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for frontend checks. Browser acceptance uses isolated materials and does not insert test text into real drafts. Private originals and runtime records are not distributed with public tests
+
+Engineering reports from execution agents follow [AGENTS.md](AGENTS.md) and the separate [reporting rules](docs/EXECUTOR_REPORTING_RULES.md). These rules do not alter content-model writing instructions
 
 ## 6 Maintenance and license
 

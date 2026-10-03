@@ -16,7 +16,7 @@ from .store import Conflict,digest
 
 def note_url(config, note_id):
     """Build an editor route only from a configured instance and a real note ID."""
-    base=str(config.get('readweave_url') or '').rstrip('/')
+    base=str(config.get('readweave_public_url') or config.get('readweave_url') or '').rstrip('/')
     parsed=urlsplit(base)
     if (parsed.scheme not in {'http','https'} or not parsed.netloc or parsed.username or
             parsed.password or parsed.query or parsed.fragment or not note_id):

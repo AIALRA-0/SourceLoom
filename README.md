@@ -4,9 +4,9 @@
 
 <p><strong>保存原件，把模型返回稿整理成可对照、编辑和交付的图文材料</strong></p>
 
-<p>本地材料处理工作台 · 手动与自动交接共用同一整理流程</p>
+<p>材料处理工作台 · 本机使用或经认证的单用户远程服务</p>
 
-<p><a href="README.en.md">English</a> · <a href="docs/PROCESSOR_V11_USE.md">使用说明</a> · <a href="SECURITY.md">安全说明</a></p>
+<p><a href="README.en.md">English</a> · <a href="docs/PROCESSOR_V11_USE.md">使用说明</a> · <a href="deploy/README.md">生产部署</a> · <a href="SECURITY.md">安全说明</a></p>
 
 </div>
 
@@ -53,6 +53,8 @@ python -m sourceloom.cli serve --port 8765
 
 默认数据保存在 `data/`，私有配置从 `.local/config.json` 读取；可用 `SOURCELOOM_DATA` 和 `SOURCELOOM_CONFIG` 指定位置。更换数据位置前停止对应服务并备份，不让多个服务同时写同一份库
 
+正式站使用同一处理器，由一个网页服务配合已有 HTTPS 与登录代理提供；普通手动处理不需要生成 Worker。认证、必要材料迁移、正式环境链接及保留新写入的回滚步骤统一见 [生产部署说明](deploy/README.md)，仓库提交与 CI 成功不代表实例已经上线
+
 ## 3 完成第一份材料
 
 - 第一步，点击「导入材料」选择原件，核对原文件、提取文字和实际资源
@@ -71,7 +73,7 @@ python -m sourceloom.cli serve --port 8765
 - ReadWeave 导入和读回需要外部配置；其初始化性能与 SourceLoom 阅读分别判断
 - 删除默认进入回收站；永久删除另行确认，不联动删除 ReadWeave 笔记
 
-原件、成稿、数据库、会话、私有配置和验收录像留在本机；仓库提供代码、固定依赖、合成测试和必要静态资源。第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+原件、成稿、数据库、会话、私有配置和验收录像留在对应的私人运行环境；仓库提供代码、固定依赖、合成测试和必要静态资源。第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
 ## 5 开发与验证
 
@@ -83,6 +85,8 @@ python scripts/verify.py
 ```
 
 前端验证见 [CONTRIBUTING.md](CONTRIBUTING.md)；浏览器验收使用隔离材料，不向真实稿件插测试字，私人原件和运行现场不随公开测试分发
+
+执行 Agent 的工程回报遵守 [开发协作入口](AGENTS.md) 与独立 [回报规范](docs/EXECUTOR_REPORTING_RULES.md)，不改变内容模型的写作要求
 
 ## 6 维护与许可
 
