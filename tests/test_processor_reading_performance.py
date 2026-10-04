@@ -103,6 +103,99 @@ def test_detail_receipt_enrichment_cannot_mutate_cached_read_snapshot(tmp_path, 
     assert store.get(p['id']) == before
 
 
+def test_full_detail_skips_duplicate_encoder_and_preserves_complete_saved_fields(tmp_path, monkeypatch):
+    import io
+    import fastapi.routing
+    from PIL import Image
+    image = io.BytesIO()
+    Image.new('RGB', (30, 20), 'blue').save(image, format='PNG')
+    store = Store(tmp_path/'data')
+    p = processor.create(store, 'Complete synthetic detail')
+    p = processor.prepare(store, p['id'], [('source.txt', b'Original fact.'), ('figure.png', image.getvalue())])
+    markers = '\n\n'.join(r['marker'] for r in processor.task_pack(store, p['id'])['resources'])
+    p = processor.save_result(store, p['id'], '# First\n\nOriginal fact.\n\n'+markers)
+    p = processor.save_result(store, p['id'], '# Second\n\nOriginal fact.\n\n'+markers)
+    config = load_config() | {'data_dir':str(store.root), 'auth_mode':'local', 'external_worker':True}
+    before = store.get(p['id'])
+    calls = []
+    original = fastapi.routing.jsonable_encoder
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(fastapi.routing, 'jsonable_encoder', counted)
+    with TestClient(create_app(config)) as client:
+        result = client.get('/api/processor/projects/'+p['id'])
+        assert result.status_code == 200 and result.headers['cache-control'] == 'no-store'
+        value = result.json()
+        assert not calls  # No Python recursive encoder before JSON serialization.
+        assert value['inventory'] == before['inventory']
+        assert value['processor']['versions'] == before['processor']['versions']
+        assert value['processor']['source_text'] == before['processor']['source_text']
+        for actual, expected in zip(value['processor']['resources'], before['processor']['resources']):
+            assert {k:actual[k] for k in expected} == expected
+            assert actual['url'].endswith('/files/'+expected['sha256'])
+        assert value['costs'] == []
+        assert store.get(p['id']) == before
+
+
+def test_full_detail_observes_live_receipts_costs_and_new_saved_version(tmp_path):
+    import time
+    store = Store(tmp_path/'data')
+    p = processor.create(store, 'Live synthetic detail')
+    p = processor.prepare(store, p['id'], [('source.txt', b'Original fact.')])
+    p = processor.save_result(store, p['id'], '# First\n\nOriginal fact.')
+    store.change(p['id'], lambda value:value['processor']['requests'].append(
+        {'id':'r1','status':'UNKNOWN','channel':'router'}))
+    job = dict(id='r1', project=p['id'], role='processor', channel='router',
+               status='uncertain', created=time.time(), receipt={'status':'UNKNOWN'})
+    store.put_job(job)
+    store.reserve(p['id'], 'cost-one', .1, {'role':'processor', 'channel':'router'})
+    config = load_config() | {'data_dir':str(store.root), 'auth_mode':'local', 'external_worker':True}
+    route = '/api/processor/projects/'+p['id']
+    with TestClient(create_app(config)) as client:
+        first = client.get(route).json()
+        assert first['processor']['requests'][0]['call_receipt']['receipt']['status'] == 'UNKNOWN'
+        assert first['costs'][0]['status'] == 'reserved'
+        frozen_project = store.get(p['id'])
+        # Job/cost changes do not change the project snapshot; they must still
+        # be read afresh, rather than hidden by a cached full response.
+        job.update(status='failed', receipt={'status':'KNOWN_FAILURE', 'error':'synthetic refusal'})
+        store.put_job(job)
+        store.settle('cost-one', .05, {'status':'KNOWN_FAILURE'})
+        second = client.get(route).json()
+        assert second['processor']['requests'][0]['call_receipt']['receipt']['status'] == 'KNOWN_FAILURE'
+        assert second['costs'][0]['status'] == 'settled' and second['costs'][0]['actual'] == .05
+        assert store.get(p['id']) == frozen_project
+        saved = client.post(route+'/result', json={'markdown':'# Second\n\nOriginal fact.'},
+                            headers={'x-sourceloom':'1'})
+        assert saved.status_code == 200
+        current = client.get(route).json()
+        assert len(current['processor']['versions']) == 2
+        assert processor.active_version(current)['markdown'] == '# Second\n\nOriginal fact.'
+        assert current['processor']['versions'][0]['markdown'] == '# First\n\nOriginal fact.'
+
+
+def test_compressed_long_detail_preserves_every_decoded_byte(tmp_path):
+    import gzip
+    store = Store(tmp_path/'data')
+    p = processor.create(store, 'Synthetic long saved material')
+    raw = ('Original text with numbers 2024, 1.25 and source relationships.\n' * 100).encode()
+    p = processor.prepare(store, p['id'], [('source.txt', raw)])
+    p = processor.save_result(store, p['id'], '# Saved\n\n'+raw.decode())
+    config = load_config() | {'data_dir':str(store.root), 'auth_mode':'local', 'external_worker':True}
+    route = '/api/processor/projects/'+p['id']
+    with TestClient(create_app(config)) as client:
+        identity = client.get(route, headers={'accept-encoding':'identity'})
+        with client.stream('GET', route, headers={'accept-encoding':'gzip'}) as compressed:
+            wire = b''.join(compressed.iter_raw())
+            assert compressed.status_code == identity.status_code == 200
+            assert compressed.headers['content-encoding'] == 'gzip'
+            assert compressed.headers['cache-control'] == identity.headers['cache-control'] == 'no-store'
+        assert gzip.decompress(wire) == identity.content
+        assert identity.json()['processor']['versions'][0]['markdown'] == '# Saved\n\n'+raw.decode()
+        assert store.get(p['id']) == p
+
+
 def test_delivery_status_reuse_checks_every_receipt_byte(tmp_path, monkeypatch):
     import os
     from sourceloom import readweave

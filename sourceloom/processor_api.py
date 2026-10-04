@@ -243,7 +243,10 @@ def register(app, store, config):
 
     @app.get(prefix+'/{pid}')
     def get(pid:str, reading:bool=False):
-        return JSONResponse(reading_detail(pid)) if reading else detail(pid)
+        # Both projections already contain JSON-native saved data. Returning a
+        # Response avoids a second recursive traversal of full source objects,
+        # historical drafts and receipts on every polling read.
+        return JSONResponse(reading_detail(pid) if reading else detail(pid))
 
     @app.get(prefix+'/{pid}/progress')
     def progress(pid:str):
