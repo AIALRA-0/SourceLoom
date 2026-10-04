@@ -17,13 +17,59 @@ const limit=n=>Math.max(.25,Math.min(4,Number(n)||1));
 const safeURL=url=>{try{const value=new URL(url,location.href);return ['http:','https:','mailto:'].includes(value.protocol)?value.href:null;}catch{return null;}};
 
 // The preparation and comparison panes display the same original. Retain one
-// PDF.js document while either pane uses it, rather than downloading/parsing twice.
+// PDF.js document while either pane uses it, with at most two cached parsed
+// documents (active leases are never evicted). Views release DOM and canvases.
 const documents=new Map();
+const documentLimit=2,documentIdleTTL=30_000;
+function discardDocument(key,entry){
+  if(entry.users||entry.destroyed)return;
+  if(documents.get(key)===entry)documents.delete(key);
+  clearTimeout(entry.timer);entry.timer=null;entry.destroyed=true;
+  // onProgress belongs to a view; an idle parsed document must not retain it.
+  entry.task.onProgress=null;
+  try{entry.task.destroy()?.catch(()=>{});}catch{}
+}
+function trimDocuments(now=Date.now()){
+  for(const [key,entry] of documents){
+    if(!entry.users&&(entry.failed||now-entry.idleAt>=documentIdleTTL))discardDocument(key,entry);
+  }
+  for(const [key,entry] of documents){
+    if(documents.size<=documentLimit)break;
+    if(!entry.users)discardDocument(key,entry);
+  }
+}
 function acquireDocument(key,options){
+  trimDocuments();
   let entry=documents.get(key);
-  if(!entry){entry={task:pdfjs.getDocument(options),users:0};documents.set(key,entry);}
+  if(!entry){
+    entry={task:pdfjs.getDocument(options),users:0,idleAt:0,timer:null,failed:false,destroyed:false};
+    documents.set(key,entry);
+    entry.task.promise.catch(()=>{
+      entry.failed=true;
+      if(documents.get(key)===entry)documents.delete(key);
+      if(!entry.users)discardDocument(key,entry);
+    });
+  }
+  clearTimeout(entry.timer);entry.timer=null;
+  documents.delete(key);documents.set(key,entry);
   entry.users++;
-  return {task:entry.task,release(){if(--entry.users===0){documents.delete(key);entry.task.destroy().catch(()=>{});}}};
+  trimDocuments();
+  let released=false;
+  return {task:entry.task,release(){
+    if(released)return;released=true;
+    if(--entry.users)return;
+    entry.task.onProgress=null;
+    if(entry.failed){discardDocument(key,entry);return;}
+    entry.idleAt=Date.now();
+    if(documents.get(key)===entry){documents.delete(key);documents.set(key,entry);}
+    trimDocuments();
+    if(!entry.destroyed){
+      const timer=setTimeout(()=>{
+        if(entry.timer===timer&&documents.get(key)===entry)discardDocument(key,entry);
+      },documentIdleTTL);
+      entry.timer=timer;
+    }
+  }};
 }
 
 // A display adapter, not a second reader: LinkedReader retains scroll, mapping,

@@ -73,22 +73,89 @@ def test_old_delivery_status_cannot_label_a_new_version_as_imported():
     assert r.stdout=='true'
 
 
-def test_same_original_pdf_is_parsed_once_and_released_after_both_views():
+def run_pdf_lease_case(case):
     script=r'''
     const fs=require('node:fs'),vm=require('node:vm'),arg=JSON.parse(fs.readFileSync(0,'utf8'));
     const s=fs.readFileSync(arg.root+'/sourceloom/static/processor_pdf.js','utf8');
     const code=s.slice(s.indexOf('const documents=new Map();'),s.indexOf('// A display adapter'));
-    const count={open:0,destroy:0},ctx={Map,pdfjs:{getDocument(){count.open++;return {destroy(){count.destroy++;return Promise.resolve();}}}}};
+    let clock=0,timerId=0,rejectNext;
+    const timers=new Map(),tasks=[],unhandled=[],count={open:0,destroy:0};
+    process.on('unhandledRejection',reason=>unhandled.push(reason));
+    const ctx={Map,Date:{now:()=>clock},setTimeout(fn,ms){const id=++timerId;timers.set(id,{at:clock+ms,fn});return id;},clearTimeout(id){timers.delete(id);},
+      pdfjs:{getDocument(options){
+        count.open++;const task={options,destroyed:0,onProgress:()=>{},promise:options.fail?new Promise((_,reject)=>rejectNext=reject):Promise.resolve({}),
+          destroy(){this.destroyed++;count.destroy++;return Promise.resolve();}};
+        tasks.push(task);return task;
+      }}};
     vm.createContext(ctx);vm.runInContext(code,ctx);
-    const a=ctx.acquireDocument('material/source1',{}),b=ctx.acquireDocument('material/source1',{});
-    if(a.task!==b.task||count.open!==1)throw Error('same original downloaded twice');
-    a.release();if(count.destroy)throw Error('visible sibling document was destroyed');
-    b.release();if(count.destroy!==1)throw Error('source was not released');
-    const c=ctx.acquireDocument('material/source2',{});if(count.open!==2)throw Error('new source reused old PDF');c.release();
-    process.stdout.write(JSON.stringify(count));
+    const cache=vm.runInContext('documents',ctx),acquire=(key,options={})=>ctx.acquireDocument(key,options);
+    const assert=(condition,problem)=>{if(!condition)throw Error(problem);};
+    function advance(ms){const end=clock+ms;while(true){const due=[...timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!due)break;
+      timers.delete(due[0]);clock=due[1].at;due[1].fn();}clock=end;}
+    (async()=>{
+      if(arg.case==='share'){
+        const a=acquire('material/source1'),b=acquire('material/source1');
+        assert(a.task===b.task&&count.open===1,'same original downloaded twice');
+        a.release();assert(!count.destroy,'visible sibling document was destroyed');
+        b.release();assert(!count.destroy&&a.task.onProgress===null,'idle document was destroyed or retained a view callback');
+        advance(30_000);assert(count.destroy===1&&!cache.size,'idle source was not released');
+        const c=acquire('material/source2');assert(count.open===2,'new source reused old PDF');c.release();advance(30_000);
+      }else if(arg.case==='return'){
+        const a=acquire('A');a.release();advance(1_000);const b=acquire('B');b.release();advance(1_000);
+        const again=acquire('A');assert(again.task===a.task&&count.open===2&&!count.destroy,'A/B/A parsed original again');again.release();
+        advance(30_000);assert(count.destroy===2&&!cache.size,'retained originals did not expire');
+      }else if(arg.case==='identity'){
+        const a=acquire('/material1/file:sha1'),b=acquire('/material1/file:sha2'),c=acquire('/material2/file:sha1');
+        assert(count.open===3&&a.task!==b.task&&a.task!==c.task,'source digest or material URL ignored');
+        a.release();b.release();c.release();advance(30_000);assert(count.destroy===3,'different sources not released');
+      }else if(arg.case==='lru'){
+        const a=acquire('A');a.release();advance(1);const b=acquire('B');b.release();advance(1);
+        const again=acquire('A');again.release();const c=acquire('C');
+        assert(b.task.destroyed===1&&!a.task.destroyed&&!c.task.destroyed&&cache.size===2&&!cache.has('B'),'oldest idle document not evicted');
+        c.release();advance(30_000);assert(count.destroy===3,'LRU documents leaked');
+      }else if(arg.case==='ttl'){
+        const a=acquire('A');a.release();advance(29_999);assert(!count.destroy,'idle TTL ended early');advance(1);
+        assert(a.task.destroyed===1&&!cache.size,'idle TTL did not end');const again=acquire('A');assert(again.task!==a.task&&count.open===2,'expired PDF was reused');again.release();
+      }else if(arg.case==='clamped-timer'){
+        const a=acquire('A');a.release();clock=30_001;const again=acquire('A');
+        assert(a.task.destroyed===1&&again.task!==a.task&&count.open===2,'background-clamped expiration was ignored');again.release();
+      }else if(arg.case==='failure'){
+        const a=acquire('A',{fail:true}),b=acquire('A');rejectNext(Error('PDF decode failed'));await new Promise(setImmediate);
+        assert(!cache.has('A')&&!a.task.destroyed,'failed active PDF was cached or destroyed early');const next=acquire('A');
+        assert(next.task!==a.task&&count.open===2,'failed PDF was reused');a.release();assert(!a.task.destroyed,'failed shared PDF destroyed with active sibling');
+        b.release();assert(a.task.destroyed===1&&cache.get('A').task===next.task&&!next.task.destroyed,'old failed lease changed replacement identity');
+        next.release();advance(30_000);assert(count.destroy===2,'failed task or replacement leaked');await new Promise(setImmediate);assert(!unhandled.length,'unhandled task rejection');
+      }else if(arg.case==='idle-failure'){
+        const a=acquire('A',{fail:true});a.release();rejectNext(Error('PDF decode failed'));await new Promise(setImmediate);
+        assert(a.task.destroyed===1&&!cache.size&&!timers.size&&!unhandled.length,'failed idle PDF or rejection retained');
+      }else if(arg.case==='active'){
+        const a=acquire('A'),b=acquire('B'),c=acquire('C');advance(60_000);
+        assert(cache.size===3&&!count.destroy,'active leases evicted by limit or TTL');b.release();
+        assert(b.task.destroyed===1&&cache.size===2&&!a.task.destroyed&&!c.task.destroyed,'capacity release destroyed active document');
+        b.release();assert(count.destroy===1,'duplicate release destroyed twice');a.release();c.release();advance(30_000);assert(count.destroy===3,'active leases leaked after release');
+      }else if(arg.case==='repeat-release'){
+        const a=acquire('A'),b=acquire('A');a.release();a.release();advance(60_000);
+        assert(!count.destroy&&cache.size===1,'duplicate release lost active sibling');b.release();b.release();
+        assert(!count.destroy&&timers.size===1,'duplicate last release destroyed early or duplicated timer');advance(30_000);assert(count.destroy===1,'source destroyed more than once');
+      }else if(arg.case==='late-timer'){
+        const a=acquire('A');a.release();const oldCallback=[...timers.values()][0].fn;advance(1);const again=acquire('A');
+        oldCallback();assert(!count.destroy&&again.task===a.task,'already queued expiration destroyed active reuse');again.release();oldCallback();
+        assert(!count.destroy&&timers.size===1,'old callback destroyed renewed idle lease');advance(30_000);assert(count.destroy===1,'renewed expiration not applied');
+      }else throw Error('unknown test');
+      process.stdout.write(JSON.stringify(count));
+    })().catch(e=>{console.error(e);process.exit(1)});
     '''
-    r=subprocess.run([shutil.which('node'),'-e',script],input=json.dumps({'root':str(ROOT)}),text=True,capture_output=True,check=True,timeout=10)
-    assert json.loads(r.stdout)==dict(open=2,destroy=2)
+    r=subprocess.run([shutil.which('node'),'-e',script],input=json.dumps({'root':str(ROOT),'case':case}),text=True,capture_output=True,check=True,timeout=10)
+    return json.loads(r.stdout)
+
+
+def test_same_original_pdf_is_parsed_once_and_released_after_both_views():
+    assert run_pdf_lease_case('share')==dict(open=2,destroy=2)
+
+
+@pytest.mark.parametrize('case',['return','identity','lru','ttl','clamped-timer','failure','idle-failure','active','repeat-release','late-timer'])
+def test_pdf_documents_reuse_only_valid_identities_and_have_bounded_idle_lifetimes(case):
+    run_pdf_lease_case(case)
 
 
 def test_user_takeover_does_not_restore_a_stale_layout_bookmark():
