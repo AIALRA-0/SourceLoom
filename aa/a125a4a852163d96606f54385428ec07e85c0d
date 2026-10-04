@@ -1,0 +1,45 @@
+sourceloom/static/processor_tree.js
+  s_36a381ab4bccf9::t_c889bbd7d7bf95 21-22,36
+  s_36a381ab4bccf9::t_4279ba12199e23 26,59
+  s_36a381ab4bccf9::t_580e4fd1822b4e 33
+  s_36a381ab4bccf9::t_28ce2b6652417b 18-19,31
+  s_36a381ab4bccf9::t_4f4e9caeb936b8 12,16,20,24,46,62
+sourceloom/static/processor_workbench.js
+  s_36a381ab4bccf9::t_f608104a2adcad 42-43,46,80
+  s_36a381ab4bccf9::t_c315c19e815321 82-96
+  s_36a381ab4bccf9::t_f2b64300d1e491 116
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_f124f535bd6489 22,24,26,37-38,59,61,68-70,73,75
+  s_36a381ab4bccf9::t_d2afc5e9845143 56-57,60
+  s_36a381ab4bccf9::t_f0f7df0e811623 35
+tests/test_processor_tree_frontend.py
+  s_36a381ab4bccf9::t_99e0fe14de74df 138-196
+  s_36a381ab4bccf9::t_a419b455fdb0a0 210-224
+  s_36a381ab4bccf9::t_fe11f5f55b28ca 197-209
+sourceloom/static/processor.js
+  s_36a381ab4bccf9::t_b2d0bd978cc931 513-515
+tests/test_processor_reading_stability.py
+  s_36a381ab4bccf9::t_cd29060876146d 11-37
+tests/test_processor_reading_toolbar.py
+  s_36a381ab4bccf9::t_697cb5ca4db3d7 50-73
+  s_36a381ab4bccf9::t_a0689b0efb83b9 26-35,37-49
+  s_36a381ab4bccf9::t_6aced854bd17cc 36
+deploy/README.md
+  s_36a381ab4bccf9::t_d9325a09ac7ce5 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aaa125a4a852163d96606f54385428ec07e85c0d",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
