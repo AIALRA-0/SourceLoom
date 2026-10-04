@@ -135,3 +135,90 @@ def test_material_identity_change_cancels_drag_before_tree_sync():
     execute("""
     tree.drag={currentId:'old'};tree.deps.current=()=>({id:'new'});let reason;tree.cancelDrag=message=>reason=message;ctx.Tree.prototype.syncCurrent.call(tree);assert(reason.includes('切换材料'));
     """)
+
+
+def test_choose_renders_once_preserving_selection_focus_without_open():
+    execute("""
+    const a={id:'a',kind:'material'},b={id:'b',kind:'material'};tree.rows=[a,b];tree.rowHeight=32;tree.host.clientHeight=200;tree.host.scrollTop=0;
+    ctx.CSS={escape:x=>x};let paints=0,focused;tree.renderWindow=()=>paints++;tree.canvas.querySelector=()=>({focus:()=>focused=tree.focusId});tree.deps.open=()=>{throw Error('selection must not open reader')};
+    tree.choose(a);assert.equal(paints,1);assert.equal(focused,'a');assert.deepEqual([...tree.selected],['a']);tree.choose(b,{ctrlKey:true});assert.equal(paints,2);assert.deepEqual([...tree.selected],['a','b']);
+    tree.focus('a');assert.equal(paints,3);assert.deepEqual([...tree.selected],['a','b']);
+    """)
+
+
+def test_scroll_persistence_coalesces_but_explicit_flush_keeps_latest_position():
+    execute("""
+    let callback,scheduled=0,cancelled=[],writes=[];ctx.setTimeout=fn=>{callback=fn;scheduled++;return scheduled};ctx.clearTimeout=id=>cancelled.push(id);ctx.localStorage.setItem=(key,value)=>writes.push(JSON.parse(value));delete tree.persist;
+    tree.schedulePersist();tree.host.scrollTop=83;tree.schedulePersist();assert.equal(scheduled,1);assert.equal(writes.length,0);callback();assert.equal(writes.length,1);assert.equal(writes[0].scroll,83);
+    tree.schedulePersist();tree.host.scrollTop=127;tree.persist();assert.equal(writes.length,2);assert.equal(writes[1].scroll,127);assert.equal(tree.persistTimer,null);assert(cancelled.includes(2));
+    """)
+
+
+def test_move_refreshes_only_source_destination_and_parent_counts():
+    execute("""
+    const a={id:'a',kind:'folder',title:'A'},b={id:'b',kind:'folder',title:'B'},c={id:'c',kind:'folder',title:'C'},p={id:'p',kind:'material',title:'Paper',parent_id:'a',revision:2};
+    tree.cache.set('root',{nodes:[a,b,c]});tree.cache.set('a',{nodes:[p]});tree.cache.set('b',{nodes:[]});const untouched={nodes:[{id:'other',title:'Other'}]};tree.cache.set('c',untouched);tree.expanded=new Set(['a','b','c']);tree.rows=[a,p,b,c];let urls=[];
+    tree.deps.api=async url=>{const parent=new URLSearchParams(url.split('?')[1]).get('parent_id');urls.push(parent);if(parent==='c')throw Error('unrelated folder must not gate movement');return {nodes:parent==='root'?[a,b,c]:parent==='b'?[{...p,parent_id:'b',revision:3}]:[],more:false}};
+    await tree.refreshChanged('move',{parent_id:'b'},[p],{affected_ids:['p']});assert.deepEqual([...urls].sort(),['a','b','root']);assert.strictEqual(tree.cache.get('c'),untouched);assert.equal(tree.cache.get('a').nodes.length,0);assert.equal(tree.cache.get('b').nodes[0].id,'p');
+    """)
+
+
+def test_folder_rename_updates_loaded_descendant_paths_without_other_branches():
+    execute("""
+    const f={id:'f',kind:'folder',title:'Old',parent_id:null,path:''},sub={id:'sub',kind:'folder',title:'Sub',parent_id:'f',path:'Old'};
+    tree.cache.set('root',{nodes:[f,{id:'other',kind:'folder',title:'Other'}]});tree.cache.set('f',{nodes:[sub]});tree.cache.set('sub',{nodes:[{id:'p',kind:'material',title:'Paper',parent_id:'sub',path:'Old/Sub'}]});tree.cache.set('other',{nodes:[]});let fetched=[];
+    tree.deps.api=async url=>{const parent=new URLSearchParams(url.split('?')[1]).get('parent_id');fetched.push(parent);return {nodes:parent==='root'?[{...f,title:'New'}]:parent==='f'?[{...sub,path:'New'}]:[{id:'p',kind:'material',title:'Paper',parent_id:'sub',path:'New/Sub'}],more:false}};
+    await tree.refreshChanged('rename',{title:'New'},[f],{affected_ids:['f']});assert.deepEqual([...fetched].sort(),['f','root','sub']);assert.equal(tree.cache.get('sub').nodes[0].path,'New/Sub');
+    """)
+
+
+def test_refresh_shows_root_before_slow_expanded_folder_and_bounds_reads():
+    execute("""
+    tree.cacheContext=JSON.stringify(['mine','','name']);tree.cache.set('root',{nodes:[{id:'prior',title:'Prior',kind:'material'}]});let releases=[],active=0,maximum=0;
+    tree.expanded=new Set(['a','b','c','d','e']);tree.deps.api=async url=>{const parent=new URLSearchParams(url.split('?')[1]).get('parent_id');if(parent==='root')return {nodes:[{id:'now',title:'Now',kind:'material'}]};active++;maximum=Math.max(maximum,active);return new Promise(resolve=>releases.push(()=>{active--;resolve({nodes:[]})}));};
+    const pending=tree.refresh();await new Promise(resolve=>setImmediate(resolve));assert.equal(tree.rows[0].id,'now');assert.equal(active,4);assert.equal(maximum,4);
+    while(releases.length){releases.shift()();await new Promise(resolve=>setImmediate(resolve));}await pending;assert.equal(maximum,4);
+    """)
+
+
+def test_refresh_preserves_loaded_branch_page_extent_and_load_more_offset():
+    execute("""
+    tree.cache.set('f',{nodes:Array.from({length:720},(_,i)=>({id:String(i),title:String(i),kind:'material'}))});let offsets=[];
+    tree.deps.api=async url=>{const p=new URLSearchParams(url.split('?')[1]),offset=Number(p.get('offset')),limit=Number(p.get('limit'));assert(limit>0&&limit<=500);offsets.push(offset);return {nodes:Array.from({length:limit},(_,i)=>({id:String(offset+i),title:'Item',kind:'document'})),more:true};};
+    await tree.load('f',tree.epoch,false,true);assert.equal(tree.cache.get('f').nodes.length,720);assert.deepEqual(offsets,[0,500]);await tree.load('f',tree.epoch,true);assert.equal(tree.cache.get('f').nodes.length,920);assert.equal(offsets[2],720);
+    """)
+
+
+def test_late_management_receipt_does_not_refresh_replacement_space():
+    execute("""
+    tree.rows=[{id:'p',kind:'material',revision:2}];tree.selected=new Set(['p']);let finish,refreshes=0,metadata=0;tree.deps.post=()=>new Promise(resolve=>finish=resolve);tree.refreshChanged=async()=>refreshes++;tree.deps.metadataChanged=()=>metadata++;
+    const pending=tree.action('rename',{title:'Changed'});tree.epoch++;tree.mode='examples';finish({action:'rename',affected_ids:['p']});await pending;assert.equal(refreshes,0);assert.equal(metadata,0);
+    """)
+
+
+def test_restore_refreshes_trash_branch_without_unrelated_expansion():
+    execute("""
+    tree.mode='trash';const f={id:'f',kind:'folder',title:'Deleted',parent_id:null},other={id:'other',kind:'folder',title:'Other'};tree.cache.set('root',{nodes:[f,other]});tree.cache.set('f',{nodes:[{id:'child',title:'Child'}]});const kept={nodes:[]};tree.cache.set('other',kept);tree.expanded=new Set(['f','other']);let fetched=[];
+    tree.deps.api=async url=>{const q=new URLSearchParams(url.split('?')[1]);assert.equal(q.get('space'),'trash');fetched.push(q.get('parent_id'));return {nodes:[other],more:false}};await tree.refreshChanged('restore',{},[f],{affected_ids:['f','child']});assert.deepEqual(fetched,['root']);assert(!tree.cache.has('f'));assert(!tree.expanded.has('f'));assert.strictEqual(tree.cache.get('other'),kept);
+    """)
+
+
+def test_stale_branch_error_does_not_collapse_new_space_expansion():
+    execute("""
+    const f={id:'f',kind:'folder',title:'Folder'};tree.focus=()=>{};let fail,notifications=0;tree.load=()=>new Promise((resolve,reject)=>fail=reject);tree.deps.notify=()=>notifications++;const pending=tree.toggle(f);tree.epoch++;tree.mode='trash';tree.expanded=new Set(['f']);fail(Error('stale read failed'));await pending;assert(tree.expanded.has('f'));assert.equal(notifications,0);
+    """)
+
+
+def test_open_target_feedback_is_immediate_and_old_completion_cannot_clear_new_target():
+    execute("""
+    tree.cancelDrag=()=>{};let completions=[];tree.deps.open=id=>new Promise(resolve=>completions.push(resolve));
+    const first=tree.open({id:'a',kind:'material',title:'First'});assert.equal(tree.status.textContent,'正在打开：First');
+    const second=tree.open({id:'b',kind:'material',title:'Second'});assert.equal(tree.status.textContent,'正在打开：Second');completions[0]();await first;assert.equal(tree.status.textContent,'正在打开：Second');completions[1]();await second;assert.equal(tree.status.textContent,'');
+    """)
+
+
+def test_local_management_refresh_paints_after_related_branches_together():
+    execute("""
+    tree.cache.set('root',{nodes:[]});tree.cache.set('a',{nodes:[{id:'p',kind:'material',title:'Paper',parent_id:'a'}]});tree.cache.set('b',{nodes:[]});let completions=[],paints=0;tree.refreshRows=()=>paints++;tree.deps.api=()=>new Promise(resolve=>completions.push(resolve));
+    const pending=tree.refreshChanged('move',{parent_id:'b'},tree.cache.get('a').nodes,{affected_ids:['p']});assert.equal(completions.length,2);completions[0]({nodes:[]});await new Promise(resolve=>setImmediate(resolve));assert.equal(paints,0);completions[1]({nodes:[{id:'p',kind:'document',title:'Paper',parent_id:'b'}]});await pending;assert.equal(paints,1);
+    """)

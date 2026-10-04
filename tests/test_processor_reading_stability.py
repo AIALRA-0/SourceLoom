@@ -8,6 +8,33 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_opening_saved_material_marks_current_without_refreshing_catalog():
+    script = r'''
+    const fs=require('node:fs'),vm=require('node:vm');
+    const arg=JSON.parse(fs.readFileSync(0,'utf8'));
+    const source=fs.readFileSync(arg.root+'/sourceloom/static/processor.js','utf8');
+    const render=source.slice(source.indexOf('function render({'),source.indexOf('function sourceMapEntries('));
+    const refresh=source.slice(source.indexOf('async function refreshProjects('),source.indexOf('\n',source.indexOf('async function refreshProjects(')));
+    const count={mark:0,catalog:0,source:0};
+    const ctx={project:{id:'p1',title:'Saved article',library:{}},pack:null,projects:[],base:'/api/processor',
+      $:()=>({classList:{toggle(){}}}),processor:()=>({}),items:v=>v||[],versions:()=>[],requests:()=>[],
+      documentStatus:()=>'',isUnknown:()=>false,library:{tree:{syncCurrent(){count.mark++;}}},
+      drawList(){count.catalog++;},drawSource(){count.source++;},drawPack(){},drawVersions(){},
+      drawRequests(){},drawChecks(){},drawChannels(){},api:async()=>[{id:'new-material'}]};
+    vm.createContext(ctx);vm.runInContext(render+'\n'+refresh,ctx);
+    (async()=>{
+      ctx.render();ctx.render({source:false});
+      if(count.mark!==2||count.catalog!==0||count.source!==1)throw Error('Opening reloaded material catalog');
+      await ctx.refreshProjects();
+      if(count.catalog!==1||ctx.projects[0].id!=='new-material')throw Error('Explicit catalog refresh stopped working');
+      process.stdout.write('true');
+    })().catch(e=>{console.error(e);process.exit(1)});
+    '''
+    result=subprocess.run([shutil.which('node'),'-e',script],input=json.dumps({'root':str(ROOT)}),
+                          text=True,capture_output=True,check=True,timeout=10)
+    assert result.stdout=='true'
+
+
 def run_case(case):
     script = r'''
     const fs=require('node:fs'),vm=require('node:vm');

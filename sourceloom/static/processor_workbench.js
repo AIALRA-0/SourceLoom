@@ -39,10 +39,11 @@ export class ReadingWorkbench {
     const old=q('.editor-toolbar');if(old)old.hidden=true;
     // Controls detached with the old toolbar are recovered from its captured nodes below.
     const left=q('#compare-source .section-heading');left.replaceChildren(...this.controls[0]);left.classList.add('pane-toolbar','source-toolbar');
-    const right=el('div','pane-toolbar draft-toolbar');right.append(...this.controls[1]);
+    const right=el('div','pane-toolbar draft-toolbar');
+    const draftTools=el('div','draft-tools');draftTools.append(...this.controls[1]);
     const shared=el('div','reading-toolbar');shared.id='shared-reading-tools';
     const views=move('.mobile-compare-switch',shared);views.querySelector('#mobile-compare-left').textContent='原件';views.querySelector('#mobile-compare-right').textContent='成稿';
-    shared.append(this.controls[2]);toolbar.append(left,shared,right);
+    shared.append(this.controls[2]);right.append(shared,draftTools);toolbar.append(left,right);
     q('#compare-source').append(this.controls[3]);
   }
   // Capture existing reader controls before their toolbar is rebuilt.
@@ -76,8 +77,23 @@ export class ReadingWorkbench {
     const left=q('#reading-controls>.source-toolbar');
     q('#compare-source').append(q('#mapping-status'));
     const tools=el('div','source-quick-tools');tools.append(button('pdf-thumbnails','thumbs','原件目录与页缩略图'),button('pdf-hand','hand','切换手形平移'),button('pdf-rotate','rotate','顺时针旋转原件'),button('pdf-copy','copy','复制所选原文'),button('pdf-copy-cite','copy','复制所选原文并附出处','引用'));
-    left.append(tools.querySelector('#pdf-thumbnails'));const sourceMore=menu('原文件');sourceMore.p.innerHTML='<a id="pdf-original-open" target="_blank" rel="noopener noreferrer">独立打开原件</a><a id="pdf-original-download" download>下载原件</a>';tools.append(sourceMore.d);
+    const sourceMore=menu('原文件');sourceMore.p.innerHTML='<a id="pdf-original-open" target="_blank" rel="noopener noreferrer">独立打开原件</a><a id="pdf-original-download" download>下载原件</a>';tools.append(sourceMore.d);
     const originalTools=menu('原件工具');originalTools.d.classList.add('source-more');originalTools.p.append(tools);left.append(originalTools.d);
+    // A narrow split keeps paging in place; existing secondary controls move
+    // into the same menu instead of covering the other pane or shrinking text.
+    const sourceFind=this.controls[0][1],pages=this.controls[0][2],zoom=this.controls[0][3];
+    const draft=q('.draft-toolbar');
+    let sourceWidth=0;
+    const fitTools=()=>{
+      if(left.clientWidth){
+        if(!sourceWidth&&sourceFind.parentElement===left){sourceWidth=[...left.children].reduce((sum,n)=>sum+n.getBoundingClientRect().width,18+(left.children.length-1)*4);}
+        const compact=left.clientWidth<sourceWidth;
+        if(compact&&zoom.parentElement===left){originalTools.p.prepend(sourceFind,zoom);}
+        else if(!compact&&zoom.parentElement!==left){left.insertBefore(sourceFind,pages);left.insertBefore(zoom,originalTools.d);}
+      }
+      draft.classList.toggle('compact-tools',draft.clientWidth>0&&draft.clientWidth<380&&!layout.classList.contains('source-only'));
+    };
+    this.toolResize=new ResizeObserver(fitTools);this.toolResize.observe(left);this.toolResize.observe(draft);
     const thumb=el('dialog','thumbnail-dialog');thumb.id='pdf-navigation';thumb.innerHTML='<div class="dialog-heading"><h2>原件目录与页面</h2><button type="button" aria-label="关闭原件导航">×</button></div><nav id="pdf-outline" aria-label="原生文档目录"></nav><div id="pdf-thumbnail-list" class="pdf-thumbnail-list"></div>';document.body.append(thumb);thumb.querySelector('button').onclick=()=>thumb.close();
     const view=()=>this.deps.reader.pdfView?.('compare');
     originalTools.d.addEventListener('mousedown',e=>{if(e.target.closest('button,summary')&&view()?.captureSelection())e.preventDefault();});
@@ -97,7 +113,7 @@ export class ReadingWorkbench {
     q('#reading-width').onchange=e=>this.deps.reader.layoutChange(()=>{const doc=this.deps.preview();if(doc){doc.body.style.maxWidth=e.target.value==='measure'?'42em':'';doc.body.style.margin='0 auto';}});
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){for(const d of document.querySelectorAll('.tool-menu[open]'))d.open=false;if(q('#sidebar').classList.contains('open')){this.closeSidebar();const trigger=q('#reading-sidebar').offsetParent?q('#reading-sidebar'):q('#sidebar-toggle');trigger.focus();}}});
     document.addEventListener('click',e=>{for(const d of document.querySelectorAll('.tool-menu[open]'))if(!d.contains(e.target))d.open=false;if(matchMedia('(max-width:700px)').matches&&q('#sidebar').classList.contains('open')&&!q('#sidebar').contains(e.target)&&!e.target.closest('#reading-sidebar,#sidebar-toggle'))this.closeSidebar();});
-    for(const toolbar of document.querySelectorAll('.pane-toolbar,.reading-toolbar')){toolbar.setAttribute('role','toolbar');toolbar.setAttribute('aria-label','阅读工具');toolbar.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key)||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;const buttons=[...toolbar.querySelectorAll('button,summary,select')].filter(n=>n.getClientRects().length);const i=buttons.indexOf(e.target);if(i<0)return;e.preventDefault();buttons[e.key==='Home'?0:e.key==='End'?buttons.length-1:(i+(e.key==='ArrowLeft'?-1:1)+buttons.length)%buttons.length].focus();});}
+    for(const toolbar of document.querySelectorAll('.pane-toolbar,.reading-toolbar')){toolbar.setAttribute('role','toolbar');toolbar.setAttribute('aria-label',toolbar.classList.contains('source-toolbar')?'原件工具':toolbar.classList.contains('reading-toolbar')?'对照模式':'成稿工具');toolbar.addEventListener('keydown',e=>{if(e.target.closest('[role=toolbar]')!==toolbar)return;if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key)||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;const buttons=[...toolbar.querySelectorAll('button,summary,select')].filter(n=>n.getClientRects().length&&!n.disabled&&!n.closest('details:not([open]) .menu-panel')&&n.closest('[role=toolbar]')===toolbar);const i=buttons.indexOf(e.target);if(i<0)return;e.preventDefault();buttons[e.key==='Home'?0:e.key==='End'?buttons.length-1:(i+(e.key==='ArrowLeft'?-1:1)+buttons.length)%buttons.length].focus();});}
   }
   async refresh(){const c=this.deps.context();if(!c.projectId||!c.versionId)return;const token=++this.summaryToken;try{const r=await this.deps.api(`/api/processor/projects/${encodeURIComponent(c.projectId)}/versions/${encodeURIComponent(c.versionId)}/issues`);if(token!==this.summaryToken||c.projectId!==this.deps.context().projectId||c.versionId!==this.deps.context().versionId)return;this.referenceGroups=[...(r.issues||[]),...(r.resolved||[])];this.referenceContext=c;this.refreshTableActions();const issues=r.issues||[];q('#issue-trigger').textContent=issues.length===1&&issues[0].kind==='table'?`表格待确认 1 处`:r.summary||`${issues.length} 处待确认`;q('#issue-trigger').dataset.count=r.issues?.length||0;}catch{if(token===this.summaryToken)q('#issue-trigger').textContent='查看检查建议';}}
   tab(name){document.body.classList.toggle('reading-active',name==='result');if(name!=='result')q('#result-layout').classList.remove('source-only');}

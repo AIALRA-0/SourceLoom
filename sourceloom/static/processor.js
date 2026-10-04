@@ -510,7 +510,9 @@ function render({source=true}={}) {
   const pages = processor().page_count || project.inventory?.page_count;
   $('#material-summary').textContent = [pages ? `${pages} 页` : null, `${items(pack?.resources || processor().resources).length} 项资源`, `${versions().length} 个成稿版本`].filter(Boolean).join(' · ');
   $('#document-status').textContent = documentStatus(); $('#document-status').classList.toggle('warning', requests().some(isUnknown));
-  drawList();if(source){drawSource();drawPack();}drawVersions(); drawRequests(); drawChecks(); drawChannels();
+  // Opening saved prose changes the current marker, not the material catalog.
+  // Catalog changes already refresh explicitly through refreshProjects/tree actions.
+  library.tree.syncCurrent();if(source){drawSource();drawPack();}drawVersions(); drawRequests(); drawChecks(); drawChannels();
 }
 function sourceMapEntries() {return items(Array.isArray(sourceMap) ? sourceMap : sourceMap?.blocks || sourceMap?.mappings);}
 function mappingForNode(node) {
