@@ -1,0 +1,21 @@
+sourceloom/static/processor_library.js
+  s_36a381ab4bccf9::t_c7a22b5afcd155 46
+tests/test_processor_tree_frontend.py
+  s_36a381ab4bccf9::t_8872a9ed6a9bb2 225-245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "58541f33c294130892d3220256432c9092cc04d6",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
