@@ -86,3 +86,42 @@ def pdf_regressions():
 ])
 def test_pdf_frame_lifecycle(pdf_regressions,case):
     assert pdf_regressions[case]
+
+
+def test_search_highlights_only_measure_pages_with_hits_and_clear_stale_marks():
+    script = r'''
+    const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+    const source=fs.readFileSync(process.argv[1],'utf8');
+    const method=source.slice(source.indexOf('  paintHits(row){'),source.indexOf('  async copy('));
+    let measurements=0,spanQueries=0;
+    function element(tag,cls){return {tag,className:cls,style:{},children:[],parent:null,
+      append(n){n.parent=this;this.children.push(n);},
+      remove(){if(this.parent){this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null;}}};}
+    const context={element,Node:{TEXT_NODE:3},document:{createRange:()=>({setStart(){},setEnd(){},
+      getClientRects:()=>[{left:30,top:125,width:40,height:12}]})}};
+    vm.createContext(context);vm.runInContext('class View{'+method+'};globalThis.View=View;',context);
+    const frame=element('div'),sheet={
+      querySelector:()=>frame.children.find(n=>n.className==='pdf-search-highlights'),
+      querySelectorAll(){spanQueries++;return [{firstChild:{nodeType:3},textContent:'native text'}];},
+      getBoundingClientRect(){measurements++;return {left:20,top:100};}};
+    const row={page:1,sheet,frame,textLayer:{},text:{items:[{str:'native text'}]}};
+    const view=Object.create(context.View.prototype);view.hits=[];view.hitIndex=0;
+    frame.append(element('div','pdf-search-highlights'));
+    view.paintHits(row);assert.equal(frame.children.length,0);assert.equal(measurements,0);assert.equal(spanQueries,0);
+    view.hits=[{page:2,pieces:[]}];view.paintHits(row);
+    assert.equal(frame.children.length,0);assert.equal(measurements,0);assert.equal(spanQueries,0);
+    view.hits.push({page:1,pieces:[{item:0,start:0,end:6}]});view.hitIndex=1;view.paintHits(row);
+    assert.equal(measurements,1);assert.equal(spanQueries,1);assert.equal(frame.children.length,1);
+    const mark=frame.children[0].children[0];
+    assert.equal(mark.className,'pdf-search-hit pdf-search-hit-current');
+    assert.deepEqual(mark.style,{left:'10px',top:'25px',width:'40px',height:'12px'});
+    view.hits=[];view.paintHits(row);
+    assert.equal(frame.children.length,0);assert.equal(measurements,1);assert.equal(spanQueries,1);
+    process.stdout.write('true');
+    '''
+    node = shutil.which('node')
+    source = Path(__file__).resolve().parents[1]/'sourceloom/static/processor_pdf.js'
+    completed = subprocess.run([node, '-e', script, str(source)], capture_output=True,
+                               text=True, encoding='utf-8', timeout=10)
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == 'true'

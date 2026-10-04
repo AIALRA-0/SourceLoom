@@ -272,7 +272,7 @@ export class PDFDocumentView {
     this.container.scrollTop=Math.max(0,point-this.container.clientHeight*.25);this.onNavigate?.('after');this.emit(`${this.hitIndex+1} / ${this.hits.length} 处`);
   }
   paintHits(row){
-    row.sheet.querySelector('.pdf-search-highlights')?.remove();if(!row.textLayer)return;
+    row.sheet.querySelector('.pdf-search-highlights')?.remove();if(!row.textLayer||!this.hits.some(hit=>hit.page===row.page))return;
     const nodes=[...row.sheet.querySelectorAll('.textLayer span')].filter(n=>n.firstChild?.nodeType===Node.TEXT_NODE),overlay=element('div','pdf-search-highlights');
     const box=row.sheet.getBoundingClientRect();
     for(const [index,hit] of this.hits.entries()){if(hit.page!==row.page)continue;
