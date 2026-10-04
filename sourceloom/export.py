@@ -1,6 +1,7 @@
 """ReadWeave-native candidate archives retain original bytes and honest status."""
 
 import copy
+from collections import Counter
 import html
 import json
 import math
@@ -56,6 +57,22 @@ def image_presentation(obj, occurrence_index=None):
         role = ('table-symbol' if compact and obj.get('parent_kind') == 'table' else
                 'inline-component' if compact else 'source-image')
     result = {'role': role}
+    # An inline SVG is rasterized at a higher sampling resolution. Its HTML
+    # placement, not the PNG dimensions, remains the display-size authority.
+    if not places and obj.get('source_format') in {'inline-svg', 'rendered-inline-svg'}:
+        from defusedxml import ElementTree
+        from defusedxml.common import DefusedXmlException
+        from xml.etree.ElementTree import ParseError
+        try:
+            svg = ElementTree.fromstring(obj.get('raw') or '')
+            pairs = [re.fullmatch(r'\s*(\d+(?:\.\d+)?)(?:px)?\s*', svg.get(axis) or '')
+                     for axis in ('width', 'height')]
+            if svg.tag.rsplit('}', 1)[-1] == 'svg' and all(pairs):
+                size = [float(pair[1]) for pair in pairs]
+                if all(math.isfinite(n) and 1 <= n <= 10000 for n in size):
+                    result['source_css_dimensions'] = size
+        except (ParseError, DefusedXmlException, TypeError, ValueError):
+            pass
     if dimensions and len(dimensions) == len(places):
         result['source_dimensions'] = dimensions
         if len(dimensions) == 1 or all(max(pair) < 24 for pair in dimensions):
@@ -77,6 +94,9 @@ def apply_image_presentation(node, obj, occurrence_index=None):
         # instead of the bitmap's natural ratio. Width alone preserves it.
         node.attrs.pop('height', None)
         node['style'] = 'width: 1.1em; height: auto; display: inline-block; vertical-align: text-bottom; margin: 0;'
+    elif info.get('source_css_dimensions'):
+        for axis, value in zip(('width', 'height'), info['source_css_dimensions']):
+            node[axis] = str(round(value))
     return info
 
 
@@ -96,8 +116,9 @@ def reading_page(content):
             '<style>'+article_style()+'</style></head><body>'+content+'</body></html>')
 
 
-def safe_html(raw, *, source_anchors=False):
+def safe_html(raw, *, source_anchors=False, fragment_anchors=False):
     soup = BeautifulSoup(raw, "html.parser")
+    id_counts = Counter(str(node['id']) for node in soup.find_all(id=True)) if fragment_anchors else {}
     for node in list(soup.find_all(True)):
         if node.name in {"script","style","iframe","svg","object","embed"}:
             node.decompose()
@@ -112,6 +133,10 @@ def safe_html(raw, *, source_anchors=False):
         attrs = {}
         for key,value in node.attrs.items():
             if key == 'id' and source_anchors and re.fullmatch(r'loom-source-[A-Za-z0-9_-]{1,160}', str(value)):
+                attrs[key] = str(value)
+            elif (key == 'id' and fragment_anchors and node.name == 'a'
+                  and re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,159}', str(value))
+                  and id_counts[str(value)] == 1):
                 attrs[key] = str(value)
             elif key in {"rowspan","colspan"} and str(value).isdigit() and 1 <= int(value) <= 100:
                 attrs[key] = value

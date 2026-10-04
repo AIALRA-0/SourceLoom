@@ -1,12 +1,12 @@
-import {MaterialTree} from './processor_tree.js?v=file-tree-20261001';
+import {MaterialTree} from './processor_tree.js?v=startup-layout-20261003';
 const q=s=>document.querySelector(s);
 const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
 export class MaterialLibrary {
   constructor(deps){this.deps=deps;this.mode='mine';this.epoch=0;this.build();}
   build(){
-    const nav=node('nav',undefined,'library-nav');nav.setAttribute('aria-label','材料空间');
-    for(const [mode,label] of [['mine','我的材料'],['examples','示例库'],['archives','已归档'],['trash','回收站']]){const b=node('button',label);b.type='button';b.dataset.libraryMode=mode;b.onclick=()=>this.show(mode);nav.append(b);}
-    q('#material-search').closest('label').before(nav);
+    const nav=q('.library-nav')||node('nav',undefined,'library-nav');nav.setAttribute('aria-label','材料空间');
+    for(const [mode,label] of [['mine','我的材料'],['examples','示例库'],['archives','已归档'],['trash','回收站']]){const b=nav.querySelector(`[data-library-mode="${mode}"]`)||node('button',label);b.type='button';b.dataset.libraryMode=mode;b.disabled=false;b.onclick=()=>this.show(mode);if(!b.parentElement)nav.append(b);}
+    if(!nav.isConnected)q('#material-search').closest('label').before(nav);
     this.view=node('section',undefined,'library-view');this.view.id='library-view';this.view.hidden=true;q('main').append(this.view);
     this.trial=node('button','试用副本');this.trial.id='sample-trial';this.trial.type='button';this.trial.hidden=true;q('#reading-document-bar').insertBefore(this.trial,q('#toggle-editor'));
     this.trial.onclick=()=>this.trySample(this.deps.current()?.id);

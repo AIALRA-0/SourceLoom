@@ -4,18 +4,29 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SourceLoom · 材料工作台</title>
   <link rel="stylesheet" href="/static/processor.css?v=visual-unification-20260930">
-  <link rel="stylesheet" href="/static/processor_workbench.css?v=official-golive-20261002">
+  <link rel="stylesheet" href="/static/processor_workbench.css?v=startup-layout-20261003">
   <link rel="stylesheet" href="/static/processor_issues.css?v=official-golive-20261002">
-  <link rel="modulepreload" href="/static/processor_library.js?v=non-generation-baseline-20261002">
-  <script type="module" src="/static/processor.js?v=official-golive-20261002"></script>
+  <link id="processor-tree-styles" rel="stylesheet" href="/static/processor_tree.css?v=startup-layout-20261003">
+  <link rel="preload" as="script" href="/static/processor_startup.js?v=startup-layout-20261003">
+  <link rel="modulepreload" href="/static/processor_library.js?v=startup-layout-20261003">
+  <script id="processor-entry" type="module" src="/static/processor.js?v=startup-layout-20261003"></script>
 </head>
-<body>
+<body class="reader-product">
+  <script src="/static/processor_startup.js?v=startup-layout-20261003"></script>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="/">SourceLoom<span>把材料整理好，开始阅读</span></a>
       <button class="primary" id="new-material">＋ 导入材料</button>
+      <nav class="library-nav" aria-label="材料空间">
+        <button type="button" data-library-mode="mine" aria-current="true" disabled>我的材料</button>
+        <button type="button" data-library-mode="examples" disabled>示例库</button>
+        <button type="button" data-library-mode="archives" disabled>已归档</button>
+        <button type="button" data-library-mode="trash" disabled>回收站</button>
+      </nav>
       <label class="search"><span class="sr-only">搜索材料</span><input id="material-search" type="search" placeholder="搜索材料"></label>
-      <nav id="material-list" aria-label="已保存材料"><p class="muted">正在连接工作台…</p></nav>
+      <div class="tree-tools"><button type="button" disabled>新建文件夹</button><button type="button" disabled>折叠全部</button><button type="button" disabled>排序</button></div>
+      <div class="tree-status" role="status"></div>
+      <nav id="material-list" class="material-tree" aria-label="已保存材料"><p class="muted">正在连接工作台…</p></nav>
       <div class="sidebar-footer"><p>原件与历史版本独立保存</p></div>
     </aside>
     <main>
@@ -23,7 +34,9 @@
       <div id="acceptance-banner" class="acceptance-banner" role="status" hidden>开发验收环境 · 本页材料和回执仅用于测试</div>
       <div id="notice" role="status" aria-live="polite" hidden></div>
       <div id="operation-status" class="operation-status" role="status" aria-live="polite" hidden><span class="activity-mark" aria-hidden="true"></span><span id="operation-message"></span><span id="operation-elapsed" class="muted"></span></div>
-      <section id="empty" class="empty">
+      <section id="startup-status" class="startup-status" role="status" aria-live="polite"><span>正在打开工作台…</span> <a href="" aria-label="重新加载工作台">重新加载</a></section>
+      <noscript><p>此工作台需要 JavaScript。请启用后重新加载。</p></noscript>
+      <section id="empty" class="empty" hidden>
         <span class="eyebrow">原件 → 模型成稿 → 图文阅读包</span>
         <h1>把整理材料的工作，<br>留给 SourceLoom</h1>
         <p>保存原件和配图，把任务交给你选择的模型，再收回一份可以直接阅读、带走和导入 ReadWeave 的图文稿</p>

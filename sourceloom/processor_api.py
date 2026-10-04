@@ -114,10 +114,11 @@ def register(app, store, config):
                 continue
             try:
                 job = store.job(request['id'])
-                receipt = job.get('receipt') or dict(status='UNKNOWN',error='执行进程已中断，原请求状态未确定，未重新投递')
+                from .processor_channels import classify_saved_receipt
+                receipt = classify_saved_receipt(job) or dict(status='UNKNOWN',error='执行进程已中断，原请求状态未确定，未重新投递')
             except KeyError:
                 receipt = dict(status='UNKNOWN',error='交接进程中断，保留请求身份，未自动投递')
-            if receipt.get('status')=='SUCCESS' and receipt.get('markdown'):
+            if receipt.get('status')=='SUCCESS' and receipt.get('markdown') and not receipt.get('historical_readonly'):
                 processor.save_result(store,saved['id'],receipt['markdown'],origin=request['channel'],request_id=request['id'])
             def restore(p, rid=request['id'], value=receipt):
                 row = next(r for r in p['processor']['requests'] if r['id']==rid)
@@ -461,14 +462,17 @@ def register(app, store, config):
 
     @app.post(prefix+'/{pid}/generate',status_code=202)
     def generate(pid:str,body:dict):
-        from .processor_channels import generate as handoff
+        from .processor_channels import generate as handoff, capabilities
+        channel = str(body.get('channel') or 'router')
+        if channel != 'router':
+            raise ValueError('自动交接只允许 Web Chat；不会借用其他 API、Codex、CLI 或 Runner')
+        capability = capabilities(config)['router']
+        if not capability['available']:
+            raise ValueError(capability['reason'])
         pack = processor.task_pack(store,pid)
         request_id = str(body.get('request_id') or identity())
         if not re.fullmatch(r'[a-zA-Z0-9_-]{8,100}',request_id):
             raise ValueError('请求身份格式无效')
-        channel = str(body.get('channel') or 'api')
-        if channel not in {'api','router'}:
-            raise ValueError('请选择 API 或 Router')
         repeated = False
         def claim(p):
             nonlocal repeated
@@ -489,7 +493,7 @@ def register(app, store, config):
             def run():
                 try:
                     receipt = handoff(store,copy.deepcopy(config),pid,pack,channel=channel,request_id=request_id)
-                    if receipt.get('status')=='SUCCESS' and receipt.get('markdown'):
+                    if receipt.get('status')=='SUCCESS' and receipt.get('markdown') and not receipt.get('historical_readonly'):
                         processor.save_result(store,pid,receipt['markdown'],origin=channel,request_id=request_id)
                 except Exception as exc:
                     # An unexpected local failure after entering the handoff
@@ -512,7 +516,7 @@ def register(app, store, config):
         receipt = query_result(store,copy.deepcopy(config),pid,rid)
         if not receipt:
             raise Conflict('原请求仍没有可用回执')
-        if receipt.get('status')=='SUCCESS' and receipt.get('markdown'):
+        if receipt.get('status')=='SUCCESS' and receipt.get('markdown') and not receipt.get('historical_readonly'):
             # Querying the same original result twice never creates two versions.
             if not any(v.get('request_id')==rid for v in p['processor']['versions']):
                 processor.save_result(store,pid,receipt['markdown'],origin=request['channel'],request_id=rid)

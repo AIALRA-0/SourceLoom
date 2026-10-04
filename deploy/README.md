@@ -10,6 +10,8 @@
 
 本部署仅覆盖经过认证的单用户 SourceLoom，不改变 Router、ReadWeave 或其他服务。官网域名、运行用户、真实目录、账号和凭据从现有代理与服务器配置确认；本文路径是通用示例。
 
+新材料自动生成仅允许 `execution_channel=chatgpt_web`、普通 `chat` 模式，使用用户指定的 Web-only 业务凭据。前端选项与服务端接单均拒绝 Codex、CLI、Runner 和其他供应商。历史读取不赋予继续派发权限；旧 Codex 原请求及回执保留审计，但不计入 Web Chat 验收。
+
 ## 2 安装与私有配置
 
 需要 Python 3.11 或以上版本。每个候选使用固定提交的程序目录；不要在正在验收的目录热改代码。
@@ -23,6 +25,10 @@ python3 -m venv /opt/sourceloom/venv
 配置示例见 [认证代理配置](config.proxy.example.json)。替换授权用户与正式 HTTPS 来源；未填写 `allowed_subject` 时代理模式拒绝用户访问。默认 `provider=manual`，没有模型密钥也能手动交接；自动模式必须另行确认实际附件、结果取回能力与调用授权。
 
 配置保存到 Git 之外的 `/etc/sourceloom/config.json`，由 [服务模板](sourceloom.service) 的 `LoadCredential` 提供。`SOURCELOOM_DATA=/var/lib/sourceloom` 是持久数据目录，运行用户必须有读写权限；私有配置与 `provider-settings.json` 不公开，数据目录只允许对应运行身份访问。已有 `provider-settings.json` 会在启动时覆盖通道配置，更新前检查其当前激活状态，不删除它来强制改变用户设置。
+
+`processor_router` 必须独立配置获准的业务凭据与显式 Web 通道；不得继承顶层 legacy provider 密钥，不得读取 Router 的 `admin_api_key`，也不得挂载管理秘密给运行或压测进程。部署维护身份不作为生成身份使用；不因 SSH 可以读文件就认为获准消费模型。旧 Codex output-file/full 权限配置不能转成新 Web 请求，新任务遇到此配置应在派发前拒绝。
+
+Web 目录检查是能力取证，不代表附件、档位或长文已经通过真实验收。不把 Codex effort 参数搬到 Web 请求；依据目录和页面确认当前档位。能力或登录不足时保留明确阻断，可继续手动导回及非生成工作，不换 Key、账号或通道。权限审计及 Web-only 边界验证完成后才恢复真实 Web 压测；负向通道测试必须隔离并阻止上游执行，不在生产用 Codex 试探鉴权。
 
 ```bash
 # 按真实目录和服务名核对后安装模板，不复制 historical 下的服务

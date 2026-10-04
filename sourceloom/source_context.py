@@ -102,6 +102,19 @@ def classify_web_chrome(store,source):
     from urllib.parse import urljoin,urlsplit
     from bs4 import BeautifulSoup
     result=copy.deepcopy(source)
+    documents=list(result.get('originals',[]))
+    manifest=result.get('source_manifest') or {}
+    primary=manifest.get('source') or {}
+    if manifest.get('verification')=='uploaded_bytes_sha256':
+        # A frozen offline upload preserves the ZIP as its original. Apply the
+        # same existing DOM rules to its verified primary document, not to the
+        # transport archive or arbitrary supporting HTML in the bundle.
+        embedded=[row for row in result.get('resources',[])
+                  if row.get('name')==primary.get('path')
+                  and row.get('sha256')==primary.get('sha256')]
+        if len(embedded)==1 and not any(row.get('name')==embedded[0]['name']
+                                       for row in documents):
+            documents.append(embedded[0])
     rendered_rows={row.get('id'):row for row in
         (result.get('web_snapshot',{}).get('rendered_capture',{}).get('objects',[]))}
     for obj in result.get('objects',[]):
@@ -145,7 +158,7 @@ def classify_web_chrome(store,source):
             parts.append(('node' if parent is root else child.name)+f'[{index}]')
             child=parent
         return name+'/'+('/'.join(reversed(parts))) if child is root else None
-    for original in result.get('originals',[]):
+    for original in documents:
         if original['name'].lower().endswith(('.html','.htm')):
             page=BeautifulSoup(store.read_blob(original['sha256']),'html.parser')
             pages.append(page)
@@ -257,7 +270,7 @@ def classify_web_chrome(store,source):
                         'banner','menu','navbar','searchbox','copyright','site-header','site-footer'}:
                         chrome_prefixes.append(f"{original['name']}/node[{index}]")
     resolved=[]
-    for original in result.get('originals',[]):
+    for original in documents:
         if not original['name'].lower().endswith(('.md','.markdown')):continue
         body=store.read_blob(original['sha256']).decode('utf-8',errors='replace')
         first_line=next((line for line in body.splitlines() if line.strip()),'')
@@ -390,6 +403,12 @@ def classify_layout_tables(source):
         table=BeautifulSoup(obj['raw'],'html.parser').find('table')
         if not table or table.find(['th','caption']) or len(table.find_all('tr'))!=1:continue
         cells=table.find_all('td')
+        # Explicit data semantics and spanning cells retain their table
+        # relationships, even in a one-row image-and-description structure.
+        if str(table.get('role','')).casefold() in {'table','grid','treegrid'}:continue
+        if table.select('[headers], [scope]'):continue
+        if any(str(cell.get(attr,'1')).strip()!='1'
+               for cell in cells for attr in ('rowspan','colspan')):continue
         content=[c for c in cells if c.get_text(strip=True)]
         if len(content)!=1 or not content[0].find(['p','ul','ol']):continue
         if not any(c.find('img') for c in cells if c is not content[0]):continue

@@ -1,8 +1,9 @@
-import { MaterialLibrary } from './processor_library.js?v=non-generation-baseline-20261002';
+import { MaterialLibrary } from './processor_library.js?v=startup-layout-20261003';
 import { LinkedReader } from './processor_reader.js?v=non-generation-baseline-20261002';
 import { ReadingWorkbench } from './processor_workbench.js?v=official-golive-20261002';
 import { IssueDrawer } from './processor_issues.js?v=official-golive-20261002';
 import { ManualHandoff } from './processor_manual_handoff.js?v=manual-handoff-20261001';
+import { webChannels, webGenerationChannel } from './processor_web_channels.js?v=web-only-20261003';
 const $ = selector => document.querySelector(selector);
 const base = '/api/processor';
 let projects = [], project = null, pack = null, capabilities = {}, currentTab = 'material';
@@ -283,22 +284,21 @@ function setMode(next) {
   localStorage.setItem('sourceloom-processor-mode',next);
 }
 function getChannels() {
-  const raw = capabilities.channels || {};
-  return Array.isArray(raw) ? raw : Object.entries(raw).map(([id, value]) => typeof value === 'object' ? {id,...value} : {id,available:Boolean(value)});
+  return webChannels(capabilities.channels);
 }
 function drawChannels() {
   const select = $('#channel'), selected = select.value; select.replaceChildren();
   for (const channel of getChannels()) {const name = channel.label || channel.name || (channel.id === 'router' ? 'Router' : '已有模型 API'); const option = element('option',`${name}${channel.model ? ` · ${channel.model}` : ''}`); option.value = channel.id; select.append(option);}
-  if (!select.options.length) {const option = element('option','未配置自动通道'); option.value = ''; select.append(option);}
+  if (!select.options.length) {const option = element('option','未配置 Web Chat'); option.value = ''; select.append(option);}
   if ([...select.options].some(option => option.value === selected)) select.value = selected;
   renderAvailability();
 }
 function renderAvailability() {
   const readonly=project?.library?.readonly===true;
   const channel = getChannels().find(item => item.id === $('#channel').value);
-  const visualUnsupported = Boolean(pack?.requires_visual && channel?.supports_visual === false);
-  const available = channel && channel.available !== false && !visualUnsupported;
-  $('#channel-description').textContent = channel?.description || '自动发送同一任务说明并收回 Markdown，不运行独立规划或审核循环';
+  const visualUnsupported = Boolean(pack?.requires_visual && channel?.supports_visual !== true);
+  const available = channel && channel.available === true && !visualUnsupported;
+  $('#channel-description').textContent = '自动生成只使用 Web Chat 普通 chat 模式；所选档位和附件能力以实际通道核验为准。';
   const warning = visualUnsupported ? '此材料需要视觉输入，当前通道不能可靠传入页面或配图。请使用手动模式上传原件和附件' : channel?.reason || (!available ? '当前通道尚未配置或未通过能力检查，手动交接仍可完整使用' : '');
   $('#channel-warning').textContent = warning; $('#channel-warning').hidden = !warning;
   const pending = requests().some(isPending);
@@ -469,7 +469,7 @@ async function loadVersion(id, replaceEditor = true, initialVersion = null) {
   void loadReadweaveStatus();
 }
 async function refreshProjects() {const response = await api(`${base}/projects`); projects = Array.isArray(response) ? response : response.projects || []; drawList();}
-async function open(id) {
+async function open(id, initialTab = null) {
   if(project?.id===id&&!openingProjectId){library.selected();return;}
   if (dirty && project?.id !== id && !confirm('当前修改尚未保存。离开会保留本机副本，是否继续？')) return;
   issueDrawer.close();
@@ -484,10 +484,10 @@ async function open(id) {
   }
   if (epoch !== openEpoch) return;
   project = next;openingProjectId=null; pack = null; sourceMap = null; loadedVersion = null; readweaveReceipt=null; selectedVersion = null; dirty = false; previewKey = '';sourcePage = 1;selectedResourceIds.clear();
-  $('#empty').hidden = true; $('#workspace').hidden = false; $('#sidebar').classList.remove('open');
+  $('#startup-status').hidden = true; $('#empty').hidden = true; $('#workspace').hidden = false; $('#sidebar').classList.remove('open');
   localStorage.setItem('sourceloom-processor-project',id); history.replaceState(null,'',`?material=${encodeURIComponent(id)}`);
   renderReadweaveStatus(null);
-  showTab(versions().length ? 'result' : 'material'); render();
+  showTab(['material','handoff','result'].includes(initialTab) ? initialTab : versions().length ? 'result' : 'material'); render();
   const active = processor().active_version || versions().at(-1)?.id;
   if (active) await loadVersion(active,true,project.reading_version); else {setMarkdown(''); $('#result-preview').hidden = true; $('#preview-empty').hidden = false;}
   if(epoch!==openEpoch || project?.id!==id)return;
@@ -642,8 +642,9 @@ function uploadWithProgress(path,body,onProgress) {
 }
 $('#generate').addEventListener('click',protect(async()=>{
   if (locked || requests().some(isPending)) return;
+  const channel = webGenerationChannel(capabilities.channels, $('#channel').value, Boolean(pack?.requires_visual));
   const requestId = crypto.randomUUID(); setLocked(true);operation('正在提交一次模型请求');
-  try {await post(pidPath('/generate'),{channel:$('#channel').value,request_id:requestId}); operation('请求已接受，等待原请求结果'); await refreshCurrent();}
+  try {await post(pidPath('/generate'),{channel,request_id:requestId}); operation('请求已接受，等待原请求结果'); await refreshCurrent();}
   catch (error) {operationError(`提交结果不确定：${error.message}。正在查询已保存请求，不会自动重投`); await refreshCurrent().catch(()=>{});}
   finally {setLocked(false); schedulePoll();}
 }));
@@ -735,10 +736,20 @@ async function boot() {
   $('#acceptance-banner').hidden = capabilities.environment !== 'development_acceptance';
   if (results[0].status === 'rejected') throw results[0].reason;
   if (results[1].status === 'rejected') notice('暂时无法读取自动通道配置，手动交接仍可使用',true);
+  // Resolve the destination before opening a document: library/handoff links must
+  // not briefly mount the last article and then dismantle its reader again.
+  if(['examples','archives','trash'].includes(librarySpace)) {
+    $('#startup-status').hidden = true;
+    await library.show(librarySpace);
+    return;
+  }
   const id = new URLSearchParams(location.search).get('material') || localStorage.getItem('sourceloom-processor-project');
-  if (id) await open(id);
-  else if (projects.length) await open(projects.find(entry=>entry.state==='candidate')?.id || projects[0].id);
-  if(['examples','archives','trash'].includes(librarySpace))await library.show(librarySpace);
-  if(project&&['material','handoff','result'].includes(requestedTab))showTab(requestedTab);
+  if (id) await open(id, requestedTab);
+  else if (projects.length) await open(projects.find(entry=>entry.state==='candidate')?.id || projects[0].id, requestedTab);
+  else { $('#startup-status').hidden = true; $('#empty').hidden = false; }
 }
-boot().catch(error=>notice(error.message || '工作台暂时无法连接',true));
+boot().catch(error=>{
+  const startup=$('#startup-status');
+  if(!startup.hidden){startup.querySelector('span').textContent='工作台暂未打开，请重新加载。';startup.setAttribute('role','alert');}
+  notice(error.message || '工作台暂时无法连接',true);
+});

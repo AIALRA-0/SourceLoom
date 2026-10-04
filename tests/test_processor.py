@@ -217,10 +217,12 @@ def test_async_result_binds_dispatch_pack_not_later_preferences(prepared, monkey
     monkeypatch.setattr(processor_channels, 'generate', handoff)
     config = load_config()
     config.update(data_dir=str(store.root), auth_mode='local', external_worker=True)
+    config['processor_router'] = dict(provider='router', api_key='synthetic-business-key',
+        base_url='https://router.example.test', model='chatgpt-web.auto', execution_channel='chatgpt_web')
     with TestClient(create_app(config)) as client:
         headers = {'x-sourceloom':'1'}
         route = f'/api/processor/projects/{project["id"]}'
-        response = client.post(route+'/generate', json={'request_id':'dispatch-pack-001','channel':'api'}, headers=headers)
+        response = client.post(route+'/generate', json={'request_id':'dispatch-pack-001','channel':'router'}, headers=headers)
         assert response.status_code==202
         assert started.wait(10)
         replacement = client.post(route+'/pack', json={'preferences':'Changed after actual dispatch'}, headers=headers)
@@ -247,10 +249,11 @@ def test_restart_recovers_completed_receipt_without_model_or_new_version(prepare
     rid = 'saved-success-001'
     pack = processor.task_pack(store, project['id'])
     store.change(project['id'], lambda p:p['processor']['requests'].append(
-        dict(id=rid,status='RUNNING',channel='api',pack_digest=pack['digest'])))
+        dict(id=rid,status='RUNNING',channel='router',pack_digest=pack['digest'])))
     markdown = complete_markdown(project)
-    store.put_job(dict(id=rid, project=project['id'], role='processor', status='completed', created=time.time(),
-                       receipt=dict(status='SUCCESS',markdown=markdown,logical_request_id=rid)))
+    store.put_job(dict(id=rid, project=project['id'], role='processor', channel='router', status='completed', created=time.time(),
+                       receipt=dict(status='SUCCESS',markdown=markdown,logical_request_id=rid,
+                                    execution_channel='chatgpt_web', execution_mode='chat')))
     config = load_config()
     config.update(data_dir=str(store.root), auth_mode='local', external_worker=True)
     for _ in range(2):
@@ -261,6 +264,43 @@ def test_restart_recovers_completed_receipt_without_model_or_new_version(prepare
             assert processor.active_version(result)['pack_digest']==pack['digest']
             assert result['processor']['requests'][0]['status']=='SUCCESS'
     assert len(store.jobs(project['id']))==1
+
+
+@pytest.mark.parametrize('channel', ['api', 'codex', 'cli', 'runner'])
+def test_http_rejects_unapproved_channel_before_claim_or_handoff(prepared, monkeypatch, channel):
+    store, project, _ = prepared
+    from sourceloom import processor_channels
+    monkeypatch.setattr(processor_channels, 'generate', lambda *a, **k: pytest.fail('No upstream dispatch'))
+    config = load_config() | dict(data_dir=str(store.root), auth_mode='local', external_worker=True)
+    before = store.get(project['id'])
+    with TestClient(create_app(config)) as client:
+        response = client.post(f'/api/processor/projects/{project["id"]}/generate',
+            json={'channel': channel, 'request_id': 'disallowed-channel'}, headers={'x-sourceloom': '1'})
+        assert response.status_code == 400
+    assert store.get(project['id']) == before
+    assert not store.jobs(project['id'])
+
+
+def test_restart_and_query_preserve_historical_codex_without_import(prepared, monkeypatch):
+    store, project, _ = prepared
+    from sourceloom import processor_channels
+    monkeypatch.setattr(processor_channels.httpx, 'get', lambda *a, **k: pytest.fail('No historical upstream query'))
+    rid = 'historical-codex-success'
+    original = dict(id=rid, project=project['id'], role='processor', channel='router',
+        status='completed', created=time.time(), calls=[{'router_output_file': 'article.md'}],
+        receipt=dict(status='SUCCESS', markdown=complete_markdown(project), logical_request_id=rid))
+    store.put_job(original)
+    store.change(project['id'], lambda p:p['processor']['requests'].append(
+        dict(id=rid, status='RUNNING', channel='router')))
+    config = load_config() | dict(data_dir=str(store.root), auth_mode='local', external_worker=True)
+    with TestClient(create_app(config)) as client:
+        path = f'/api/processor/projects/{project["id"]}'
+        response = client.post(path+'/requests/'+rid+'/query', headers={'x-sourceloom': '1'})
+        assert response.status_code == 200
+        saved = response.json()['processor']
+        assert not saved['versions']
+        assert saved['requests'][0]['historical_readonly'] is True
+    assert store.job(rid) == original
 
 
 def test_legacy_mutation_routes_cannot_reopen_processor_source(prepared):

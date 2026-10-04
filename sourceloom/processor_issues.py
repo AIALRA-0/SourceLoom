@@ -706,6 +706,11 @@ def _preview(p, vid, body, store=None):
         markdown,hits=_format_changes(markdown)
         after=markdown
     changed=markdown!=v['markdown']
+    if changed:
+        # Local edits move marker occurrences just like an ordinary save.
+        # Rebuild their exact bindings; never inherit stale line positions.
+        from .pdf_resource_groups import prepare_group_resources
+        derived += prepare_group_resources(store, p, markdown, choices)
     labels={'repair_table':('已修正所列来源差异，其他内容未改','撤销本次修格','修正差异并保存'),
             'confirm_manual':('已记录用户对照确认，本版本正文未改','取消这次确认','记录本次用户对照确认'),
             'confirm_table':('已重新核对保存的来源单元格，正文未改','无需撤销纯检查','返回核对结果'),
@@ -785,10 +790,15 @@ def apply(store, pid, vid, body):
         new.update(id=identity() if receipt['body_changed'] else previous['id'], created=time.time(), origin='issue_action' if receipt['body_changed'] else previous['origin'], markdown=receipt['markdown'],
                    digest=digest(receipt['markdown'].encode()), resource_usages=receipt['resource_usages'],
                    semantic_status='not_reviewed', request_id=None)
-        new['derived_resources'] = (previous.get('derived_resources') or [])+receipt['derived_resources']
+        inherited = previous.get('derived_resources') or []
+        if receipt['body_changed']:
+            inherited = [r for r in inherited if not r.get('pdf_component_group')]
+        new['derived_resources'] = inherited+receipt['derived_resources']
         if receipt['action']=='exclude_scope':
             new['scope_exclusions']=(previous.get('scope_exclusions') or [])+[dict(source_ids=next(g['source_ids'] for g in issues(p,vid,store)['issues'] if g['id']==receipt['issue_id']),draft_digest=new['digest'],reason='explicit_user_scope_exclusion_not_full_fidelity')]
         for resource in receipt['derived_resources']:
+            if resource.get('pdf_component_group'):
+                continue  # Already rendered and hash-bound by the shared preparer.
             raw, _ = table_image(p, next(g for g in issues(p,vid,store)['issues'] if g['id']==receipt['issue_id']), store)
             if digest(raw) != resource['sha256']:
                 raise Conflict('原表预览字节发生变化')

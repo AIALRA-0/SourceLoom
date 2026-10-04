@@ -18,7 +18,7 @@ Import the complete original, prepare one model task package, receive Markdown, 
 - Nested folders, multiple selection, moves, archive, trash, and restore affect management metadata rather than document text
 - Continuous source reading provides native text selection, search, zoom, and source-page references; paired panes scroll independently or follow each other
 - Resource issues offer previews and concrete choices; mechanical checks do not replace semantic review
-- Manual and automatic channels share processing; the actual channel must support the required attachments
+- Manual and automatic handoff share processing. New automatic generation only uses Web Chat ordinary chat mode and the user-designated Web-only business credential
 
 Older multi-role generation code remains for historical task compatibility. It is not the default workflow for new materials, and the processor does not require the legacy Worker
 
@@ -64,6 +64,10 @@ The official site uses the same processor through one web service behind the exi
 5. Export a reading package or import into your explicitly configured ReadWeave destination. A reliable receipt allows opening the corresponding note
 
 Receiving a ZIP does not prove that a model unpacked it or inspected its images. Full real-session xhigh single-package capability remains unverified; the depth name alone does not establish attachment support
+
+The highest Web depth must use parameters confirmed by the live Web catalog and page, rather than Codex effort settings or an assumed Pro requirement. Unsupported attachments, long inputs, login, or depth block that branch; never substitute an engine, account, or key. Configure an explicit `processor_router` business route with `execution_channel=chatgpt_web` and ordinary `chat` mode. Generation credentials are not inherited from legacy provider configuration.
+
+The [historical Codex experiments](docs/CODEX_FILE_RECOVERY.md) are retained for audit and channel-independent mechanisms only. Their 40 jobs are excluded from Web Chat acceptance; that campaign had zero Web jobs and provides no Web success rate.
 
 ## 4 State and data boundaries
 

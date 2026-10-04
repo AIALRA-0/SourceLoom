@@ -40,6 +40,12 @@ def rasterize_svg(image):
         raise ValueError('SVG 原始结构无法安全解析') from exc
     if root.tag.rsplit('}',1)[-1].lower()!='svg':
         raise ValueError('SVG 根元素无效')
+    # HTML intake lowercases attribute names. XML renderers require SVG's
+    # geometry casing; repair only this rendering projection, not source raw.
+    for lower, canonical in (('viewbox', 'viewBox'),
+                             ('preserveaspectratio', 'preserveAspectRatio')):
+        if lower in root.attrib and canonical not in root.attrib:
+            root.set(canonical, root.attrib.pop(lower))
     identifiers={element.get('id') for element in root.iter() if element.get('id')}
     def safe_css_urls(value):
         # Local paint servers such as gradients are ordinary SVG structure.

@@ -3,6 +3,8 @@ import json
 import zipfile
 from io import BytesIO
 
+import pytest
+
 from bs4 import BeautifulSoup
 from PIL import Image
 from reportlab.lib.utils import ImageReader
@@ -13,7 +15,7 @@ from sourceloom.pdf_resource_groups import marker_groups
 from sourceloom.store import Store
 
 
-def material(tmp_path):
+def material(tmp_path, extra_component=False):
     data = BytesIO()
     pdf = canvas.Canvas(data, pagesize=(300, 400))
     red = ImageReader(Image.new('RGB', (100, 100), 'red'))
@@ -21,6 +23,9 @@ def material(tmp_path):
     pdf.drawImage(red, 20, 240, width=90, height=90)
     pdf.drawImage(red, 130, 240, width=90, height=90)
     pdf.drawImage(blue, 30, 250, width=50, height=50)
+    if extra_component:
+        green = ImageReader(Image.new('RGB', (100, 100), 'green'))
+        pdf.drawImage(green, 20, 100, width=90, height=90)
     # These vector marks must survive; compositing extracted bitmaps alone
     # would omit the source's annotation and shared caption.
     pdf.line(20, 235, 230, 235)
@@ -102,3 +107,64 @@ def test_repeated_page_group_is_a_light_reference_not_another_full_page(tmp_path
     soup = BeautifulSoup(native['html'], 'html.parser')
     assert len(soup.select('img')) == 1 and len(soup.select('a[href^="assets/"]')) == 1
     assert 'First figure caption' in soup.get_text() and 'Second figure caption' in soup.get_text()
+
+
+def test_whole_page_covers_unmarked_component_without_claiming_prose_or_insertion(tmp_path):
+    store, p, images = material(tmp_path, extra_component=True)
+    md = '\n\n'.join('{{source:' + o['id'] + '}}' for o in images[:2])
+    original = copy.deepcopy(p['inventory'])
+    p = processor.save_result(store, p['id'], md)
+    compiled = processor.compile_result(p, md)
+    assert p['inventory'] == original and processor.active_version(p)['markdown'] == md
+    assert processor.active_version(p)['semantic_status'] == 'not_reviewed'
+    assert images[2]['id'] not in compiled['inserted_source_ids']
+    assert compiled['mechanical_pass']
+    assert not any(c.get('source_id') == images[2]['id'] for c in compiled['checks'])
+    soup = BeautifulSoup(compiled['html'], 'html.parser')
+    assert len(soup.select('figure img')) == 1
+    native = processor.compile_result(p, md, 'readweave')
+    assert native['mechanical_pass']
+
+
+@pytest.mark.parametrize('invalid', ['missing_geometry', 'outside_page', 'unknown_occurrence',
+    'other_page', 'partial_asset', 'partial_scope', 'foreign_source', 'foreign_original', 'reference'])
+def test_unproved_composition_never_covers_unmarked_component(tmp_path, invalid):
+    store, p, images = material(tmp_path, extra_component=True)
+    md = '\n\n'.join('{{source:' + o['id'] + '}}' for o in images[:2])
+    p = processor.save_result(store, p['id'], md)
+    p = copy.deepcopy(p)
+    last = next(o for o in p['inventory']['objects'] if o['id'] == images[2]['id'])
+    derived = processor.active_version(p)['derived_resources']
+    choices = {}
+    if invalid == 'missing_geometry':
+        last['placements'][0].pop('page_width')
+    elif invalid == 'outside_page':
+        last['placements'][0]['bbox'][2] = 301
+    elif invalid == 'unknown_occurrence':
+        last['placement_count'] += 1
+    elif invalid == 'other_page':
+        last['placements'].append(last['placements'][0] | {'page': 2})
+        last['placement_count'] += 1
+    elif invalid == 'partial_asset':
+        derived[0]['width'] //= 2
+    elif invalid == 'partial_scope':
+        derived[0]['composition_scope'] = 'figure_crop'
+    elif invalid == 'foreign_source':
+        derived[0]['source_digest'] = '0' * 64
+    elif invalid == 'foreign_original':
+        p['inventory']['originals'][0]['sha256'] = '0' * 64
+    elif invalid == 'reference':
+        choices = {o['id']: 'reference' for o in images[:2]}
+    compiled = processor.compile_result(p, md, resource_usages=choices, derived_resources=derived)
+    assert any(c['code'] == 'OMITTED_RESOURCE' and c['source_id'] == last['id']
+               for c in compiled['checks'])
+
+
+def test_single_page_reference_does_not_prove_body_component_coverage(tmp_path):
+    store, p, images = material(tmp_path)
+    page = next(o for o in p['inventory']['objects'] if o['kind'] == 'page')
+    md = '{{source:' + page['id'] + '}}'
+    p = processor.save_result(store, p['id'], md)
+    compiled = processor.compile_result(p, md)
+    assert set(c['source_id'] for c in compiled['checks'] if c['code'] == 'OMITTED_RESOURCE') == {
+        o['id'] for o in images}

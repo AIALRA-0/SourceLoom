@@ -136,6 +136,8 @@ def intake(store, uploads, source_url=None, asset_aliases=None, progress=None):
             files[name] = raw
     if sum(len(raw) for raw in files.values()) > MAX_EXPANDED:
         raise ValueError("本次材料超过展开总量限制")
+    from .source_manifest import MANIFEST_NAME, resolve_manifest
+    source_url, asset_aliases, source_manifest = resolve_manifest(files, source_url, asset_aliases)
     objects, resources, unknown = [], [], []
     resource_index = {}
     document_base=source_url
@@ -375,7 +377,9 @@ def intake(store, uploads, source_url=None, asset_aliases=None, progress=None):
         for n, child in enumerate(root.children):
             walk(child, f"{name}/node[{n+1}]")
 
-    ordered_files=sorted(files.items(),key=lambda pair:mimetypes.guess_type(pair[0])[0] in SAFE_IMAGE)
+    ordered_files=sorted(((name, raw) for name, raw in files.items()
+                          if not source_manifest or name != MANIFEST_NAME),
+                         key=lambda pair:mimetypes.guess_type(pair[0])[0] in SAFE_IMAGE)
     for file_index, (name, raw) in enumerate(ordered_files, 1):
         if progress:
             progress(dict(phase='parsing_file',completed=file_index-1,total=len(ordered_files),
@@ -500,6 +504,9 @@ def intake(store, uploads, source_url=None, asset_aliases=None, progress=None):
                           detail=name))
     obligations = [dict(id=f"obl-{n+1:05d}",object_id=o["id"],statement=o["text"] or f"保留 {o['kind']} 的原始内容及出现位置",
                         conditions=[],quantities=re.findall(r"\d+(?:\.\d+)?%?",o["text"]),negations=[],status="unreviewed") for n,o in enumerate(objects)]
-    return dict(id=identity(), version=1, originals=originals, resources=resources, objects=objects,
+    inventory = dict(id=identity(), version=1, originals=originals, resources=resources, objects=objects,
                 obligations=obligations, unknown=unknown, frozen=False, inventory_review=None,
                 source_url=source_url, digest=None, extraction_claim="结构候选，语义清点尚待独立核对")
+    if source_manifest:
+        inventory['source_manifest'] = source_manifest
+    return inventory

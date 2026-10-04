@@ -1,5 +1,6 @@
 """Material preparation and output compilation, without an article control loop."""
 import copy
+from collections import Counter
 import html
 import json
 import mimetypes
@@ -9,7 +10,6 @@ import zipfile
 from io import BytesIO
 from functools import lru_cache
 from pathlib import PurePosixPath
-from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -18,14 +18,16 @@ from .export import (COMPACT_IMAGE_ROLES, apply_image_presentation, editor_stora
 from .ingest import intake, safe_member
 from .math_render import markdown_renderer
 from .store import Conflict, digest, identity
+from .source_links import (known_link_targets, normalize_native_web_target,
+                          restore_source_links, safe_absolute_target)
 
 RESOURCE_USAGES = {'body', 'reference', 'exclude'}
 
 
 def safe_html(raw):
-    # Local footnote/source destinations survive compilation; arbitrary IDs
-    # and active HTML remain filtered by the shared sanitizer.
-    return sanitize_html(raw, source_anchors=True)
+    # Only source IDs and safe native <a> bookmarks survive. Arbitrary element
+    # IDs and active HTML remain filtered by the shared sanitizer.
+    return sanitize_html(raw, source_anchors=True, fragment_anchors=True)
 
 
 def resource_usage(state, row):
@@ -166,16 +168,16 @@ def create(store, title, preferences=''):
         active_version=None, source_text='', source_map=[], resources=[], resource_usages={}, checks=[])))
 
 
-def source_prose(obj, source_url=None):
+def source_prose(obj, link_targets=None):
     """Keep inline source links and code names in the model-readable projection."""
     raw = obj.get('raw', '')
     if not raw.lstrip().startswith('<'):
         return obj.get('text', '')
-    doc = BeautifulSoup(raw,'html.parser')
+    doc = BeautifulSoup(restore_source_links(raw, link_targets or {}),'html.parser')
     for anchor in doc.select('a[href]'):
-        target = urljoin(source_url or '',anchor['href'])
+        target = anchor['href']
         label = anchor.get_text(' ',strip=True)
-        if urlsplit(target).scheme in {'http','https','mailto'} or target.startswith('#'):
+        if safe_absolute_target(target) or target.startswith('#'):
             anchor.replace_with('['+label.replace(']',r'\]')+']('+target.replace(' ', '%20')+')')
     for code in doc.find_all('code'):
         code.replace_with('`'+code.get_text()+'`')
@@ -184,6 +186,7 @@ def source_prose(obj, source_url=None):
 
 def source_text_projection(inv, resource_usages=None):
     choices = resource_usages or {}
+    link_targets = known_link_targets(inv)
     result = []
     excluded = {'site_chrome', 'source_metadata', 'layout_decorative'}
     for obj in inv['objects']:
@@ -196,7 +199,7 @@ def source_text_projection(inv, resource_usages=None):
         if kind == 'page':
             result.append(f'\n## 原件 {obj["locator"]}\n{marker}\n{obj.get("text", "")}')
         elif kind == 'heading':
-            result.append('\n## '+source_prose(obj,inv.get('source_url')))
+            result.append('\n## '+source_prose(obj,link_targets))
         elif kind == 'link':
             continue
         elif kind in {'image', 'media'} and not obj.get('resource_id'):
@@ -210,9 +213,9 @@ def source_text_projection(inv, resource_usages=None):
         elif obj.get('word_list') and kind in {'text', 'heading'}:
             word_list = obj['word_list']
             prefix = '  ' * min(max(int(word_list.get('level', 0)), 0), 8)
-            result.append(prefix + word_list['marker'] + ' ' + source_prose(obj, inv.get('source_url')))
+            result.append(prefix + word_list['marker'] + ' ' + source_prose(obj, link_targets))
         else:
-            result.append(source_prose(obj,inv.get('source_url')))
+            result.append(source_prose(obj,link_targets))
     return '\n\n'.join(result).strip()
 
 
@@ -239,8 +242,8 @@ def prepare(store, pid, uploads, source_url=None, asset_aliases=None, web_manife
         # current browser capture is a mapping with richer position evidence.
         inv['web_snapshot'] = (web_manifest if isinstance(web_manifest,dict)
                                else {'images':web_manifest})
-    from .source_context import classify_inert_markup, classify_web_chrome
-    inv = classify_web_chrome(store, classify_inert_markup(inv))
+    from .source_context import classify_inert_markup, classify_layout_tables, classify_web_chrome
+    inv = classify_layout_tables(classify_web_chrome(store, classify_inert_markup(inv)))
     # Embedded PDF image bytes are independent of the complete page previews.
     # Keep the original PDF and page previews even if an image cannot be decoded.
     for original in inv['originals']:
@@ -423,7 +426,7 @@ def pack_zip(store, pid):
     return manual_pack_zip(store, pid)
 
 
-def object_html(obj, target='preview'):
+def object_html(obj, target='preview', link_targets=None):
     kind = obj['kind']
     if kind in {'image','media','page'} and not obj.get('resource_id'):
         return '<aside data-resource-unavailable="true">原件视觉资源尚未取得：'+html.escape(
@@ -447,7 +450,7 @@ def object_html(obj, target='preview'):
     if kind == 'code':
         return '<pre><code>'+html.escape(obj['text'])+'</code></pre>'
     if kind == 'table' and obj.get('raw', '').lstrip().startswith('<table'):
-        return safe_html(obj['raw'])
+        return safe_html(restore_source_links(obj['raw'],link_targets or {}))
     if kind == 'formula':
         return markdown_renderer().render('$$\n'+obj['text']+'\n$$')
     if kind == 'link':
@@ -654,9 +657,10 @@ def compile_result(p, markdown, target='preview', resource_usages=None, represen
     for row in derived_resources or []:
         if row.get('source_digest') == p['processor']['source_digest'] and row.get('id') == row.get('sha256'):
             resources[row['id']] = row
-    from .pdf_resource_groups import compiled_groups
+    from .pdf_resource_groups import compiled_groups, physically_covered_source_ids
     groups = compiled_groups(p, markdown, resource_usages or
                              p['processor'].get('resource_usages') or {}, derived_resources)
+    composition_coverage = physically_covered_source_ids(p, groups, objects)
     grouped_lines = {line for group in groups.values()
                      for line in range(group['start_line'] + 1, group['end_line'] + 1)}
     grouped_source_ids = set()
@@ -673,6 +677,7 @@ def compile_result(p, markdown, target='preview', resource_usages=None, represen
     choices = dict(resource_usages if resource_usages is not None else p['processor'].get('resource_usages') or {})
     parts, prose, prose_lines, counter = [], [], [], 0
     current_page = None
+    link_targets = known_link_targets(p['inventory'])
     def flush():
         nonlocal counter
         if not prose:
@@ -685,7 +690,7 @@ def compile_result(p, markdown, target='preview', resource_usages=None, represen
         except ValueError as exc:
             checks.append(dict(severity='error', code='RENDER_ERROR', message=str(exc)))
             raw = '<pre>'+html.escape(chunk)+'</pre>'
-        parts.append('<section data-readweave-anchor-id="'+block_id+'" data-block-id="'+block_id+'">'+safe_html(raw)+'</section>')
+        parts.append('<section data-readweave-anchor-id="'+block_id+'" data-block-id="'+block_id+'">'+safe_html(restore_source_links(raw,link_targets))+'</section>')
         entry = dict(block_id=block_id, source_ids=[current_page] if current_page else [],
                      mapping='page_context' if current_page else 'unassigned',
                      source_start_line=min(prose_lines)+1, source_end_line=max(prose_lines)+1)
@@ -759,7 +764,7 @@ def compile_result(p, markdown, target='preview', resource_usages=None, represen
         inserted.append(sid)
         block_id = 'resource-'+sid+('-'+str(inserted.count(sid)) if inserted.count(sid)>1 else '')
         try:
-            raw = object_html(obj, target)
+            raw = object_html(obj, target, link_targets)
         except ValueError as exc:
             checks.append(dict(severity='error', code='RESOURCE_RENDER', source_id=sid, message=str(exc)))
             raw = '<pre>'+html.escape(obj.get('text', ''))+'</pre>'
@@ -783,6 +788,12 @@ def compile_result(p, markdown, target='preview', resource_usages=None, represen
                 previous.update(source_ids=[sid], locator=obj['locator'], mapping='adjacent_resource')
     flush()
     doc = BeautifulSoup('\n'.join(parts), 'html.parser')
+    # Prose is sanitized in chunks separated by original resources. Enforce
+    # unique authored bookmark destinations across the assembled article too.
+    anchor_counts = Counter(str(node['id']) for node in doc.find_all(id=True))
+    for anchor in doc.select('a[id]'):
+        if not anchor['id'].startswith('loom-source-') and anchor_counts[anchor['id']] != 1:
+            del anchor['id']
     by_resource = {}
     for obj in objects.values():
         if obj.get('resource_id') and obj['kind'] in {'image', 'media'}:
@@ -840,6 +851,10 @@ def compile_result(p, markdown, target='preview', resource_usages=None, represen
                                    message='原文视觉资源未取得；不能仅凭标签断言内容已保留，请补齐原件或明确改为参考用途'))
             continue
         if row['kind'] in {'code','image','table','formula'}:
+            if row['id'] in composition_coverage:
+                # The complete original page physically presents every saved
+                # occurrence. This does not assert Chinese or semantic fidelity.
+                continue
             parent=objects.get(row.get('parent_id'))
             if parent and parent['kind']=='table' and parent['id'] in inserted:
                 # The literal original table retains its own child occurrence;
@@ -1113,10 +1128,7 @@ def export_package(store, p):
     # The native importer treats that spelling as an attachment, so make the
     # explicit web protocol hierarchical without changing the saved source.
     for link in doc.select('a[href]'):
-        match = re.fullmatch(r'(https?):(?:/{0,2})(www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[:/\?#].*)?)',
-                             link['href'], re.I)
-        if match:
-            link['href'] = match[1].lower()+'://'+match[2]
+        link['href'] = normalize_native_web_target(link['href'])
     # CKEditor preserves block anchor attributes on paragraphs/headings, but
     # strips them from <pre> during a real editor save. Keep a code-only block's
     # identity on the existing native paragraph path; code bytes stay untouched.

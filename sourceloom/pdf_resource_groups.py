@@ -4,6 +4,7 @@ An image extraction is not a figure extraction. When several adjacent markers
 refer to components on the same PDF page, a rendered original page preserves
 overlays, vector marks and reused occurrences without guessing figure bounds.
 """
+import math
 import re
 
 from .export import COMPACT_IMAGE_ROLES, image_presentation
@@ -92,3 +93,74 @@ def compiled_groups(p, markdown, choices, derived_resources):
         if saved:
             result[group['start_line']] = group | {'asset': saved}
     return result
+
+
+def physically_covered_source_ids(p, groups, objects):
+    """Prove complete image occurrences in currently rendered original pages.
+
+    Marker members trigger rendering; they are not the exhaustive contents of
+    a PDF page. This is physical presentation evidence, never prose fidelity.
+    Unknown geometry or an occurrence on an unrendered page remains uncovered.
+    """
+    originals = {o['name']: o['sha256'] for o in p['inventory']['originals']}
+    assets = {r['id'] for r in p['inventory']['resources']}
+
+    def placement(place):
+        try:
+            page, box = place['page'], place['bbox']
+            width, height = place['page_width'], place['page_height']
+            values = [width, height, *box]
+            if (place.get('unit') != 'pdf_point' or type(page) is not int or page < 1
+                    or len(box) != 4 or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
+                    or width <= 0 or height <= 0
+                    or not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height)):
+                return None
+            return page, width, height
+        except (KeyError, TypeError):
+            return None
+
+    pages = {}
+    for group in groups.values():
+        asset = group['asset']
+        if (asset.get('composition_scope') != 'whole_original_page'
+                or asset.get('source_digest') != p['processor']['source_digest']
+                or asset.get('id') != asset.get('sha256')
+                or originals.get(group['original_name']) != group['original_sha256']):
+            continue
+        scale = asset.get('render_scale')
+        if type(scale) not in (int, float) or not math.isfinite(scale) or scale <= 0:
+            continue
+        geometries = []
+        for sid in group['source_ids']:
+            member = objects.get(sid, {})
+            locations = member.get('placements') or []
+            if not locations:
+                break
+            parsed = [placement(value) for value in locations]
+            if any(value is None or value[0] != group['page'] for value in parsed):
+                break
+            geometries.extend(parsed)
+        else:
+            geometry = geometries[0] if geometries else None
+            if not geometry or any(value != geometry for value in geometries):
+                continue
+            _, width, height = geometry
+            if (type(asset.get('width')) is not int or type(asset.get('height')) is not int
+                    or abs(asset['width'] - width * scale) > 1
+                    or abs(asset['height'] - height * scale) > 1):
+                continue
+            pages[(group['original_name'], group['original_sha256'], group['page'])] = (width, height)
+
+    covered = set()
+    for sid, obj in objects.items():
+        if obj.get('kind') != 'image' or obj.get('resource_id') not in assets:
+            continue
+        locator = re.fullmatch(r'(.+\.pdf)/page\[(\d+)\]/image\[\d+\]', obj.get('locator', ''), re.I)
+        locations = obj.get('placements') or []
+        if not locator or not locations or len(locations) != obj.get('placement_count'):
+            continue
+        original = originals.get(locator[1])
+        parsed = [placement(value) for value in locations]
+        if all(value and pages.get((locator[1], original, value[0])) == value[1:] for value in parsed):
+            covered.add(sid)
+    return covered

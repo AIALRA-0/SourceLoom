@@ -259,7 +259,7 @@ def test_frozen_legacy_web_image_manifest_can_be_reused_without_refetch(tmp_path
     assert 'Original wording.' in processor.task_pack(store,p['id'])['source_text']
 
 
-def test_selected_original_web_image_is_sent_as_visual_input_once(tmp_path):
+def test_selected_original_web_image_is_packaged_once_without_unauthorized_api(tmp_path):
     buf=BytesIO()
     Image.new('RGB',(16,16),'red').save(buf,'PNG')
     store=Store(tmp_path/'data')
@@ -275,10 +275,9 @@ def test_selected_original_web_image_is_sent_as_visual_input_once(tmp_path):
     assert delivered[0]['kind']=='image'
     assert delivered[0]['resource_id']==image['id']
     from sourceloom.processor_channels import _request
-    request,_=_request(store,dict(provider='openai-compatible',api_key='test-only',
-        model='fixture',protocol='responses',processor_supports_images=True),pack,'api')
-    content=request['input'][0]['content']
-    assert sum(part['type']=='input_image' for part in content)==1
+    with pytest.raises(ValueError):
+        _request(store,dict(provider='openai-compatible',api_key='test-only',
+            model='fixture',protocol='responses',processor_supports_images=True),pack,'api')
 
 
 def test_article_share_controls_are_not_rewritten_as_content(tmp_path):
