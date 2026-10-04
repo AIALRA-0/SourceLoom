@@ -43,7 +43,7 @@ export class MaterialLibrary {
   }
   async open(id){const epoch=++this.epoch;this.view.hidden=true;await this.deps.open(id);if(epoch!==this.epoch)return;const current=this.deps.current();q('#workspace').hidden=!current;q('#empty').hidden=!!current;if(current)this.deps.tab();this.selected();}
   selected(){
-    const p=this.deps.current(),trashed=p?.trashed===true||p?.library?.trashed===true||this.tree?.getNode(p?.id)?.trashed===true,example=p?.library?.readonly===true&&!trashed;const readonly=example||trashed;this.tree?.syncCurrent();this.trial.hidden=!example;this.archive.hidden=readonly;const space=trashed?'trash':example?'examples':p?.library?.archived?'archive':'mine';this.setNav(space==='archive'?'archives':space);if(this.tree.mode!==space)void this.tree.showMode(space);
+    const p=this.deps.current(),trashed=p?.trashed===true||p?.library?.trashed===true||this.tree?.getNode(p?.id)?.trashed===true,example=p?.library?.readonly===true&&!trashed;const readonly=example||trashed;this.tree?.syncCurrent();this.trial.hidden=!example;this.archive.hidden=readonly;const space=trashed?'trash':example?'examples':p?.library?.archived?'archive':'mine';if(this.view.hidden){this.setNav(space==='archive'?'archives':space);if(this.tree.mode!==space)void this.tree.showMode(space);}
     const baseline=example&&p.library.content_kind==='source_baseline';
     const paneTitle=q('.draft-toolbar .pane-title');if(paneTitle)paneTitle.textContent=baseline?'原文与处置基线':'成稿';
     q('#result-preview').title=baseline?'原文与处置基线预览':'图文成稿预览';

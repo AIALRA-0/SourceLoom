@@ -222,3 +222,24 @@ def test_local_management_refresh_paints_after_related_branches_together():
     tree.cache.set('root',{nodes:[]});tree.cache.set('a',{nodes:[{id:'p',kind:'material',title:'Paper',parent_id:'a'}]});tree.cache.set('b',{nodes:[]});let completions=[],paints=0;tree.refreshRows=()=>paints++;tree.deps.api=()=>new Promise(resolve=>completions.push(resolve));
     const pending=tree.refreshChanged('move',{parent_id:'b'},tree.cache.get('a').nodes,{affected_ids:['p']});assert.equal(completions.length,2);completions[0]({nodes:[]});await new Promise(resolve=>setImmediate(resolve));assert.equal(paints,0);completions[1]({nodes:[{id:'p',kind:'document',title:'Paper',parent_id:'b'}]});await pending;assert.equal(paints,1);
     """)
+
+
+def test_restoring_current_material_does_not_steal_visible_trash_library_space():
+    execute("""
+    const code=fs.readFileSync(process.argv[1]+'/sourceloom/static/processor_library.js','utf8').replace(/^import .*;$/m,'').replace(/export /g,'');vm.runInContext(code+';globalThis.Lib=MaterialLibrary;',ctx);
+    const elements=new Map();ctx.document.querySelector=selector=>{if(!elements.has(selector))elements.set(selector,{hidden:false,value:'source',setAttribute(){},querySelector:()=>({disabled:false})});return elements.get(selector);};ctx.document.body={classList:{toggle(){}}};
+    const p={id:'current',trashed:true,library:{trashed:true,readonly:true}};let switched=0,synced=0,callbacks=0;
+    const library=Object.create(ctx.Lib.prototype);Object.assign(library,{deps:{current:()=>p,metadataChanged:()=>callbacks++},view:{hidden:false},mode:'trash',trial:{},archive:{},tree:{mode:'trash',getNode:()=>null,syncCurrent:()=>synced++,showMode:()=>switched++},setNav(mode){this.mode=mode;}});
+    library.selected();assert.equal(elements.get('#toggle-editor').disabled,true);library.metadataChanged({action:'restore',affected_ids:['current']});
+    assert.equal(p.trashed,false);assert.equal(p.library.trashed,false);assert.equal(elements.get('#toggle-editor').disabled,false);assert.equal(library.mode,'trash');assert.equal(library.tree.mode,'trash');assert.equal(switched,0);assert.equal(callbacks,1);assert.equal(synced,2);
+    """)
+
+
+def test_open_reading_workspace_still_syncs_readonly_and_current_material_space():
+    execute("""
+    const code=fs.readFileSync(process.argv[1]+'/sourceloom/static/processor_library.js','utf8').replace(/^import .*;$/m,'').replace(/export /g,'');vm.runInContext(code+';globalThis.Lib=MaterialLibrary;',ctx);
+    const elements=new Map();ctx.document.querySelector=selector=>{if(!elements.has(selector))elements.set(selector,{hidden:false,value:'source',setAttribute(){},querySelector:()=>({disabled:false})});return elements.get(selector);};ctx.document.body={classList:{toggle(){}}};
+    let p={id:'example',library:{readonly:true}},spaces=[];const library=Object.create(ctx.Lib.prototype);Object.assign(library,{deps:{current:()=>p},view:{hidden:true},mode:'mine',trial:{},archive:{},tree:{mode:'mine',getNode:()=>null,syncCurrent(){},showMode:mode=>spaces.push(mode)},setNav(mode){this.mode=mode;}});
+    library.selected();assert.equal(library.mode,'examples');assert.deepEqual(spaces,['examples']);assert.equal(elements.get('#toggle-editor').disabled,true);assert.equal(library.trial.hidden,false);
+    p={id:'normal',library:{}};library.tree.mode='examples';library.selected();assert.equal(library.mode,'mine');assert.deepEqual(spaces,['examples','mine']);assert.equal(elements.get('#toggle-editor').disabled,false);assert.equal(library.trial.hidden,true);
+    """)
