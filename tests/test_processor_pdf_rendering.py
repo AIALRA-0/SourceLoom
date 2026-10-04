@@ -49,6 +49,21 @@ const result={};
  const {v,row}=setup();v.container.clientHeight=200;v.container.getBoundingClientRect=()=>({top:0,bottom:200});row.sheet.box={top:2000,bottom:2200};context.window.getSelection=()=>({isCollapsed:false,containsNode:()=>true});await v.renderVisible();assert.ok(row.frame);assert.ok(row.textLayer);assert.equal(row.canvas,null);assert.equal(row.frame.children.length,0);delete context.window.getSelection;result.distant_selection_keeps_text_not_bitmap=true;
 }
 {
+ const {v,row}=setup();Object.assign(v,{rows:[],scale:1,mode:'width',rotation:0,stack:new Element('div')});
+ v.container.clientWidth=400;v.container.clientHeight=200;let layouts=0;
+ v.beforeLayout=()=>layouts++;v.afterLayout=()=>layouts++;v.captureSelection=()=>{throw Error('selection captured before page proxies ready')};
+ const resizeBody=source.slice(source.indexOf('this.resize=new ResizeObserver(()=>{')+'this.resize=new ResizeObserver(()=>{'.length,source.indexOf('});this.resize.observe(container);'));
+ vm.runInContext(`globalThis.resizeWhileLoading=function(container){${resizeBody}}`,context);
+ context.window.getSelection=()=>({isCollapsed:true});context.resizeWhileLoading.call(v,v.container);v.setScale(2);v.rotate();
+ assert.equal(layouts,0);assert.equal(v.revision,1);assert.equal(v.scale,2);assert.equal(v.rotation,90);
+ v.container.getBoundingClientRect=()=>{throw Error('geometry read before page proxies ready')};await v.renderVisible();
+ result.pending_page_proxies_ignore_layout=true;
+ v.rows=[row];row.viewport=null;row.pdfPage.getViewport=()=>viewport;v.captureSelection=()=>null;let rendered=0;v.renderVisible=async()=>rendered++;
+ v.relayout();await new Promise(r=>setImmediate(r));assert.equal(layouts,2);assert.equal(rendered,1);assert.equal(v.revision,2);
+ assert.equal(row.sheet.style.width,'100px');assert.equal(row.sheet.style.height,'200px');assert.equal(row.viewport,viewport);
+ result.ready_page_proxies_resume_layout=true;delete context.window.getSelection;
+}
+{
  const {v,row}=setup();Object.assign(v,{scale:.75,mode:'custom',rotation:0,stack:new Element('div')});v.container.clientWidth=400;v.container.clientHeight=200;row.pdfPage.getViewport=()=>viewport;let captures=0;v.beforeLayout=()=>captures++;v.relayout();assert.equal(v.revision,1);assert.equal(captures,0);result.unchanged_geometry_skips_rebuild=true;
 }
 console.log(JSON.stringify(result));
@@ -67,6 +82,7 @@ def pdf_regressions():
     'atomic_publish','stale_revision_preserves_old','stale_identity_preserves_old',
     'render_error_preserves_old','concurrent_passes_share_frame','rotation_transforms_entire_frame',
     'distant_frame_reclaimed','distant_selection_keeps_text_not_bitmap','unchanged_geometry_skips_rebuild',
+    'pending_page_proxies_ignore_layout','ready_page_proxies_resume_layout',
 ])
 def test_pdf_frame_lifecycle(pdf_regressions,case):
     assert pdf_regressions[case]

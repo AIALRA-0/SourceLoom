@@ -133,7 +133,7 @@ export class PDFDocumentView {
   setHand(value){this.hand=!!value;this.container.classList.toggle('pdf-hand',this.hand);this.emit();}
   settings(){return {pdfScaleMode:this.mode,pdfScale:this.scale,pdfRotation:this.rotation};}
   relayout(){
-    if(!this.valid()||!this.doc)return;
+    if(!this.valid()||!this.doc||!this.rows.length)return;
     const width=Math.max(160,this.container.clientWidth-8),height=Math.max(120,this.container.clientHeight-12);
     const base=this.rows[0].pdfPage.getViewport({scale:1,rotation:this.rotation});
     let scale=this.scale*96/72;if(this.mode==='width')scale=width/base.width;else if(this.mode==='page')scale=Math.min(width/base.width,height/base.height);
@@ -172,7 +172,7 @@ export class PDFDocumentView {
     if(anchor&&focus)window.getSelection().setBaseAndExtent(anchor,Math.min(anchor.length,selected.anchor.offset),focus,Math.min(focus.length,selected.focus.offset));
   }
   async renderVisible(){
-    if(!this.valid()||!this.doc||!this.container.clientHeight)return;
+    if(!this.valid()||!this.doc||!this.rows.length||!this.container.clientHeight)return;
     const origin=this.container.getBoundingClientRect(),height=this.container.clientHeight;
     const nearby=this.rows.filter(row=>{const box=row.sheet.getBoundingClientRect();return box.bottom>=origin.top-height&&box.top<=origin.bottom+height;});
     this.wanted=new Set(nearby);
