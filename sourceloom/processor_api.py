@@ -82,12 +82,13 @@ def register(app, store, config):
         key = (p['_reading_cache_key'], version['id'])
         return compilations.get(key, lambda: processor.compile_result(p, version['markdown'],
             resource_usages=version.get('resource_usages'), representations=version.get('representations'),
-            derived_resources=version.get('derived_resources'), scope_exclusions=version.get('scope_exclusions')))
+            derived_resources=version.get('derived_resources'), scope_exclusions=version.get('scope_exclusions')), clone=False)
 
     def version_view(p, vid=None):
         version = copy.deepcopy(processor.active_version(p, vid))
         compiled = compiled_view(p, version['id'])
-        version.update(checks=compiled['checks'], mechanical_pass=compiled['mechanical_pass'])
+        # Compilation is borrowed read-only; caller-owned checks must stay isolated.
+        version.update(checks=copy.deepcopy(compiled['checks']), mechanical_pass=compiled['mechanical_pass'])
         return version
     @app.middleware('http')
     async def readonly_examples(request, call_next):

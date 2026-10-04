@@ -117,3 +117,61 @@ def test_projection_keeps_unverified_image_positions_unresolved(tmp_path):
     assert any(c['code']=='PLACEMENT_RELATION_UNVERIFIED' for c in view['checks'])
     assert view['semantic_status']=='not_reviewed'
     assert store.get(p['id'])==before
+
+
+def test_returned_version_mutation_cannot_pollute_reused_read_projections(tmp_path, monkeypatch):
+    store, p, md = native_table(tmp_path)
+    md += '\n合成检查句。\n'
+    p = processor.save_result(store, p['id'], md, base_version=processor.active_version(p)['id'])
+    before = store.get(p['id'])
+    vid = before['processor']['active_version']
+    compile_original = processor.compile_result
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(args[1])
+        return compile_original(*args, **kwargs)
+
+    monkeypatch.setattr(processor, 'compile_result', counted)
+    config = load_config() | {'data_dir': str(store.root), 'auth_mode': 'local', 'external_worker': True}
+    app = create_app(config)
+    route = '/api/processor/projects/'+p['id']
+    version_endpoint = next(r.endpoint for r in app.routes
+                            if getattr(r, 'path', '') == '/api/processor/projects/{pid}/versions/{vid}')
+    with TestClient(app) as client:
+        full = client.get(route).json()
+        reading = client.get(route+'?reading=true').json()
+        version = client.get(route+'/versions/'+vid).json()
+        preview = client.get(route+'/preview').content
+        assert version['checks'] and '0.768' in version['markdown']
+        assert full['processor']['resources']
+        assert len(calls) == 1
+
+        # Mutate the actual route's server-side return, before JSON serialization:
+        # mutating client-decoded JSON alone would not exercise alias isolation.
+        returned = version_endpoint(p['id'], vid)
+        returned['checks'][0]['message'] = 'Caller mutation must remain private'
+        returned['checks'].append({'severity': 'error', 'code': 'CALLER_ONLY'})
+        returned['representations'].append({'source_ids': ['caller-only']})
+        returned['source_map'].clear()
+        assert version_endpoint(p['id'], vid) == version
+        assert client.get(route).json() == full
+        assert client.get(route+'?reading=true').json() == reading
+        assert client.get(route+'/versions/'+vid).json() == version
+        assert client.get(route+'/preview').content == preview
+        assert len(calls) == 1
+        assert store.get(p['id']) == before
+
+        # A real saved version change still invalidates the borrowed compilation.
+        response = client.post(route+'/result', json={
+            'markdown': md+'\nNew synthetic version.\n', 'base_version': vid},
+            headers={'origin': 'http://testserver', 'x-sourceloom': '1'})
+        assert response.status_code == 200
+        new_version_calls = len(calls)
+        assert new_version_calls > 1 and calls[-1] == md+'\nNew synthetic version.\n'
+        fresh = client.get(route+'?reading=true').json()['reading_version']
+        assert fresh['id'] != vid and '0.768' in fresh['markdown']
+        assert fresh['representations'] == version['representations']
+        assert not any(c.get('code') == 'CALLER_ONLY' for c in fresh['checks'])
+        assert len(calls) == new_version_calls
+        assert client.get(route+'/versions/'+vid).json() == version

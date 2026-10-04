@@ -62,9 +62,9 @@ def create_app(config=None):
         pipeline.executor.shutdown(wait=False,cancel_futures=True)
         app.state.processor_executor.shutdown(wait=False,cancel_futures=True)
     app=FastAPI(title="SourceLoom",version="0.1.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
-    # Default level 9 repeatedly spends CPU on long saved-material responses.
-    # Level 6 preserves the decoded bytes with a small wire-size tradeoff.
-    app.add_middleware(GZipMiddleware,minimum_size=1000,compresslevel=6)
+    # Response compression runs on the event loop. Level 3 reduces the CPU
+    # spent on long saved-detail reads while preserving all decoded bytes.
+    app.add_middleware(GZipMiddleware,minimum_size=1000,compresslevel=3)
     app.state.store=store
     app.state.pipeline=pipeline
     from .library_api import register
