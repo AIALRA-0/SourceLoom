@@ -1,0 +1,23 @@
+sourceloom/static/processor_pdf.js
+  s_36a381ab4bccf9::t_535d54c0fa5c00 66-71
+  s_36a381ab4bccf9::t_401869436b614c 20-21
+  s_36a381ab4bccf9::t_711158606f69f5 23-40,42,44-54,56-65,72
+tests/test_processor_reading_stability.py
+  s_36a381ab4bccf9::t_1080b761f27564 76,81-89,91-146,148-158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e8ea391ddc7b0a8288ad1ae7411e98db6075c2bc",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
