@@ -1,0 +1,24 @@
+sourceloom/processor_api.py
+  s_36a381ab4bccf9::t_aff715b8a92665 246-249
+sourceloom/app.py
+  s_36a381ab4bccf9::t_b8c824441534ba 65-67
+tests/test_processor_reading_performance.py
+  s_36a381ab4bccf9::t_b8c824441534ba 178-198
+  s_36a381ab4bccf9::t_b08199b983675f 106-177
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "994e151c47b8029bdfe30f193956143ff8f94323",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
