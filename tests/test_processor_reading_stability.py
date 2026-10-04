@@ -8,6 +8,45 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_hidden_resource_gallery_is_deferred_and_reopens_with_current_material():
+    script = r'''
+    const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+    const arg=JSON.parse(fs.readFileSync(0,'utf8'));
+    const src=fs.readFileSync(arg.root+'/sourceloom/static/processor.js','utf8');
+    const show=src.slice(src.indexOf('function showTab('),src.indexOf('let packRead='));
+    const draw=src.slice(src.indexOf('function drawResources('),src.indexOf('async function saveResourceUsages('));
+    let createdImages=0,filtered=0;
+    function node(tag='div',text){if(tag==='img')createdImages++;return {tag,text,children:[],hidden:false,dataset:{},
+      classList:{toggle(){}},replaceChildren(...children){this.children=children;},
+      append(...children){this.children.push(...children);},setAttribute(){},addEventListener(){}};}
+    const nodes=new Map(),get=s=>{if(!nodes.has(s))nodes.set(s,node());return nodes.get(s);};
+    get('#resource-view').value='grid';
+    const ctx={project:{id:'p1'},currentTab:'result',resourceLimit:2,selectedResourceIds:new Set(),
+      $:get,element:node,workbench:{tab(){}},ensurePack(){},renderPageInto(){},protect:f=>f,
+      resourceItems:()=>[1,2,3].map(n=>({id:ctx.project.id+'-r'+n,kind:'image',sha256:'sha'+n,url:ctx.project.id+'/asset'+n})),
+      filteredResources:()=>{filtered++;return ctx.resourceItems();},resourceUsage:()=> 'body',resourcePage:()=>0,
+      safeURL:v=>v,pidPath:s=>ctx.project.id+s,showImage(){},copyText(){},operation(){},operationDone(){},saveResourceUsages(){}};
+    vm.createContext(ctx);vm.runInContext(show+'\n'+draw,ctx);
+    ctx.showTab('result');ctx.drawResources();
+    assert.equal(get('#resource-list').children.length,0);assert.equal(createdImages,0);assert.equal(filtered,0);
+    ctx.showTab('material');
+    assert.equal(createdImages,2);assert.deepEqual(get('#resource-list').children.map(n=>n.dataset.resourceId),['p1-r1','p1-r2']);
+    assert.equal(get('#resource-more').hidden,false);
+    ctx.showTab('result');assert.equal(get('#resource-list').children.length,0);
+    ctx.project={id:'p2'};ctx.drawResources();
+    assert.equal(createdImages,2);assert.equal(filtered,1);
+    ctx.showTab('material');
+    assert.deepEqual(get('#resource-list').children.map(n=>n.dataset.resourceId),['p2-r1','p2-r2']);
+    assert.equal(createdImages,4);
+    ctx.resourceLimit=3;ctx.drawResources();assert.equal(get('#resource-list').children.length,3);
+    assert.equal(get('#resource-more').hidden,true);
+    process.stdout.write('true');
+    '''
+    result = subprocess.run([shutil.which('node'), '-e', script], input=json.dumps({'root': str(ROOT)}),
+                            text=True, capture_output=True, check=True, timeout=10)
+    assert result.stdout == 'true'
+
+
 def test_opening_saved_material_marks_current_without_refreshing_catalog():
     script = r'''
     const fs=require('node:fs'),vm=require('node:vm');

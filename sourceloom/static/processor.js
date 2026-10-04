@@ -139,6 +139,7 @@ function showTab(name) {
     $(`#tab-${tab}`).hidden = tab !== name;
     $(`[data-tab="${tab}"]`).setAttribute('aria-selected', String(tab === name));
   }
+  if(project)drawResources();
   if(project && name!=='result')void ensurePack();
   if(project && name==='material')renderPageInto($('#source-viewer'));
   if(project && name==='result')renderPageInto($('#compare-source-viewer'));
@@ -189,7 +190,10 @@ function filteredResources() {
   return resourceItems().filter(item => (kind === 'all' || item.kind === kind) && (!page || resourcePage(item) === page));
 }
 function drawResources() {
-  const resources = filteredResources(), target = $('#resource-list'); target.replaceChildren();
+  const target = $('#resource-list'); target.replaceChildren();
+  // Resource thumbnails belong to preparation, not the hidden pane behind prose.
+  if($('#tab-material').hidden)return;
+  const resources = filteredResources();
   target.classList.toggle('list-view',$('#resource-view').value === 'list');
   $('#resource-count').textContent = `${resources.length} / ${resourceItems().length} 项`;
   for (const resource of resources.slice(0,resourceLimit)) {
