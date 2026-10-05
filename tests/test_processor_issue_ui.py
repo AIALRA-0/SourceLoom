@@ -11,7 +11,10 @@ def _run(code):
     assert node, 'Node is required for the issue workflow JavaScript regression'
     harness = """
 import {readFileSync} from 'node:fs';
-const {IssueDrawer}=await import('data:text/javascript;base64,'+Buffer.from(readFileSync(SOURCE,'utf8')).toString('base64'));
+const readSource=readFileSync(SOURCE.replace('processor_issues.js','processor_read.js'),'utf8');
+const readURL='data:text/javascript;base64,'+Buffer.from(readSource).toString('base64');
+const issueSource=readFileSync(SOURCE,'utf8').replace("'./processor_read.js?v=loading-reliability-20261004'",JSON.stringify(readURL));
+const {IssueDrawer}=await import('data:text/javascript;base64,'+Buffer.from(issueSource).toString('base64'));
 const memory=new Map();
 globalThis.localStorage={getItem:k=>memory.get(k),setItem:(k,v)=>memory.set(k,v),removeItem:k=>memory.delete(k)};
 const node={disabled:false,focus:()=>{}};
@@ -125,3 +128,117 @@ await drawer.acceptResult({processor:{active_version:'v1'}},{version_id:'v1',und
 process.stdout.write(JSON.stringify({undoVersion:drawer.undoVersion,version:drawer.context.versionId,completion:drawer.completion.completion}));
 """)
     assert result == {'undoVersion': None, 'version': 'v1', 'completion': '已恢复原图文件'}
+
+
+
+_SOURCE_LOAD = r"""
+const group={id:'src-00001',kind:'table',source_preview_url:'/saved-source-image',actions:['confirm_manual']};
+drawer.data={source_digest:'source-a',draft_digest:'draft-a',issues:[group]};drawer.selected=group.id;
+const image={dataset:{sourceUrl:'/saved-source-image'},hidden:true,naturalWidth:640,naturalHeight:960,removeAttribute(k){delete this[k];},decode:async()=>{}};
+const retry={hidden:true},status={hidden:false,setAttribute(){},querySelector:s=>s==='p'?{textContent:''}:retry};
+const pane={isConnected:true,dataset:{},querySelectorAll:s=>s==='img[data-source-url]'?[image]:[],querySelector:s=>s==='[data-source-retry]'?retry:s==='.issue-source-status'?status:null};
+host.querySelector=s=>s==='.issue-source-pane'?pane:null;host.querySelectorAll=()=>[];
+const updates=[];drawer.updateSource=()=>updates.push(drawer.sourceLoad?.state);
+let created=0,revoked=0;URL.createObjectURL=()=>{created++;return 'blob:synthetic-'+created;};URL.revokeObjectURL=()=>revoked++;
+"""
+
+
+def test_table_confirmation_waits_for_actual_current_image_decode():
+    result = _run(_SOURCE_LOAD+r"""
+let finish,calls=0,decodeStarted=false;image.decode=()=>{decodeStarted=true;return new Promise(r=>finish=r);};globalThis.fetch=async()=>new Response('image-bytes',{headers:{'Content-Type':'image/png'}});drawer.api=async()=>calls++;
+const loading=drawer.loadSource(group);while(!decodeStarted)await new Promise(r=>setImmediate(r));
+const before={state:drawer.sourceLoad.state,ready:drawer.sourceReady(),hidden:image.hidden};await drawer.beginAction('confirm_manual');await drawer.preview('confirm_manual',{acknowledged:true});await drawer.apply({action:'confirm_manual'});
+finish();await loading;const after={state:drawer.sourceLoad.state,ready:drawer.sourceReady(),hidden:image.hidden};drawer.cancelSource();
+process.stdout.write(JSON.stringify({before,after,calls,revoked}));
+""")
+    assert result['before'] == {'state':'loading','ready':False,'hidden':True}
+    assert result['after'] == {'state':'ready','ready':True,'hidden':False}
+    assert result['calls'] == 0 and result['revoked'] == 1
+
+
+def test_image_decode_failure_has_local_retry_and_never_becomes_ready():
+    result = _run(_SOURCE_LOAD+r"""
+let calls=0;globalThis.fetch=async()=>{calls++;return new Response('bad-image',{headers:{'Content-Type':'image/png'}})};
+image.decode=async()=>{throw Error('image decoding failed')};await drawer.loadSource(group);
+const failed={state:drawer.sourceLoad.state,ready:drawer.sourceReady(),hidden:image.hidden,urls:drawer.sourceLoad.urls.size};
+image.decode=async()=>{};await drawer.loadSource(group,{retry:true});await drawer.loadSource(group);
+const ready=drawer.sourceReady();drawer.cancelSource();process.stdout.write(JSON.stringify({failed,ready,calls,created,revoked}));
+""")
+    assert result['failed']=={'state':'failed','ready':False,'hidden':True,'urls':0}
+    assert result['ready'] and result['calls']==2
+    assert result['created']==2 and result['revoked']==2
+
+
+def test_wrong_response_type_and_authentication_do_not_unlock_confirmation():
+    result = _run(_SOURCE_LOAD+r"""
+const failures=[];
+for(const [status,type] of [[401,'application/json'],[404,'application/json'],[200,'text/html']]){
+ globalThis.fetch=async()=>new Response('<html>login</html>',{status,headers:{'Content-Type':type}});await drawer.loadSource(group,{retry:true});failures.push({state:drawer.sourceLoad.state,ready:drawer.sourceReady(),message:drawer.sourceLoad.error});
+}
+process.stdout.write(JSON.stringify({failures,created,revoked}));
+""")
+    assert all(x['state']=='failed' and not x['ready'] for x in result['failures'])
+    assert '登录' in result['failures'][0]['message']
+    assert '不存在' in result['failures'][1]['message']
+    assert '文件类型' in result['failures'][2]['message']
+    assert result['created']==0 and result['revoked']==0
+
+
+def test_cancelled_late_source_response_cannot_attach_to_another_material():
+    result = _run(_SOURCE_LOAD+r"""
+let finish;globalThis.fetch=()=>new Promise(r=>finish=r);const old=drawer.loadSource(group);
+drawer.cancelSource();drawer.context={projectId:'project-b',versionId:'v2'};await old;
+finish(new Response('late',{headers:{'Content-Type':'image/png'}}));await new Promise(r=>setImmediate(r));
+process.stdout.write(JSON.stringify({load:drawer.sourceLoad,created,ready:drawer.sourceReady(),src:image.src||null}));
+""")
+    assert result=={'load':None,'created':0,'ready':False,'src':None}
+
+
+def test_switch_during_decode_releases_blob_and_blocks_stale_readiness():
+    result = _run(_SOURCE_LOAD+r"""
+let finish,started=false;globalThis.fetch=async()=>new Response('image',{headers:{'Content-Type':'image/png'}});image.decode=()=>{started=true;return new Promise(r=>finish=r)};
+const old=drawer.loadSource(group);while(!started)await new Promise(r=>setImmediate(r));drawer.cancelSource();drawer.context={projectId:'project-b',versionId:'v2'};await old;finish();await new Promise(r=>setImmediate(r));
+process.stdout.write(JSON.stringify({created,revoked,ready:drawer.sourceReady(),hidden:image.hidden}));
+""")
+    assert result=={'created':1,'revoked':1,'ready':False,'hidden':True}
+
+
+def test_unfinished_image_decode_reaches_a_bounded_failure():
+    result = _run(_SOURCE_LOAD+r"""
+const nativeTimer=setTimeout;let delay;
+globalThis.setTimeout=(fn,ms)=>{delay=ms;return nativeTimer(fn,1)};
+globalThis.fetch=async()=>new Response('image',{headers:{'Content-Type':'image/png'}});
+image.decode=()=>new Promise(()=>{});await drawer.loadSource(group);
+process.stdout.write(JSON.stringify({delay,state:drawer.sourceLoad.state,ready:drawer.sourceReady(),message:drawer.sourceLoad.error,created,revoked}));
+""")
+    assert result['delay']==15000
+    assert result['state']=='failed' and not result['ready']
+    assert '解码' in result['message']
+    assert result['created']==1 and result['revoked']==1
+
+
+def test_completed_decode_without_visible_image_pixels_cannot_confirm():
+    result = _run(_SOURCE_LOAD+r"""
+globalThis.fetch=async()=>new Response('image',{headers:{'Content-Type':'image/png'}});
+image.naturalWidth=0;image.naturalHeight=0;await drawer.loadSource(group);
+process.stdout.write(JSON.stringify({state:drawer.sourceLoad.state,ready:drawer.sourceReady(),created,revoked}));
+""")
+    assert result=={'state':'failed','ready':False,'created':1,'revoked':1}
+
+
+def test_ready_preview_does_not_authorize_another_saved_version():
+    result = _run(_SOURCE_LOAD+r"""
+globalThis.fetch=async()=>new Response('image',{headers:{'Content-Type':'image/png'}});
+await drawer.loadSource(group);const ready=drawer.sourceReady();drawer.context.versionId='v2';let calls=0;drawer.api=async()=>calls++;
+await drawer.preview('confirm_manual',{acknowledged:true});await drawer.apply({action:'confirm_manual'});
+process.stdout.write(JSON.stringify({before:ready,after:drawer.sourceReady(),calls}));
+""")
+    assert result=={'before':True,'after':False,'calls':0}
+
+
+def test_close_clears_unsubmitted_manual_choice_before_reopening():
+    result = _run(r"""
+drawer.manualReady=true;drawer.isOpen=()=>false;host.classList.remove=()=>{};drawer.close();
+process.stdout.write(JSON.stringify({manualReady:drawer.manualReady}));
+""")
+    assert result=={'manualReady':False}

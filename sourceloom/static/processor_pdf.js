@@ -55,8 +55,9 @@ function acquireDocument(key,options){
   entry.users++;
   trimDocuments();
   let released=false;
-  return {task:entry.task,release(){
+  return {task:entry.task,release({invalidate=false}={}){
     if(released)return;released=true;
+    if(invalidate){entry.failed=true;if(documents.get(key)===entry)documents.delete(key);}
     if(--entry.users)return;
     entry.task.onProgress=null;
     if(entry.failed){discardDocument(key,entry);return;}
@@ -101,6 +102,35 @@ export class PDFDocumentView {
   get state(){return {loaded:!!this.doc,version:pdfjs.version,pages:this.rows.length,scale:this.scale,scaleMode:this.mode,rotation:this.rotation,hand:this.hand,
     query:this.query,hits:this.hits.length,hit:this.hitIndex+1,indexed:this.indexed,indexing:!!this.indexing,message:this.message,
     rendered:this.rows.filter(r=>r.canvas).map(r=>r.page),textPages:this.rows.filter(r=>r.textLayer).map(r=>r.page),identity:this.identity};}
+  async wait(promise,stage,cancel){
+    let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>{
+      const error=new Error(`${stage}等待超时，请重试或打开原文件`);error.name='PDFTimeoutError';reject(error);try{cancel?.();}catch{}
+    },this.waitTimeout||30_000);})]);}finally{clearTimeout(timer);}
+  }
+  failure(row,error,retry){
+    if(!this.valid())return;const host=row?.sheet||this.container;
+    let status=host.querySelector('.page-load-state');if(!status){status=element('div','page-load-state');host.append(status);}
+    status.style.zIndex='6';if(row?.frame)Object.assign(status.style,{inset:'auto 0 0',background:'#fff'});
+    const reason=error.status===401?'登录已失效，请重新登录后重试':error.status===403?'当前账号无权读取原件':error.name==='InvalidPDFException'?'返回内容不是可读取的 PDF，请打开原文件检查或重试':error.message||'原件读取失败';
+    const message=element('span',null,`${row?`第 ${row.page} 页：`:''}${reason}。`);
+    const button=element('button',null,'重试');button.type='button';button.onclick=()=>{if(!this.valid())return;status.remove();retry();};
+    const link=element('a',null,'打开原文件');link.href=this.originalURL();link.target='_blank';link.rel='noopener noreferrer';
+    status.replaceChildren(message,button,link);this.emit(message.textContent);
+  }
+  async ensurePage(row){
+    if(row.pdfPage)return row.pdfPage;if(row.pagePromise)return row.pagePromise;
+    const doc=this.doc;
+    const promise=this.wait(doc.getPage(row.page),`第 ${row.page} 页读取`).then(page=>{
+      if(!this.valid()||this.doc!==doc||row.pagePromise!==promise)return null;
+      row.pdfPage=page;return page;
+    }).finally(()=>{if(row.pagePromise===promise)row.pagePromise=null;});row.pagePromise=promise;return promise;
+  }
+  pageViewport(row,scale){
+    if(row.pdfPage)return row.pdfPage.getViewport({scale,rotation:this.rotation});
+    const base=this.basePage.getViewport({scale:1,rotation:0}),box=base.viewBox;
+    const width=box[2]-box[0],height=row.aspect?width/row.aspect:box[3]-box[1];
+    return new base.constructor({viewBox:[0,0,width,height],userUnit:base.userUnit,scale,rotation:this.rotation});
+  }
   async open(){
     try{
       this.emit('正在读取原 PDF…');
@@ -108,37 +138,47 @@ export class PDFDocumentView {
         wasmUrl:new URL('wasm/',vendor).href,isEvalSupported:false,enableXfa:false,disableAutoFetch:true});
       this.task=this.documentLease.task;
       this.task.onProgress=progress=>{if(this.valid())this.emit(progress.total?`正在读取原 PDF · ${Math.round(progress.loaded/progress.total*100)}%`:'正在读取原 PDF…');};
-      const doc=await this.task.promise;if(!this.valid())return;this.doc=doc;
-      const pages=await Promise.all(Array.from({length:doc.numPages},(_,i)=>doc.getPage(i+1)));if(!this.valid())return;
+      const doc=await this.wait(this.task.promise,'原 PDF 读取');if(!this.valid())return;this.task.onProgress=null;this.doc=doc;
       const stack=this.container.querySelector('.source-document')||element('div','source-document');
       if(!stack.isConnected)this.container.replaceChildren(stack);this.stack=stack;stack.classList.add('pdf-document');
-      pages.forEach((pdfPage,index)=>{
+      this.rows=[];Array.from({length:doc.numPages},(_,index)=>{
         const page=index+1;let sheet=stack.querySelector(`.source-sheet[data-page="${page}"]`);
         if(!sheet){sheet=element('section','source-sheet');sheet.dataset.page=page;sheet.setAttribute('aria-label',`原件第 ${page} 页`);stack.append(sheet);}
         sheet.classList.add('pdf-sheet');const fallback=sheet.querySelector('img');if(fallback)fallback.classList.add('pdf-fallback');
-        this.rows.push({page,pdfPage,sheet,fallback,text:null,textLayer:null,canvas:null,renderTask:null,renderRevision:-1});
+        const aspect=Number(fallback?.width)/Number(fallback?.height)||Number(sheet.style.aspectRatio?.split('/')[0])/Number(sheet.style.aspectRatio?.split('/')[1]);
+        this.rows.push({page,aspect,pdfPage:null,sheet,fallback,text:null,textLayer:null,canvas:null,renderTask:null,renderRevision:-1});
       });
-      this.outlineItems=await doc.getOutline();if(!this.valid())return;
-      this.relayout();await this.renderVisible();this.emit('原 PDF 已载入 · 可选择文字');
-      this.buildIndex();
+      const bookmark=this.beforeLayout?.(),origin=this.container.getBoundingClientRect().top+this.container.clientHeight*.25;
+      const current=this.rows.find(row=>{const box=row.sheet.getBoundingClientRect();return box.top<=origin&&box.bottom>=origin;});
+      const target=this.rows[(bookmark?.left?.page||current?.page||1)-1]||this.rows[0];
+      await this.startPage(target);
     }catch(error){if(this.valid()){
-      // Native PDF rendering is the primary path. Download raster previews only
-      // when it actually fails, instead of decoding both representations first.
-      for(const image of this.container.querySelectorAll('img[data-fallback-src]')){image.hidden=false;image.src=image.dataset.fallbackSrc;}
-      this.emit(`PDF 文字视图未能载入：${error.message}。仍可使用原页预览或打开原文件。`);
+      // A user retry creates a new loading task without replacing a sibling
+      // pane's active document or automatically downloading every raster page.
+      this.documentLease?.release({invalidate:true});this.documentLease=null;this.doc=null;
+      this.failure(null,error,()=>{this.ready=this.open();});
     }}
+  }
+  async startPage(target){
+    try{this.basePage=await this.ensurePage(target);}catch(error){this.failure(target,error,()=>{this.ready=this.startPage(target);});return;}
+    if(!this.valid()||!this.basePage)return;
+    this.relayout();await this.renderPage(target);if(!this.valid())return;
+    if(target.canvas)this.emit(target.noText?'原 PDF 已载入 · 该页没有原生文字层':'原 PDF 已载入 · 可选择文字');
+    if(this.outlinePromise)return;const doc=this.doc;
+    this.outlinePromise=this.wait(doc.getOutline(),'原件目录读取').then(items=>{if(this.valid()&&this.doc===doc)this.outlineItems=items;}).catch(error=>{if(this.valid()&&this.doc===doc)this.outlineError=error;});
+    this.buildIndex().catch(error=>{if(this.valid()){this.indexing=false;this.emit(`全文查找索引未完成：${error.message}`);}});
   }
   setScale(value){this.mode=typeof value==='string'?value:'custom';if(typeof value!=='string')this.scale=limit(value);this.emit();if(this.doc)this.relayout();}
   rotate(){this.rotation=(this.rotation+90)%360;this.emit();if(this.doc)this.relayout();}
   setHand(value){this.hand=!!value;this.container.classList.toggle('pdf-hand',this.hand);this.emit();}
   settings(){return {pdfScaleMode:this.mode,pdfScale:this.scale,pdfRotation:this.rotation};}
   relayout(){
-    if(!this.valid()||!this.doc||!this.rows.length)return;
+    if(!this.valid()||!this.doc||!this.rows.length||(!this.basePage&&!this.rows[0].pdfPage))return;
     const width=Math.max(160,this.container.clientWidth-8),height=Math.max(120,this.container.clientHeight-12);
-    const base=this.rows[0].pdfPage.getViewport({scale:1,rotation:this.rotation});
+    const base=(this.basePage||this.rows[0].pdfPage).getViewport({scale:1,rotation:this.rotation});
     let scale=this.scale*96/72;if(this.mode==='width')scale=width/base.width;else if(this.mode==='page')scale=Math.min(width/base.width,height/base.height);
     this.scale=scale/(96/72);this.lastWidth=this.container.clientWidth;this.lastHeight=this.container.clientHeight;
-    const views=this.rows.map(row=>row.pdfPage.getViewport({scale,rotation:this.rotation}));
+    const views=this.rows.map(row=>this.pageViewport(row,scale));
     if(this.rows.every((row,index)=>row.viewport&&row.viewport.transform.every((v,i)=>Math.abs(v-views[index].transform[i])<.01))){this.emit();return;}
     const selected=this.captureSelection(),selectionEpoch=this.selectionEpoch||0,saved=this.beforeLayout?.();this.revision++;
     this.stack.style.width=`${Math.max(...views.map(v=>v.width))}px`;this.stack.style.minWidth='0';
@@ -190,11 +230,19 @@ export class PDFDocumentView {
     // Current pages precede neighbours. Older scroll passes cannot resurrect
     // distant canvases after a new pass has established its viewport window.
     nearby.sort((a,b)=>{const priority=row=>{const r=row.sheet.getBoundingClientRect();return r.bottom>origin.top&&r.top<origin.bottom?0:1;};return priority(a)-priority(b);});
-    for(const row of nearby){if(!this.valid())return;if(this.wanted.has(row))await this.renderPage(row);}
+    for(const row of nearby){if(!this.valid())return;if(this.wanted.has(row))await this.renderPage(row,{visibleOnly:true});}
   }
-  async renderPage(row){
-    if(!this.valid()||!row.viewport)return;if(row.renderRevision===this.revision&&row.canvas)return;
+  async renderPage(row,{visibleOnly=false}={}){
+    if(!this.valid()||!row.viewport||row.failed)return;if(row.renderRevision===this.revision&&row.canvas)return;
+    if(visibleOnly&&!this.wanted?.has(row))return;
     if(row.pendingRevision===this.revision&&row.pendingPromise)return row.pendingPromise;
+    if(!row.pdfPage){
+      try{await this.ensurePage(row);}catch(error){if(this.valid()){row.failed=true;this.failure(row,error,()=>{row.failed=false;this.renderPage(row);});}return;}
+      if(!this.valid()||!row.pdfPage||(visibleOnly&&!this.wanted?.has(row)))return;
+      if(row.pendingRevision===this.revision&&row.pendingPromise)return row.pendingPromise;
+    }
+    const actual=this.pageViewport(row,row.viewport.scale);
+    if(actual.transform.some((v,i)=>Math.abs(v-row.viewport.transform[i])>=.01)){this.relayout();return this.renderPage(row,{visibleOnly});}
     row.renderTask?.cancel();row.pendingFrame?.textLayer?.cancel();
     const revision=this.revision,viewport=row.viewport,frame=element('div','pdf-frame'),canvas=element('canvas','pdf-canvas');
     Object.assign(frame.style,{width:viewport.width+'px',height:viewport.height+'px'});
@@ -203,11 +251,10 @@ export class PDFDocumentView {
     canvas.width=Math.ceil(viewport.width*ratio);canvas.height=Math.ceil(viewport.height*ratio);canvas.style.width=viewport.width+'px';canvas.style.height=viewport.height+'px';frame.append(canvas);
     const pending={frame,canvas,textLayer:null};row.pendingFrame=pending;row.pendingRevision=revision;
     const renderTask=row.pdfPage.render({canvasContext:canvas.getContext('2d'),viewport,transform:ratio===1?null:[ratio,0,0,ratio,0,0],annotationMode:pdfjs.AnnotationMode.ENABLE});row.renderTask=renderTask;
-    const current=()=>this.valid()&&revision===this.revision&&row.pendingFrame===pending;
-    const promise=(async()=>{
-      try{
+    const current=()=>this.valid()&&revision===this.revision&&row.pendingFrame===pending&&(!visibleOnly||this.wanted?.has(row));
+    const promise=this.wait((async()=>{
         await renderTask.promise;if(!current())return;
-        if(!row.text)row.text=await row.pdfPage.getTextContent();if(!current())return;
+        if(!row.text){const text=await row.pdfPage.getTextContent();if(!current())return;row.text=text;}if(!current())return;
         if(row.text.items.some(item=>item.str?.trim())){
           const container=element('div','textLayer');frame.append(container);
           pending.textLayer=new pdfjs.TextLayer({textContentSource:row.text,container,viewport});
@@ -221,16 +268,15 @@ export class PDFDocumentView {
         Object.assign(row,{frame,canvas,textLayer:pending.textLayer,noText:!pending.textLayer,committedViewport:viewport,renderRevision:revision});
         this.restoreSelection(selected);oldText?.cancel();if(oldCanvas)oldCanvas.width=oldCanvas.height=0;
         if(row.fallback)row.fallback.hidden=true;row.sheet.querySelector('.page-load-state')?.remove();this.paintHits(row);this.emit();
-      }catch(error){if(error.name!=='RenderingCancelledException'&&current()){
-        if(!row.frame&&this.rotation===0&&row.fallback?.dataset.fallbackSrc){row.fallback.hidden=false;row.fallback.src=row.fallback.dataset.fallbackSrc;}
-        this.emit(`第 ${row.page} 页重绘未完成，可重试缩放或打开原 PDF。`);
-      }}
-      finally{
+    })(),`第 ${row.page} 页绘制`,()=>{renderTask.cancel();pending.textLayer?.cancel();}).catch(error=>{
+      if(error.name!=='RenderingCancelledException'&&current()){
+        row.failed=true;this.failure(row,error,()=>{row.failed=false;this.renderPage(row);});
+      }
+    }).finally(()=>{
         if(row.frame!==frame){pending.textLayer?.cancel();canvas.width=canvas.height=0;}
         if(row.renderTask===renderTask)row.renderTask=null;
         if(row.pendingFrame===pending){row.pendingFrame=null;row.pendingPromise=null;}
-      }
-    })();row.pendingPromise=promise;return promise;
+    });row.pendingPromise=promise;return promise;
   }
   async ensureText(row){if(row.textLayer||row.noText)return;return this.renderPage(row);}
   async renderLinks(row,viewport=row.viewport){
@@ -249,14 +295,21 @@ export class PDFDocumentView {
   }
   async buildIndex(){
     const identity=this.identity;this.indexing=true;this.emit('正在建立原件全文查找索引…');
-    for(const row of this.rows){if(!this.valid()||identity!==this.identity)return;if(!row.text)row.text=await row.pdfPage.getTextContent();row.searchText=row.text.items.filter(i=>typeof i.str==='string').map(i=>i.str).join(' ');this.indexed++;this.emit();}
-    if(this.valid()){this.indexing=false;this.emit('原件全文查找已就绪');}
+    for(const row of this.rows){if(!this.valid()||identity!==this.identity)return;
+      try{const page=await this.ensurePage(row);if(!this.valid()||!page)return;
+        if(!row.text){const text=await this.wait(page.getTextContent(),`第 ${row.page} 页文字读取`);if(!this.valid()||identity!==this.identity)return;row.text=text;}
+        row.searchText=row.text.items.filter(i=>typeof i.str==='string').map(i=>i.str).join(' ');this.indexed++;this.emit();
+      }catch(error){if(this.valid())this.emit(`第 ${row.page} 页暂未加入查找：${error.message}`);}
+    }
+    if(this.valid()){this.indexing=false;this.emit(this.indexed===this.rows.length?'原件全文查找已就绪':`原件查找已就绪 ${this.indexed} / ${this.rows.length} 页 · 部分页暂不可查找`);}
   }
   async search(query,delta=1){
     const searchToken=this.searchToken=(this.searchToken||0)+1;
     await this.ready;if(!this.valid()||!this.doc||searchToken!==this.searchToken)return;query=String(query||'').trim();
     if(query!==this.query){this.query=query;this.hitIndex=-1;this.hits=[];
-      for(const row of this.rows){if(!row.text)row.text=await row.pdfPage.getTextContent();if(!this.valid()||searchToken!==this.searchToken)return;
+      for(const row of this.rows){if(!row.text){const page=await this.ensurePage(row);if(!this.valid()||!page||searchToken!==this.searchToken)return;
+          const text=await this.wait(page.getTextContent(),`第 ${row.page} 页文字读取`);if(!this.valid()||searchToken!==this.searchToken)return;row.text=text;}
+        if(!this.valid()||searchToken!==this.searchToken)return;
         let full='',segments=[];for(const [index,item] of row.text.items.entries()){if(!item.str)continue;segments.push({item:index,start:full.length,end:full.length+item.str.length});full+=item.str+' ';}
         const normalized=full.toLocaleLowerCase();let from=0,at;
         while(query&&(at=normalized.indexOf(query.toLocaleLowerCase(),from))>=0){const end=at+query.length;
@@ -293,11 +346,11 @@ export class PDFDocumentView {
     if(!navigator.clipboard?.writeText)throw new Error('浏览器不允许直接写入剪贴板，请使用 Ctrl+C 复制选区');
     await navigator.clipboard.writeText(value);this.emit(withCitation?'已复制引文与出处':'已复制原文');return value;
   }
-  async outline(){await this.ready;return this.valid()?this.outlineItems||[]:[];}
+  async outline(){await this.ready;await this.outlinePromise;if(this.valid()&&this.outlineError)throw this.outlineError;return this.valid()?this.outlineItems||[]:[];}
   async jumpDestination(destination){
-    await this.ready;if(!this.valid())return;let dest=typeof destination==='string'?await this.doc.getDestination(destination):destination;if(!dest)return;
-    const number=typeof dest[0]==='number'?dest[0]+1:(await this.doc.getPageIndex(dest[0]))+1,row=this.rows[number-1];if(!row)return;
-    const kind=dest[1]?.name;
+    await this.ready;if(!this.valid()||!this.doc)return;let dest=typeof destination==='string'?await this.wait(this.doc.getDestination(destination),'原件链接定位'):destination;if(!this.valid()||!dest)return;
+    const number=typeof dest[0]==='number'?dest[0]+1:(await this.wait(this.doc.getPageIndex(dest[0]),'原页定位'))+1,row=this.rows[number-1];if(!this.valid()||!row)return;
+    await this.ensurePage(row);if(!this.valid()||!row.pdfPage)return;this.relayout();const kind=dest[1]?.name;
     const x=['XYZ','FitV','FitBV','FitR'].includes(kind)?(dest[2]??0):0;
     const y=['FitH','FitBH'].includes(kind)?(dest[2]??row.pdfPage.view[3]):kind==='FitR'?(dest[5]??row.pdfPage.view[3]):kind==='XYZ'?(dest[3]??row.pdfPage.view[3]):row.pdfPage.view[3];
     const point=row.viewport.convertToViewportPoint(x,y);this.onNavigate?.();
@@ -312,12 +365,16 @@ export class PDFDocumentView {
         throw new Error('该区域属于另一份原件，请参阅对应原文件');
       scale=typeof bbox==='number'?bbox:2;bbox=placement.bbox;page=placement.page;}
     await this.ready;if(!this.valid())throw new Error('原件已切换');const row=this.rows[page-1];if(!row)throw new Error('原页不存在');
+    await this.ensurePage(row);if(!this.valid()||!row.pdfPage)throw new Error('原件已切换');
     const viewport=row.pdfPage.getViewport({scale,rotation:0}),canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
-    await row.pdfPage.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+    const task=row.pdfPage.render({canvasContext:canvas.getContext('2d'),viewport});
+    try{await this.wait(task.promise,'原页区域绘制',()=>task.cancel());if(!this.valid())throw new Error('原件已切换');}
+    catch(error){canvas.width=canvas.height=0;throw error;}
     if(!bbox)return canvas;const cut=document.createElement('canvas');cut.width=Math.ceil((bbox[2]-bbox[0])*scale);cut.height=Math.ceil((bbox[3]-bbox[1])*scale);
     cut.getContext('2d').drawImage(canvas,bbox[0]*scale,bbox[1]*scale,cut.width,cut.height,0,0,cut.width,cut.height);canvas.width=canvas.height=0;return cut;
   }
-  goToRegion(placement){const row=this.rows[placement.page-1];if(!row)return;const rect=viewportRect(row.viewport,[placement.bbox[0],row.pdfPage.view[3]-placement.bbox[3],placement.bbox[2],row.pdfPage.view[3]-placement.bbox[1]]);
+  async goToRegion(placement){await this.ready;if(!this.valid())return;const row=this.rows[placement.page-1];if(!row)return;
+    await this.ensurePage(row);if(!this.valid()||!row.pdfPage)return;this.relayout();const rect=viewportRect(row.viewport,[placement.bbox[0],row.pdfPage.view[3]-placement.bbox[3],placement.bbox[2],row.pdfPage.view[3]-placement.bbox[1]]);
     this.onNavigate?.();this.container.scrollTop=Math.max(0,row.sheet.offsetTop+Math.min(rect[1],rect[3])-this.container.clientHeight*.25);this.onNavigate?.('after');this.renderVisible();}
   destroy(){this.destroyed=true;clearTimeout(this.renderTimer);this.resize.disconnect();this.container.removeEventListener('scroll',this.scroll);
     this.container.removeEventListener('pointerdown',this.selectionBegan);

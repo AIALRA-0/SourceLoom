@@ -45,7 +45,7 @@ def _exercise_region_renderer(placement):
     import subprocess
 
     module = (VENDOR.parents[1] / "processor_pdf.js").read_text(encoding="utf-8")
-    method = module.split("  async renderRegion(", 1)[1].split("\n  goToRegion(", 1)[0]
+    method = module.split("  async renderRegion(", 1)[1].split("\n  async goToRegion(", 1)[0]
     method = "async renderRegion(" + method.strip()
     node = shutil.which("node")
     assert node, "Node is required by the viewer JavaScript regression suite"
@@ -54,13 +54,14 @@ let rendered=0;
 globalThis.document={createElement(){return {width:0,height:0,getContext(){return {drawImage(){}}}}}};
 const viewer={
   original:{name:'first.pdf',sha256:'a'.repeat(64)},ready:Promise.resolve(),valid:()=>true,
+  ensurePage:async row=>row.pdfPage,wait:async promise=>promise,
   rows:[{pdfPage:{getViewport:()=>({width:612,height:792}),render:()=>{rendered++;return {promise:Promise.resolve()}}}}],
   METHOD
 };
 try{const canvas=await viewer.renderRegion(PLACEMENT,2);process.stdout.write(JSON.stringify({rendered,width:canvas.width,height:canvas.height}));}
 catch(error){process.stdout.write(JSON.stringify({rendered,error:error.message}));}
 """.replace("METHOD", method).replace("PLACEMENT", json.dumps(placement))
-    result = subprocess.run([node, "--input-type=module", "-e", code], capture_output=True, text=True, encoding="utf-8", check=True)
+    result = subprocess.run([node, "--input-type=module", "-e", code], capture_output=True, text=True, encoding="utf-8", check=True, timeout=10)
     return json.loads(result.stdout)
 
 

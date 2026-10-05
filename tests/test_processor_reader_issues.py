@@ -403,6 +403,31 @@ def _page_tables(tmp_path):
     return store,p,sid,md
 
 
+def test_issue_image_reuses_checked_listing_and_invalidates_after_saved_change(tmp_path,monkeypatch):
+    from fastapi.testclient import TestClient
+    from sourceloom.app import create_app
+    store,p,sid,md=_page_tables(tmp_path)
+    calls=[];original=issues.issues
+    def measured(*args,**kwargs):
+        calls.append(args[0]['id'])
+        return original(*args,**kwargs)
+    monkeypatch.setattr(issues,'issues',measured)
+    before=store.get(p['id']);vid=p['processor']['active_version']
+    route='/api/processor/projects/'+p['id']+'/versions/'+vid
+    with TestClient(create_app(dict(data_dir=str(store.root),auth_mode='local',external_worker=True,writing_skill_dir=''))) as client:
+        listing=client.get(route+'/issues').json()
+        group=next(g for g in listing['issues'] if g['kind']=='table')
+        image=client.get(route+'/issue-image/'+group['id'])
+        assert image.status_code==200 and image.content.startswith(b'\x89PNG')
+        assert image.headers['x-sourceloom-region-page']=='1'
+        assert len(calls)==1
+        assert store.get(p['id'])==before
+        store.change(p['id'],lambda saved: saved['processor']['versions'][0].update(label='Changed saved metadata'))
+        second=client.get(route+'/issue-image/'+group['id'])
+        assert second.status_code==200 and len(calls)==2
+        assert client.get(route+'/issue-image/not-a-current-table').status_code==404
+
+
 def test_page_context_tables_without_image_objects_support_scoped_manual_and_add_page(tmp_path):
     store,p,sid,md=_page_tables(tmp_path);v=processor.active_version(p)
     assert not any(r['kind'] in {'image','table'} for r in p['processor']['resources'])

@@ -371,9 +371,10 @@ def register(app, store, config):
 
     @app.get(prefix+'/{pid}/versions/{vid}/issue-image/{issue_id}')
     def reader_issue_image(pid:str,vid:str,issue_id:str):
-        from .processor_issues import image_group, table_image
-        p=processor.project(store,pid)
-        group=image_group(p,vid,issue_id,store)
+        from .processor_issues import image_group, table_image, issues
+        p=reading_project(pid)
+        listing=issue_views.get((p['_reading_cache_key'],vid),lambda:issues(p,vid,store))
+        group=image_group(p,vid,issue_id,store,listing=listing)
         raw,meta=table_image(p,group,store)
         return Response(raw,media_type='image/png',headers={'Cache-Control':'private, no-cache',
             'X-SourceLoom-Region-Precision':meta['precision'],

@@ -14,15 +14,16 @@ class Element{
  append(n){n.parent=this;this.children.push(n)} prepend(n){n.parent=this;this.children.unshift(n)}
  remove(){if(this.parent){this.parent.children=this.parent.children.filter(n=>n!==this);this.parent=null}}
  replaceWith(n){const p=this.parent,i=p.children.indexOf(this);p.children[i]=n;n.parent=p;this.parent=null}
+ replaceChildren(...nodes){this.children=[];nodes.forEach(n=>this.append(n))}
  querySelector(){return null} querySelectorAll(){return []} getContext(){return {}}
  getBoundingClientRect(){return this.box||{top:0,bottom:200}} setAttribute(){}
 }
 let textGate=null;
 const pdfjs={AnnotationMode:{ENABLE:1},TextLayer:class{constructor({container}){this.container=container}async render(){if(textGate)await textGate.promise;this.container.ready=true}cancel(){}}};
-const context={pdfjs,URL,document:{createElement:tag=>new Element(tag)},location:{href:'http://localhost/'},window:{devicePixelRatio:1},Node:{TEXT_NODE:3}};vm.createContext(context);
+const context={pdfjs,URL,setTimeout,clearTimeout,document:{createElement:tag=>new Element(tag)},location:{href:'http://localhost/'},window:{devicePixelRatio:1},Node:{TEXT_NODE:3}};vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('const element=')).replace('export class PDFDocumentView','class PDFDocumentView')+';globalThis.View=PDFDocumentView;globalThis.transform=viewportTransform;',context);
 const viewport={width:100,height:200,scale:1,transform:[1,0,0,-1,0,200]};
-function setup(){const drawn=gate(),sheet=new Element('section'),frame=new Element('div'),canvas=new Element('canvas');frame.append(canvas);sheet.append(frame);const row={page:1,sheet,frame,canvas,viewport,text:{items:[{str:'native text'}]},renderRevision:0,textLayer:{cancel(){}},pdfPage:{render(){return {promise:drawn.promise,cancel(){drawn.reject(Object.assign(new Error(),{name:'RenderingCancelledException'}))}}}}};const v=Object.create(context.View.prototype);Object.assign(v,{revision:1,rows:[row],doc:{},container:new Element('div'),valid:()=>true,captureSelection:()=>null,emit(){},paintHits(){},renderLinks:async()=>new Element('links')});return {v,row,drawn,old:frame,canvas};}
+function setup(){const drawn=gate(),sheet=new Element('section'),frame=new Element('div'),canvas=new Element('canvas');frame.append(canvas);sheet.append(frame);const row={page:1,sheet,frame,canvas,viewport,text:{items:[{str:'native text'}]},renderRevision:0,textLayer:{cancel(){}},pdfPage:{getViewport:()=>viewport,render(){return {promise:drawn.promise,cancel(){drawn.reject(Object.assign(new Error(),{name:'RenderingCancelledException'}))}}}}};const v=Object.create(context.View.prototype);Object.assign(v,{revision:1,rows:[row],doc:{},container:new Element('div'),valid:()=>true,captureSelection:()=>null,emit(){},paintHits(){},renderLinks:async()=>new Element('links')});return {v,row,drawn,old:frame,canvas};}
 const result={};
 {
  const {v,row,drawn,old,canvas}=setup();textGate=gate();const pending=v.renderPage(row);assert.equal(row.frame,old);assert.equal(row.sheet.children[0],old);drawn.resolve();await new Promise(r=>setImmediate(r));assert.equal(row.frame,old,'bitmap completion must await text');textGate.resolve();await pending;assert.notEqual(row.frame,old);assert.equal(row.sheet.children.length,1);assert.equal(row.frame.children.length,3);assert.equal(row.textLayer.container.ready,true);assert.equal(canvas.width,0);result.atomic_publish=true;textGate=null;
@@ -66,6 +67,17 @@ const result={};
 {
  const {v,row}=setup();Object.assign(v,{scale:.75,mode:'custom',rotation:0,stack:new Element('div')});v.container.clientWidth=400;v.container.clientHeight=200;row.pdfPage.getViewport=()=>viewport;let captures=0;v.beforeLayout=()=>captures++;v.relayout();assert.equal(v.revision,1);assert.equal(captures,0);result.unchanged_geometry_skips_rebuild=true;
 }
+{
+ const {v,row,drawn,old}=setup(),loaded=gate();const page=row.pdfPage;row.pdfPage=null;v.doc.getPage=()=>loaded.promise;v.wanted=new Set([row]);
+ const pending=v.renderPage(row,{visibleOnly:true});v.wanted.clear();loaded.resolve(page);await pending;
+ assert.equal(row.frame,old);assert.equal(row.pendingFrame,undefined,'late offscreen proxy must not allocate a frame');
+ const explicit=v.renderPage(row);drawn.resolve();await explicit;assert.notEqual(row.frame,old,'explicit offscreen destinations must remain renderable');
+ result.late_proxy_stays_offscreen_but_explicit_destination_renders=true;
+}
+{
+ const {v,row,drawn,old}=setup();v.wanted=new Set([row]);const pending=v.renderPage(row,{visibleOnly:true});v.wanted.clear();drawn.resolve();await pending;
+ assert.equal(row.frame,old);assert.equal(row.sheet.children[0],old);result.late_visible_bitmap_cannot_publish_offscreen=true;
+}
 console.log(JSON.stringify(result));
 '''
 
@@ -83,6 +95,7 @@ def pdf_regressions():
     'render_error_preserves_old','concurrent_passes_share_frame','rotation_transforms_entire_frame',
     'distant_frame_reclaimed','distant_selection_keeps_text_not_bitmap','unchanged_geometry_skips_rebuild',
     'pending_page_proxies_ignore_layout','ready_page_proxies_resume_layout',
+    'late_proxy_stays_offscreen_but_explicit_destination_renders','late_visible_bitmap_cannot_publish_offscreen',
 ])
 def test_pdf_frame_lifecycle(pdf_regressions,case):
     assert pdf_regressions[case]

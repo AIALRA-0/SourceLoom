@@ -108,7 +108,7 @@ def create_app(config=None):
                 and re.fullmatch(r'/api/(?:projects/[a-zA-Z0-9_-]+/assets|processor/projects/[a-zA-Z0-9_-]+/files)/[0-9a-f]{64}',request.url.path)):
             response.headers['Cache-Control']='private, max-age=31536000, immutable'
         if "Content-Security-Policy" not in response.headers:
-            response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
+            response.headers["Content-Security-Policy"]="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
         return response
 
     @app.exception_handler(Conflict)

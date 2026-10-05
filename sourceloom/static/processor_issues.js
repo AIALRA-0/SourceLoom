@@ -1,3 +1,5 @@
+import {readJSON,readBlob} from './processor_read.js?v=loading-reliability-20261004';
+
 const labels = {
   repair_table:'预览修正', confirm_manual:'对照这张表', confirm_table:'查看核对结果',
   add_page_reference:'添加原页参考', replace_page_reference:'用完整原页替换正文表格',
@@ -14,13 +16,14 @@ const writeLocal = (key,value) => {try{value == null ? localStorage.removeItem(k
 // An issue is a task bound to the saved version. A preview never edits content;
 // an uncertain save is queried by its existing identity, never dispatched again.
 export class IssueDrawer {
-  constructor({host,onApplied=()=>{},onLocate=()=>{},onViewOriginal=null,onSummary=()=>{},onCapture=()=>null,onRestore=()=>{}}) {
-    Object.assign(this,{host,onApplied,onLocate,onViewOriginal,onSummary,onCapture,onRestore});
+  constructor({host,onApplied=()=>{},onLocate=()=>{},onViewOriginal=null,onOpenOriginal=null,onSummary=()=>{},onCapture=()=>null,onRestore=()=>{}}) {
+    Object.assign(this,{host,onApplied,onLocate,onViewOriginal,onOpenOriginal,onSummary,onCapture,onRestore});
     this.epoch=0;this.context=null;this.abort=null;this.selected=null;this.busy=false;
     this.blockWheel=e=>{if(this.isOpen()&&!this.host.contains(e.target)&&!e.target.closest('dialog[open]'))e.preventDefault();};
   }
   isOpen(){return this.host.classList.contains('is-open');}
   async api(path,body,{write=false}={}) {
+    if(body===undefined)return readJSON(path,{signal:this.abort?.signal});
     const response=await fetch(path,{...(!write?{signal:this.abort?.signal}:{}),...(body!==undefined?{method:'POST',headers:{'Content-Type':'application/json','X-SourceLoom':'1'},body:JSON.stringify(body)}:{})});
     let value;
     try{value=await response.json();}catch{const e=Error('没有收到可确认的操作回执');e.uncertain=write;throw e;}
@@ -40,7 +43,7 @@ export class IssueDrawer {
   laterIds(){return readLocal(this.laterKey())||[];}
   async refresh(context) {
     const changed=!this.context||this.context.projectId!==context.projectId||this.context.versionId!==context.versionId;
-    if(changed){this.previewReceipt=null;this.selected=null;this.feedback=null;this.data=null;this.serviceError=null;if(context.projectId!==this.context?.projectId||context.versionId!==this.undoVersion){this.completion=null;this.undoVersion=null;}}
+    if(changed){this.cancelSource();this.manualReady=false;this.previewReceipt=null;this.selected=null;this.feedback=null;this.data=null;this.serviceError=null;if(context.projectId!==this.context?.projectId||context.versionId!==this.undoVersion){this.completion=null;this.undoVersion=null;}}
     this.context={...context};const epoch=++this.epoch;
     this.abort?.abort();this.abort=new AbortController();
     if(this.isOpen()&&changed)this.loading();
@@ -53,7 +56,7 @@ export class IssueDrawer {
         const later=this.laterIds();this.selected=(this.groups().find(g=>!later.includes(g.id))||this.groups()[0])?.id;
       }
       if(this.isOpen())this.render();return data;
-    }catch(e){if(e.name!=='AbortError'&&epoch===this.epoch){this.serviceError=e.message;if(this.isOpen())this.render();}}
+    }catch(e){if(e.name!=='AbortError'&&e.code!=='aborted'&&epoch===this.epoch){this.serviceError=e.message;if(this.isOpen())this.render();}}
   }
   loading(){
     const hadFocus=this.host.contains(document.activeElement);
@@ -76,7 +79,7 @@ export class IssueDrawer {
     if(this.isOpen()&&pending&&pending.source_digest===this.data?.source_digest){this.pending=pending;this.render();await this.queryPending();}
   }
   close() {
-    const wasOpen=this.isOpen();this.host.classList.remove('is-open');this.abort?.abort();this.epoch++;
+    const wasOpen=this.isOpen();this.host.classList.remove('is-open');this.manualReady=false;this.cancelSource();this.abort?.abort();this.epoch++;
     if(wasOpen){for(const [node,inert] of this.inerted||[])node.inert=inert;this.inerted=[];document.body.style.overflow=this.oldOverflow||'';document.removeEventListener('wheel',this.blockWheel,true);this.onRestore(this.readingSnapshot);if(this.focus?.isConnected)this.focus.focus({preventScroll:true});}
   }
   bindKeyboard() {
@@ -92,10 +95,12 @@ export class IssueDrawer {
   }
   error(message){this.feedback={message,error:true};this.updateFeedback();this.reveal(this.host.querySelector('.issue-feedback'));}
   updateFeedback(){const node=this.host.querySelector('.issue-feedback');if(node){node.textContent=this.feedback?.message||'';node.setAttribute('role',this.feedback?.error?'alert':'status');}}
-  choose(id){if(this.busy||this.pending)return;this.selected=id;this.previewReceipt=null;this.manualReady=false;this.completion=null;this.differenceIndex=0;this.acknowledgeAction=null;this.feedback=null;this.render();}
+  choose(id){if(this.busy||this.pending)return;this.cancelSource();this.selected=id;this.previewReceipt=null;this.manualReady=false;this.completion=null;this.differenceIndex=0;this.acknowledgeAction=null;this.feedback=null;this.render();}
   render() {
     if(!this.isOpen())return;
     const d=this.data||{issues:[],resolved:[]};const g=this.group();const hadFocus=this.host.contains(document.activeElement);const later=this.laterIds();
+    const previousSource=this.sourceLoad?.key===this.sourceIdentity(g)&&!this.completion?this.host.querySelector('.issue-source-pane'):null;
+    if(!previousSource)this.cancelSource();
     const counts=Object.keys(categories).map(c=>({c,list:this.groups().filter(x=>this.taskCategory(x)===c)})).filter(x=>x.list.length);
     this.host.innerHTML=`<header class="issue-drawer-head"><div><h2>${esc(g&&!this.completion?(g.kind==='table'&&this.taskCategory(g)==='confirm'?'确认'+(g.title.match(/表\s*\d+/)?.[0]||'表格')+'的呈现方式':g.title):'成稿问题')}</h2><p>${g&&!this.completion?`${g.page?'第 '+esc(g.page)+' 页 · ':''}${this.groups().indexOf(g)+1}/${this.groups().length}`:esc(d.summary||'检查范围：本版本文件、资源与格式')}</p></div><button type="button" class="issue-close" aria-label="关闭问题处理">×</button></header>
       <main class="issue-task-body">
@@ -106,6 +111,7 @@ export class IssueDrawer {
       ${!this.completion&&g?`${this.groups().length>1?`<label class="issue-task-selector">当前任务<select id="issue-current-select" ${this.busy||this.pending?'disabled':''}>${this.groups().map(x=>`<option value="${esc(x.id)}" ${x.id===g.id?'selected':''}>${esc(categories[this.taskCategory(x)])} · ${esc(x.title)}${later.includes(x.id)?'（稍后）':''}</option>`).join('')}</select></label>`:''}<article class="issue-card" data-issue-id="${esc(g.id)}">${later.includes(g.id)?'<p class="issue-category-label">已暂缓，尚未处理</p>':''}${this.taskContent(g)}<div class="issue-local-preview"></div><details class="issue-technical"><summary>技术详情</summary><p>版本：${esc(d.version_id)}<br>原件对象：${esc((g.source_ids||[]).join(', ')||'无')}<br>${esc(g.evidence_scope||'当前局部范围，不是全文语义验证')}</p></details></article>`:!this.completion?`<p class="issue-all-clear">${esc(d.summary||'当前检查范围没有待处理任务')}。这不代表全文语义已经验证。</p>`:''}
       ${(d.resolved||[]).length?`<details class="issue-checked"><summary>已完成的局部检查 ${d.resolved.length} 项</summary>${d.resolved.map(x=>`<section><strong>${esc(x.title)}</strong><p>${esc(x.evidence_scope||'本版本局部来源核对')}</p><p>正文未改；无需再次确认，不创建新版本。</p></section>`).join('')}</details>`:''}
       ${this.completion?`<section class="issue-completion" role="status"><strong>${esc(this.completion.completion)}</strong><p>${esc(this.completion.evidence_scope||'只适用于本次局部处理；全文语义状态没有升级。')}</p>${this.undoVersion?`<button type="button" class="issue-undo">${esc(this.completion.undo_label||'撤销本次处理')}</button>`:''}<button type="button" class="issue-continue">返回待处理列表</button></section>`:''}</main>${!this.completion&&g?this.footer(g):''}`;
+    if(previousSource)this.host.querySelector('.issue-source-pane')?.replaceWith(previousSource);
     this.host.querySelector('.issue-close').onclick=()=>this.close();this.bindKeyboard();this.updateFeedback();
     if(this.context?.readonly){for(const control of this.host.querySelectorAll('[data-action],[data-later],.issue-undo,.issue-restore-file,.issue-position-select'))control.disabled=true;const message=document.createElement('p');message.className='issue-scope';message.textContent='只读示例：可查看问题与原件；试用副本后再处理。';this.host.querySelector('.issue-drawer-head>div').append(message);}
     this.host.querySelector('#issue-current-select')?.addEventListener('change',e=>this.choose(e.target.value));
@@ -114,10 +120,9 @@ export class IssueDrawer {
     this.host.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>this.beginAction(b.dataset.action));
     this.host.querySelectorAll('[data-locate]').forEach(b=>b.onclick=()=>this.onLocate(g));
     this.bindSourceZoom();
-    this.host.querySelector('[data-source-expand]')?.addEventListener('click',e=>this.onViewOriginal?.(g,e.currentTarget));
+    const expand=this.host.querySelector('[data-source-expand]');if(expand)expand.onclick=e=>this.onViewOriginal?.(g,e.currentTarget);
     this.host.querySelector('.issue-restore-file')?.addEventListener('change',e=>this.restoreFile(e.target.files?.[0]));
-    const sourceImage=this.host.querySelector('.issue-source-image'),imageEpoch=this.epoch;
-    if(sourceImage)sourceImage.onerror=()=>{if(imageEpoch!==this.epoch||!sourceImage.isConnected)return;sourceImage.hidden=true;this.host.querySelector('[data-source-expand]')?.setAttribute('hidden','');const message=document.createElement('p');message.setAttribute('role','alert');message.textContent='原件预览未能载入。请参阅已保存原件或恢复同一来源文件；没有把加载失败当作内容已处理。';sourceImage.after(message);};
+    if(g&&!this.completion)this.loadSource(g);
     this.host.querySelector('.issue-refresh')?.addEventListener('click',()=>{this.serviceError=null;this.refresh(this.context);});
     this.host.querySelector('.issue-query')?.addEventListener('click',()=>this.queryPending());
     this.host.querySelector('.issue-undo')?.addEventListener('click',()=>this.undo());
@@ -132,7 +137,8 @@ export class IssueDrawer {
     const deltas=g.differences||[];this.differenceIndex=Math.min(this.differenceIndex||0,Math.max(0,deltas.length-1));const delta=deltas[this.differenceIndex];
     const difference=delta?`<section class="issue-cell-target"><strong>${esc(delta.row)} / ${esc(delta.column)}</strong><div><span>当前值 <b>${esc(delta.current)}</b></span><span>原件值 <b>${esc(delta.expected)}</b></span></div><p>只处理这处差异；其他单元格与正文保持。</p>${deltas.length>1?`<label>待修差异<select id="issue-difference-select">${deltas.map((x,i)=>`<option value="${i}" ${i===this.differenceIndex?'selected':''}>${esc(x.row)} / ${esc(x.column)}</option>`).join('')}</select></label>`:''}</section>`:'';
     const sourceURL=g.source_preview_html?null:g.source_preview_url||(g.kind==='table'&&g.page?this.base()+'/issue-image/'+encodeURIComponent(g.id):null);
-    const source=g.source_preview_html?`<div class="issue-original-html">${this.resourcePreviewHTML(g.source_preview_html,g)}</div>${this.onViewOriginal?`<div class="issue-source-controls"><button type="button" data-source-expand>${g.kind==='table'||g.source_kind==='table'?'查看原表':'查看原件'}</button></div>`:''}`:sourceURL?`<div class="issue-source-stage"><img class="issue-source-image" loading="lazy" src="${esc(sourceURL)}" alt="${g.kind==='table'?'原表所在完整原页':'原件资源'}${g.page?` · 第 ${g.page} 页`:''}"></div><div class="issue-source-controls"><button type="button" data-source-zoom="fit">适合宽度</button><button type="button" data-source-zoom="minus" aria-label="缩小原表">−</button><output class="issue-source-scale">适合宽度</output><button type="button" data-source-zoom="plus" aria-label="放大原表">＋</button>${this.onViewOriginal?`<button type="button" data-source-expand>${g.source_preview_precision==='table'?'查看原表':'查看原页'}</button>`:''}</div>`:g.category==='service'?'<p>资源文件暂不可用。再次插入资源标记不能恢复文件。</p>':'<p>当前没有可靠的原件局部预览，请参阅已保存原件；不会猜测内容。</p>';
+    const status=`<div class="issue-source-status" role="status" aria-live="polite"><p>正在读取当前原件预览…</p><button type="button" data-source-retry hidden>重试原件预览</button>${this.onOpenOriginal?'<button type="button" data-source-original>查看原文件</button>':''}</div>`;
+    const source=g.source_preview_html?`<div class="issue-original-html">${this.sourcePreviewHTML(g)}</div>${status}${this.onViewOriginal?`<div class="issue-source-controls"><button type="button" data-source-expand>${g.kind==='table'||g.source_kind==='table'?'查看原表':'查看原件'}</button></div>`:''}`:sourceURL?`<div class="issue-source-stage"><img class="issue-source-image" data-source-url="${esc(sourceURL)}" hidden alt="${g.kind==='table'?'原表所在完整原页':'原件资源'}${g.page?` · 第 ${g.page} 页`:''}"></div>${status}<div class="issue-source-controls"><button type="button" data-source-zoom="fit">适合宽度</button><button type="button" data-source-zoom="minus" aria-label="缩小原表">−</button><output class="issue-source-scale">适合宽度</output><button type="button" data-source-zoom="plus" aria-label="放大原表">＋</button>${this.onViewOriginal?`<button type="button" data-source-expand>${g.source_preview_precision==='table'?'查看原表':'查看原页'}</button>`:''}</div>`:g.category==='service'?'<p>资源文件暂不可用。再次插入资源标记不能恢复文件。</p>':'<p>当前没有可靠的原件局部预览，请参阅已保存原件；不会猜测内容。</p>';
     const comparison=`<div class="issue-pane-tabs" role="tablist" aria-label="对照内容"><button type="button" role="tab" data-pane="source" aria-selected="false">原件</button><button type="button" role="tab" data-pane="current" aria-selected="true">当前</button>${this.previewReceipt?.body_changed?'<button type="button" role="tab" data-pane="change" aria-selected="false">将修改</button>':''}</div><div class="issue-comparison" data-active-pane="current"><section class="issue-source-pane" data-pane-panel="source"><h4>原件${g.page?` · 第 ${g.page} 页`:''}</h4>${source}${g.page?'<button type="button" data-locate>参阅原页</button>':''}${g.kind==='table'&&!g.source_preview_html?'<p class="issue-source-note">完整原页，可放大和平移；没有裁掉表头。</p>':''}</section><section data-pane-panel="current"><h4>当前成稿</h4>${g.draft_preview?`<div class="issue-draft-preview">${this.resourcePreviewHTML(g.draft_preview,g)}</div>`:g.kind==='resource'?'<p>当前正文中的对应资源需要核查；请先查看推荐插入位置。</p>':'<p>对应正文位置尚不能可靠定位；不会猜测替换。</p>'}</section><section class="issue-change-pane" data-pane-panel="change"><h4>将修改</h4><p>选择处理方式后显示局部预览。</p></section></div>`;
     return `${difference}<p class="issue-scope">${g.kind==='table'&&this.taskCategory(g)==='confirm'?'对照原表与当前表格；确认只记录本版本关系，不改正文。':esc(g.explanation||g.evidence_scope||g.impact||'只处理当前局部；不代表全文语义审核')}</p>${comparison}${g.restore_requires_file?'<label class="issue-position">选择这份原件中缺失的原图文件<input class="issue-restore-file" type="file" accept="image/*"><span class="issue-scope">仅接受与已保存原图摘要完全一致的文件；不改写、不替换原件。</span></label>':''}${(g.actions||[]).includes('insert_resource')?`<label class="issue-position">插入位置<select class="issue-position-select"><option value="">${g.previous_position_available?'恢复本材料已保存的原位置':'请选择插入位置'}</option>${(this.data.blocks||[]).map(b=>`<option value="${esc(b.block_id)}">${esc(b.label||b.locator||'正文段落')}</option>`).join('')}</select></label>`:''}`;
   }
@@ -140,12 +146,59 @@ export class IssueDrawer {
   footer(g) {
     const main=g.recommended_action||(g.actions||[])[0];const others=(g.actions||[]).filter(a=>a!==main);
     const label=main==='confirm_manual'||main==='confirm_table'?'确认本版本表格表示':this.actionLabel(g,main);
-    return `<footer class="issue-task-footer"><div class="issue-actions"><button type="button" data-later ${this.busy||this.pending?'disabled':''}>稍后处理</button>${others.length?`<details class="issue-other"><summary>其他处理方式</summary><div>${others.map(a=>`<button type="button" data-action="${esc(a)}" ${this.busy||this.pending?'disabled':''}>${esc(this.actionLabel(g,a))}</button>`).join('')}</div></details>`:''}${main?`<button type="button" class="issue-primary" data-action="${esc(main)}" ${this.busy||this.pending?'disabled':''}>${esc(label)}</button>`:''}</div></footer>`;
+    const blocked=a=>this.busy||this.pending||(this.requiresSource(a,g)&&!this.sourceReady());
+    return `<footer class="issue-task-footer"><div class="issue-actions"><button type="button" data-later ${this.busy||this.pending?'disabled':''}>稍后处理</button>${others.length?`<details class="issue-other"><summary>其他处理方式</summary><div>${others.map(a=>`<button type="button" data-action="${esc(a)}" ${blocked(a)?'disabled':''}>${esc(this.actionLabel(g,a))}</button>`).join('')}</div></details>`:''}${main?`<button type="button" class="issue-primary" data-action="${esc(main)}" ${blocked(main)?'disabled':''}>${esc(label)}</button>`:''}</div></footer>`;
+  }
+  sourceIdentity(g=this.group()) {return g?JSON.stringify([this.context?.projectId,this.context?.versionId,this.data?.source_digest,this.data?.draft_digest,g.id,g.source_preview_url||'',g.source_preview_html||'']):null;}
+  requiresSource(action,g=this.group()){return g?.kind==='table'&&['confirm_manual','confirm_table'].includes(action);}
+  sourceReady(){return this.sourceLoad?.key===this.sourceIdentity()&&this.sourceLoad?.state==='ready'&&this.sourceLoad.pane?.isConnected===true;}
+  cancelSource(){const load=this.sourceLoad;this.sourceLoad=null;if(!load)return;load.controller.abort();for(const url of load.urls)URL.revokeObjectURL(url);load.urls.clear();}
+  sourcePreviewHTML(g){const template=document.createElement('template');template.innerHTML=this.resourcePreviewHTML(g.source_preview_html,g);for(const img of template.content.querySelectorAll('img[src]')){img.dataset.sourceUrl=img.getAttribute('src');img.removeAttribute('src');img.hidden=true;}return template.innerHTML;}
+  decodeSource(img,signal){
+    let timer,off;
+    const cancelled=new Promise((_,reject)=>{off=()=>reject(Object.assign(Error('原件解码已取消'),{code:'aborted'}));if(signal.aborted)off();else signal.addEventListener('abort',off,{once:true});timer=setTimeout(()=>reject(Object.assign(Error('原件图像未能完成解码，请重试当前预览。'),{code:'timeout'})),15000);});
+    return Promise.race([img.decode(),cancelled]).then(()=>{if(!img.naturalWidth||!img.naturalHeight)throw Error('原件图像没有可读内容，请重试预览或查看原文件。');}).finally(()=>{clearTimeout(timer);signal.removeEventListener('abort',off);});
+  }
+  updateSource(){
+    const load=this.sourceLoad,pane=load?.pane;if(!pane?.isConnected)return;
+    pane.dataset.sourceState=load.state;
+    const status=pane.querySelector('.issue-source-status');if(status){status.hidden=load.state==='ready';status.setAttribute('role',load.state==='failed'?'alert':'status');status.querySelector('p').textContent=load.state==='failed'?`${load.error||'原件预览未能载入。'} 还不能确认本版本表格表示。`:'正在读取当前原件预览…';status.querySelector('[data-source-retry]').hidden=load.state!=='failed';}
+    for(const button of pane.querySelectorAll('[data-source-zoom]'))button.disabled=load.state!=='ready';
+    this.disableActions(this.busy||!!this.pending);
+    const apply=this.host.querySelector('.issue-apply');if(apply&&this.requiresSource(this.previewReceipt?.action||this.previewReceipt?.request?.action))apply.disabled=this.busy||!!this.pending||!this.sourceReady();
+  }
+  async loadSource(g,{retry=false}={}){
+    const key=this.sourceIdentity(g),pane=this.host.querySelector('.issue-source-pane');if(!pane)return;
+    if(!retry&&this.sourceLoad?.key===key){this.updateSource();return;}
+    this.cancelSource();
+    const load=this.sourceLoad={key,pane,state:'loading',controller:new AbortController(),urls:new Set()};
+    const current=()=>this.sourceLoad===load&&!load.controller.signal.aborted&&this.isOpen()&&this.sourceIdentity()===key&&pane.isConnected;
+    const retryButton=pane.querySelector('[data-source-retry]');if(retryButton)retryButton.onclick=()=>this.loadSource(this.group(),{retry:true});
+    const original=pane.querySelector('[data-source-original]');if(original)original.onclick=e=>this.onOpenOriginal?.(this.group(),e.currentTarget);
+    for(const img of pane.querySelectorAll('img[data-source-url]')){img.hidden=true;img.removeAttribute('src');}
+    this.updateSource();
+    try{
+      const images=[...pane.querySelectorAll('img[data-source-url]')],blobs=new Map();
+      if(!images.length&&!pane.querySelector('.issue-original-html')?.textContent.trim())throw Error('当前没有可读的原件预览，请查看原文件。');
+      await Promise.all(images.map(async img=>{
+        const path=img.dataset.sourceUrl;
+        if(!blobs.has(path))blobs.set(path,readBlob(path,{signal:load.controller.signal}));
+        const blob=await blobs.get(path);if(!current())return;
+        const url=URL.createObjectURL(blob);load.urls.add(url);img.src=url;
+        await this.decodeSource(img,load.controller.signal);if(!current())return;img.hidden=false;
+      }));
+      if(current()){load.state='ready';this.updateSource();}
+    }catch(error){
+      if(!current()||error.code==='aborted')return;
+      load.state='failed';load.error=error.message;load.controller.abort();
+      for(const img of pane.querySelectorAll('img[data-source-url]')){img.hidden=true;img.removeAttribute('src');}
+      for(const url of load.urls)URL.revokeObjectURL(url);load.urls.clear();this.updateSource();
+    }
   }
   bindSourceZoom(){
     const stage=this.host.querySelector('.issue-source-stage'),img=this.host.querySelector('.issue-source-image');if(!stage||!img)return;
-    let factor=1;
-    const draw=()=>{img.style.width=factor===1?'100%':`${stage.clientWidth*factor}px`;img.style.maxWidth='none';this.host.querySelector('.issue-source-scale').textContent=factor===1?'适合宽度':`${Math.round(factor*100)}%`;};
+    let factor=Number(stage.dataset.scale)||1;
+    const draw=()=>{stage.dataset.scale=factor;img.style.width=factor===1?'100%':`${stage.clientWidth*factor}px`;img.style.maxWidth='none';this.host.querySelector('.issue-source-scale').textContent=factor===1?'适合宽度':`${Math.round(factor*100)}%`;};
     this.host.querySelectorAll('[data-source-zoom]').forEach(button=>button.onclick=()=>{factor=button.dataset.sourceZoom==='fit'?1:Math.max(.5,Math.min(4,factor+(button.dataset.sourceZoom==='plus'?.25:-.25)));draw();});
     stage.onpointerdown=e=>{if(e.button!==0)return;const x=e.clientX,y=e.clientY,sl=stage.scrollLeft,st=stage.scrollTop;stage.setPointerCapture(e.pointerId);stage.onpointermove=m=>{stage.scrollLeft=sl+x-m.clientX;stage.scrollTop=st+y-m.clientY;};};stage.onpointerup=()=>stage.onpointermove=null;stage.onpointercancel=()=>stage.onpointermove=null;
     for(const box of this.host.querySelectorAll('.issue-draft-preview,.issue-original-html')){box.scrollLeft=0;box.scrollTop=0;const table=box.querySelector('table');if(table){table.style.minWidth=Math.max(720,Math.max(...[...table.rows].map(row=>row.cells.length))*100)+'px';if(!table.querySelector('[rowspan],[colspan]'))table.classList.add('issue-sticky-table');}}
@@ -163,12 +216,13 @@ export class IssueDrawer {
   later() {const g=this.group();if(!g)return;writeLocal(this.laterKey(),[...new Set([...this.laterIds(),g.id])]);this.feedback={message:'已暂缓，仍保留在待处理列表；没有记为已解决。'};this.render();}
   async beginAction(action) {
     if(this.context?.readonly||this.busy||this.pending)return;const g=this.group();if(!g)return;
+    if(this.requiresSource(action,g)&&!this.sourceReady()){this.error('请先等待当前原件预览可读，或重试预览；尚未确认表格表示。');return;}
     this.host.querySelector('.issue-other')?.removeAttribute('open');
     if(action==='restore_resource'&&g.restore_requires_file){this.host.querySelector('.issue-restore-file')?.click();return;}
     if(action==='confirm_manual'&&!this.manualReady){
       this.manualReady=true;const panel=this.host.querySelector('.issue-local-preview');
       panel.innerHTML='<p class="issue-scope">人工对照，不声称程序逐格证明。</p><label class="issue-ack"><input type="checkbox">我已对照本版本的原表与成稿表格</label><button type="button" class="issue-manual-confirm" disabled>预览本次人工确认</button>';
-      const box=panel.querySelector('input'),button=panel.querySelector('button');box.onchange=()=>button.disabled=!box.checked;button.onclick=()=>this.preview(action,{acknowledged:true});
+      const box=panel.querySelector('input'),button=panel.querySelector('button');box.onchange=()=>button.disabled=!box.checked||!this.sourceReady();button.onclick=()=>this.preview(action,{acknowledged:true});
       this.host.querySelector('.issue-primary').disabled=true;this.host.querySelector('.issue-primary').textContent='确认本版本表格表示';box.focus();return;
     }
     if(['exclude_scope','retain_difference'].includes(action)){
@@ -193,6 +247,7 @@ export class IssueDrawer {
   }
   async preview(action,extra={}) {
     if(this.busy||this.pending)return;const g=this.group(),epoch=this.epoch;if(!g)return;
+    if(this.requiresSource(action,g)&&!this.sourceReady()){this.error('当前原件预览尚不可读，没有提交确认。');return;}
     const block=g.block_id||this.host.querySelector('.issue-position-select')?.value;
     const delta=g.differences?.[this.differenceIndex||0];
     const request={issue_id:g.id,action,...(block?{block_id:block}:{}),...extra,...(action==='repair_table'&&delta&&!delta.missing_row?{difference_index:this.differenceIndex||0}:{})};
@@ -201,7 +256,7 @@ export class IssueDrawer {
     catch(e){if(e.name!=='AbortError'&&epoch===this.epoch)this.error(e.message);}
     finally{if(epoch===this.epoch){this.busy=false;this.disableActions(false);}}
   }
-  disableActions(disabled){this.host.querySelectorAll('[data-action],[data-later],#issue-current-select,.issue-manual-confirm,.issue-scope-confirm').forEach(n=>n.disabled=disabled||this.context?.readonly===true);}
+  disableActions(disabled){this.host.querySelectorAll('[data-action],[data-later],#issue-current-select,.issue-manual-confirm,.issue-scope-confirm').forEach(n=>n.disabled=disabled||this.context?.readonly===true||(this.requiresSource(n.dataset?.action)&&(!this.sourceReady()||(n.dataset.action==='confirm_manual'&&this.manualReady)))||(n.classList?.contains('issue-manual-confirm')&&(!this.sourceReady()||!this.host.querySelector('.issue-ack input')?.checked)));}
   reveal(node){if(!node)return;const r=node.getBoundingClientRect(),h=this.host.getBoundingClientRect(),head=this.host.querySelector('.issue-drawer-head');const body=node.closest('.issue-task-body');if(body)body.scrollTop+=r.top-body.getBoundingClientRect().top-16;else this.host.scrollTop+=r.top-h.top-(head?.getBoundingClientRect().height||0)-16;}
   showPreview(receipt) {
     const g=this.group();if(!g||receipt.issue_id!==g.id)return;
@@ -229,6 +284,7 @@ export class IssueDrawer {
   resolveImages(panel,receipt,g){panel.querySelectorAll('img[src^="assets/"]').forEach(img=>{const key=img.getAttribute('src').slice(7);img.src=(receipt.derived_resources||[]).some(r=>r.sha256===key)?this.base()+'/issue-image/'+encodeURIComponent(g.id):`/api/processor/projects/${encodeURIComponent(this.context.projectId)}/files/${encodeURIComponent(key)}`;});}
   async apply(receipt) {
     if(this.busy||this.pending)return;
+    if(this.requiresSource(receipt.action||receipt.request?.action)&&!this.sourceReady()){this.error('原件预览尚不可读，没有保存确认；请重新查看当前原件。');return;}
     if(this.host.contains(document.activeElement))this.host.focus({preventScroll:true});
     const epoch=this.epoch,context={...this.context};this.busy=true;
     this.pending={operation:'apply',project_id:context.projectId,version_id:context.versionId,source_digest:this.data.source_digest,draft_digest:this.data.draft_digest,preview_id:receipt.preview_id,completion:receipt.completion,undo_label:receipt.undo_label,undo_available:receipt.undo_available,evidence_scope:receipt.evidence_scope};

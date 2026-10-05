@@ -916,12 +916,13 @@ def table_image(p, group, store):
             precision='page',scale=2,scope='complete_original_page_table_bounds_not_proven')
 
 
-def image_group(p, vid, image_id, store):
+def image_group(p, vid, image_id, store, *, listing=None):
     """The same existing image route also serves a confirmed table reference."""
     version=processor.active_version(p,vid)
     if version.get('source_digest')!=p['processor']['source_digest']:
         raise Conflict('原件版本已变化，请重新打开当前材料')
-    listing=issues(p,vid,store)
+    if listing is None:
+        listing=issues(p,vid,store)
     group=next((g for g in listing['issues']+listing['resolved'] if g['id']==image_id and g['kind']=='table'),None)
     if group:
         return group

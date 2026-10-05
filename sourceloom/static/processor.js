@@ -4,6 +4,7 @@ import { ReadingWorkbench } from './processor_workbench.js?v=official-golive-202
 import { IssueDrawer } from './processor_issues.js?v=official-golive-20261002';
 import { ManualHandoff } from './processor_manual_handoff.js?v=manual-handoff-20261001';
 import { webChannels, webGenerationChannel } from './processor_web_channels.js?v=web-only-20261003';
+import { readJSON } from './processor_read.js?v=loading-reliability-20261004';
 const $ = selector => document.querySelector(selector);
 const base = '/api/processor';
 let projects = [], project = null, pack = null, capabilities = {}, currentTab = 'material';
@@ -14,6 +15,7 @@ let actionStarted = 0, actionTicker = null, currentOperation = '', readweaveURL 
 let preparationPoll = null;
 let versionEpoch=0, versionSelectionEpoch=0;
 let openingProjectId=null;
+let openRead=null;
 let issueApplying=false;
 const actionTrace = [];
 const requestLabels = {queued:'等待交接',running:'模型处理中',RUNNING:'模型处理中',submitted:'已提交，等待原请求结果',pending:'等待原请求结果',completed:'结果已保存',success:'结果已保存',SUCCESS:'结果已保存',failed:'请求明确失败',KNOWN_FAILURE:'请求明确失败',unknown:'结果未知',UNKNOWN:'结果未知',uncertain:'结果未知'};
@@ -61,10 +63,13 @@ function beginPreparationPoll(projectId) {
 }
 async function api(path, options = {}) {
   tracingRequest(path);
+  if(!options.method||options.method.toUpperCase()==='GET')return readJSON(path,{...options,headers:{'X-SourceLoom':'1',...options.headers},onResponse:response=>actionTrace.push({action:currentOperation,step:'response_received',at:performance.now(),status:response.status})});
   const response = await fetch(path, {...options, headers:{'X-SourceLoom':'1',...(options.body && !(options.body instanceof FormData) ? {'Content-Type':'application/json'} : {}),...options.headers}});
   actionTrace.push({action:currentOperation,step:'response_received',at:performance.now(),status:response.status});
   const type = response.headers.get('content-type') || '';
-  const body = type.includes('json') ? await response.json() : null;
+  let body;
+  try {if(!type.includes('json'))throw new Error('保存未取得有效回执，请查询原操作，不要重复提交。');body=await response.json();}
+  catch(error){error.uncertain=true;throw error;}
   if (!response.ok) throw new Error(body?.error || body?.detail || `操作未完成（${response.status}）`);
   return body;
 }
@@ -100,6 +105,12 @@ const issueDrawer = new IssueDrawer({host:$('#issues-host'),
   onCapture:()=>({positions:reader.capture(),projectId:project?.id,sourceDigest:processor().source_digest,mode:reader.mode,driver:reader.driver}),
   onRestore:restoreIssueReading,
   onViewOriginal:(reference,trigger)=>workbench.loupe.openIssue(reference,trigger),
+  onOpenOriginal:reference=>{
+    const original=project?.inventory?.originals?.find(row=>row.name===reference?.source_document)||project?.inventory?.originals?.find(row=>row.mime==='application/pdf'||/\.pdf$/i.test(row.name||''));
+    const url=safeURL(original?.url||(original?.sha256?pidPath(`/files/${original.sha256}`):''));
+    if(!url){notice('保存的原文件暂不可读取，请在原件与资源页查看文件状态。',true);return;}
+    window.open(url+(url.includes('?')?'&':'?')+'inline=1'+(reference?.page?'#page='+Number(reference.page):''),'_blank','noopener,noreferrer');
+  },
   onApplied:async()=>{
     const saved=issueDrawer.readingSnapshot,epoch=openEpoch,id=project?.id,priorLoad=versionEpoch;
     issueApplying=true;
@@ -479,9 +490,13 @@ async function open(id, initialTab = null) {
   issueDrawer.close();
   reader.detach();
   for(const id of ['source-viewer','compare-source-viewer']) {$('#'+id).replaceChildren();$('#'+id).dataset.sourceKey='';}
+  openRead?.abort();openRead=new AbortController();
   clearTimeout(pollTimer); const epoch = ++openEpoch;openingProjectId=id;
   let next;
-  try{next=await api(`${base}/projects/${encodeURIComponent(id)}?reading=true`);}
+  try{
+    next=await api(`${base}/projects/${encodeURIComponent(id)}?reading=true`,{signal:openRead.signal});
+    if(next?.id!==id||!next?.processor)throw new Error('没有收到当前材料的完整数据，请重新打开该材料。');
+  }
   catch(error){
     if(epoch===openEpoch){openingProjectId=null;if(project){reader.prepare();reader.attachPreview();}}
     throw error;
