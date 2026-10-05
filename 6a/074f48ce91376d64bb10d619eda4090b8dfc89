@@ -1,0 +1,66 @@
+sourceloom/static/processor_read.js
+  s_36a381ab4bccf9::t_4150e1e73e5752 1-38
+sourceloom/static/processor_tree.css
+  s_36a381ab4bccf9::t_d79b865328835b 12
+sourceloom/static/processor_pdf.js
+  s_36a381ab4bccf9::t_942408c43472eb 236,239-240,242-243,255,257,271-275,279,298-303,310-312,349,353,368,370-372,376-377
+  s_36a381ab4bccf9::t_da8bb7b5a923de 58,105-106,108-112,116-133,144,148-149,151-153,158-159,176,178,181
+  s_36a381ab4bccf9::t_61e29d085b08a0 107,156-157,166,168,304,351-352
+  s_36a381ab4bccf9::t_782c6ec9c3e9b6 60
+  s_36a381ab4bccf9::t_25c439082178f5 113-115,141,154,162-165,167,169-170,244
+  s_36a381ab4bccf9::t_51702060916261 233,235,237,241,245,254
+tests/test_processor_reader_issues.py
+  s_36a381ab4bccf9::t_3d017961fdca5b 406-430
+sourceloom/processor_api.py
+  s_36a381ab4bccf9::t_0e9619e9f40d22 374-377
+sourceloom/static/processor_issues.css
+  s_36a381ab4bccf9::t_cefb21b584287b 18,24
+tests/test_processor_pdf_viewer.py
+  s_36a381ab4bccf9::t_b6e23682987477 48,57,64
+tests/test_processor_pdf_rendering.py
+  s_36a381ab4bccf9::t_e6f87f5718ccd9 70-80,98
+  s_36a381ab4bccf9::t_0617ef03158346 26
+  s_36a381ab4bccf9::t_f0600f68abbadb 17,23
+tests/test_processor_issue_ui.py
+  s_36a381ab4bccf9::t_7307548d9db3fd 218-236
+  s_36a381ab4bccf9::t_d1bedff31695c2 237-244
+  s_36a381ab4bccf9::t_bae309434e45be 131-203
+  s_36a381ab4bccf9::t_98e4bfa54b89f6 204-217
+  s_36a381ab4bccf9::t_d0c1ffe671b884 14-17
+sourceloom/static/processor_issues.js
+  s_36a381ab4bccf9::t_5af8cfd18ac4b7 175,219,225,250,259,287
+  s_36a381ab4bccf9::t_08540876871a58 46,82
+  s_36a381ab4bccf9::t_700caa29d98672 19-20,26,59,98,102-103,114,123,125,151
+  s_36a381ab4bccf9::t_7279aa7ca91267 1-2
+  s_36a381ab4bccf9::t_5889363c3fe3fe 140-141,149-150,152-174,176-196,200-201
+tests/test_processor_read_lifecycle.py
+  s_36a381ab4bccf9::t_fc5bbb1fd95d5e 9-22
+  s_36a381ab4bccf9::t_c4bdc457f11202 1-8,23-58
+sourceloom/processor_issues.py
+  s_36a381ab4bccf9::t_0e9619e9f40d22 919,924-925
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_d79b865328835b 21,50
+sourceloom/static/processor.js
+  s_36a381ab4bccf9::t_4150e1e73e5752 7,18,66,70-72,493
+  s_36a381ab4bccf9::t_4c9a7277bbf488 108-113,496-499
+sourceloom/app.py
+  s_36a381ab4bccf9::t_9a21e11b918afa 111
+tests/test_processor_pdf_readiness.py
+  s_36a381ab4bccf9::t_782c6ec9c3e9b6 1-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6a074f48ce91376d64bb10d619eda4090b8dfc89",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
