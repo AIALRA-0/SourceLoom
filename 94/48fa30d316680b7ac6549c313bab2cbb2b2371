@@ -1,0 +1,41 @@
+docs/DESIGN.md
+  s_36a381ab4bccf9::t_2bfbc2c8470b58 29-37
+sourceloom/static/processor.js
+  s_36a381ab4bccf9::t_9640be9b81ec68 557-562,564,694
+  s_36a381ab4bccf9::t_89664c3aa12b3b 133
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_c66f079ed54267 168
+  s_36a381ab4bccf9::t_bf3e469d164edd 8-15,91,165-167,170,172-176,178-181,184-188
+  s_36a381ab4bccf9::t_af9636c58822ff 169
+tests/test_processor_reading_toolbar.py
+  s_36a381ab4bccf9::t_c66f079ed54267 59,62,64,70-83
+  s_36a381ab4bccf9::t_2bfbc2c8470b58 84-99
+sourceloom/static/processor_workspace.css
+  s_36a381ab4bccf9::t_bf3e469d164edd 72,83
+sourceloom/static/processor_tree.css
+  s_36a381ab4bccf9::t_bf3e469d164edd 4
+sourceloom/static/processor_workbench.js
+  s_36a381ab4bccf9::t_9640be9b81ec68 91,154
+  s_36a381ab4bccf9::t_bf3e469d164edd 80-88,92-93,98,103,106-118,125-126,133,155-161,165-169
+  s_36a381ab4bccf9::t_af9636c58822ff 89-90
+  s_36a381ab4bccf9::t_60b0601d645b2d 162-164
+  s_36a381ab4bccf9::t_0592f9bd7048f9 119-124
+sourceloom/static/processor_library.js
+  s_36a381ab4bccf9::t_cc294cc68e01b0 11,22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9448fa30d316680b7ac6549c313bab2cbb2b2371",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
