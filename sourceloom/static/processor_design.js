@@ -104,7 +104,7 @@ function installMenus() {
     const panel=[...details.children].find(n=>n.classList.contains('menu-panel'));
     if(!panel)return;
     const trigger=details.querySelector('summary'),rect=trigger.getBoundingClientRect();
-    panel.style.position='fixed';panel.style.maxHeight=Math.max(80,innerHeight-32)+'px';
+    panel.style.position='fixed';panel.style.right='auto';panel.style.maxHeight=Math.max(80,innerHeight-32)+'px';
     panel.style.left=Math.max(8,Math.min(rect.right-panel.offsetWidth,innerWidth-panel.offsetWidth-8))+'px';
     panel.style.top=Math.max(8,Math.min(rect.bottom+8,innerHeight-panel.offsetHeight-8))+'px';
   };
@@ -150,6 +150,6 @@ function installTooltips() {
   document.addEventListener('pointerout',e=>{if(!owner?.contains(e.relatedTarget)&&!tip.contains(e.relatedTarget))hide();});
   document.addEventListener('focusin',e=>show(e.target.closest('[data-tooltip]')));
   document.addEventListener('focusout',hide);
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!tip.hidden){hide();e.preventDefault();e.stopImmediatePropagation();}},true);
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!tip.hidden){hide();e.preventDefault();if(!document.querySelector('.tool-menu[open]'))e.stopImmediatePropagation();}},true);
   document.addEventListener('scroll',hide,true);
 }

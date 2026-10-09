@@ -2,6 +2,8 @@
 const q = s => document.querySelector(s);
 const icons = {
   menu:'M4 6h16M4 12h16M4 18h16', search:'M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14m5 12 6 6',
+  file:'M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h8', handoff:'M4 6h16v12H4zM8 10h8m-3-3 3 3-3 3',
+  history:'M3 12a9 9 0 1 0 3-7M3 3v6h6M12 7v5l3 2', upload:'M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5',
   link:'M9 15l6-6M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 2 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0',
   free:'M3 3l18 18M8 16l-1 1a4 4 0 0 1-6-6l3-3m9-1 1-1a4 4 0 0 1 6 6l-3 3',
   focus:'M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5',
@@ -12,6 +14,8 @@ const icons = {
 function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text)n.textContent=text;return n;}
 function icon(node,type,label,short=''){node.replaceChildren();const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');svg.innerHTML=`<path d="${icons[type]||icons.menu}"/>`;node.append(svg);if(short)node.append(el('span','',short));node.classList.add('tool-icon');node.removeAttribute('title');node.setAttribute('aria-label',label);node.dataset.tooltip=label;return node;}
 function button(id,type,label,short=''){const n=el('button');n.type='button';n.id=id;return icon(n,type,label,short);}
+// Delivery labels may change after a receipt; preserve the original business node.
+function actionIcon(node,type){const decorate=()=>{if(node.querySelector('svg'))return;const label=node.textContent.trim()||node.getAttribute('aria-label');icon(node,type,label,label);};decorate();new MutationObserver(decorate).observe(node,{childList:true});return node;}
 function menu(label){const d=el('details','tool-menu'),s=el('summary','',label);s.setAttribute('aria-label',label);const p=el('div','menu-panel');d.append(s,p);return {d,p};}
 function move(s,p){const n=q(s);if(n)p.append(n);return n;}
 
@@ -26,6 +30,10 @@ export class ReadingWorkbench {
     doc.append(el('button','issue-trigger','检查问题'));doc.lastChild.id='issue-trigger';
     icon(move('#toggle-editor',doc),'edit','编辑成稿');move('#send-readweave',doc);move('#open-readweave',doc);
     const more=menu('更多');more.d.id='document-menu';more.p.append(versions.d);move('.steps',q('#view-tools'));move('#import-markdown',more.p);
+    icon(versions.d.querySelector('summary'),'history','版本历史');
+    for(const [selector,type] of [['#import-markdown','upload'],['#download-markdown','download'],['#export-package','copy'],['#send-readweave','handoff'],['#open-readweave','link']])actionIcon(q(selector)||doc.querySelector(selector)||more.p.querySelector(selector),type);
+    q('.steps').classList.add('document-steps');
+    for(const [name,type,label] of [['material','file','原件与资源'],['handoff','handoff','交给模型'],['result','focus','成稿与导出']])icon(q(`.steps [data-tab="${name}"]`),type,label,label);
     icon(more.d.querySelector('summary'),'more','文档操作与版本历史');
     for(const s of ['#download-markdown','#export-package','#query-readweave','#copy-readweave-url'])move(s,more.p);
     more.p.append(el('hr'));move('#delivery-status',more.p);move('#semantic-status',more.p);move('#readweave-target',more.p);
@@ -78,11 +86,13 @@ export class ReadingWorkbench {
     restore.onclick=()=>this.deps.reader.layoutChange(()=>{layout.classList.remove('source-only','preview-only');q('#focus-source').setAttribute('aria-pressed','false');q('#focus-reading').setAttribute('aria-pressed','false');document.body.dataset.readerFocus='both';refreshFocus();});
     q('#issue-trigger').onclick=async()=>{if(this.deps.canProcessIssues?.()===false){this.deps.notify('请先保存当前修改，再处理本版本的问题',true);return;}if(document.fullscreenElement)await document.exitFullscreen();this.deps.issues.open(this.deps.context());};
     const documentBar=q('#reading-document-bar'),documentMenu=q('#document-menu>.menu-panel');
-    const secondary=['#edit-state','#toggle-editor','#send-readweave','#open-readweave','#restore-comparison'].map(q);
+    const secondary=['#view-tools','#reading-version-menu','#import-markdown','#download-markdown','#export-package','#edit-state','#toggle-editor','#send-readweave','#open-readweave','#restore-comparison'].map(q);
     const documentFit=()=>{
       const width=q('#main-pane').clientWidth;
+      const thresholds={'view-tools':620,'reading-version-menu':460,'import-markdown':740,'download-markdown':620,'export-package':1000,'edit-state':850,'toggle-editor':0,'send-readweave':460,'open-readweave':460,'restore-comparison':460};
       for(const node of secondary){
-        const inMenu=width<620&&(node.id!=='toggle-editor'||width<460);
+        if(node.id==='view-tools'&&!document.body.classList.contains('reading-active'))continue;
+        const inMenu=width<thresholds[node.id];
         const host=inMenu?documentMenu:documentBar;
         if(node.parentElement!==host){if(inMenu)host.append(node);else host.insertBefore(node,q('#document-menu'));}
       }
@@ -157,7 +167,8 @@ export class ReadingWorkbench {
     document.body.classList.toggle('reading-active',reading);
     if(reading){
       if(doc.parentElement!==toolbar)toolbar.insertBefore(doc,q('#sidebar-toggle'));
-      if(views.parentElement!==more)more.prepend(views);
+      if(q('#main-pane').clientWidth<620){if(views.parentElement!==more)more.prepend(views);}
+      else if(views.parentElement!==doc)doc.insertBefore(views,q('#document-menu'));
     }else{
       // Close before moving the chosen action out of its menu; delegated click
       // handling can no longer find the old owner after reparenting.

@@ -12,6 +12,11 @@
 .reading-active #document-menu #view-tools{display:block;}
 .reading-active #document-menu #view-tools .steps{flex-direction:column;align-items:stretch;border:0;padding:0;background:transparent;}
 .reading-active #document-menu #view-tools button{height:36px;min-height:36px;text-align:center;}
+.reading-active #document-menu #view-tools button span{display:inline;}
+.document-bar>.tool-icon span{display:none;}
+.reading-active .document-bar>#view-tools .steps{border:0;padding:0;margin:0;gap:2px;background:none;}
+.reading-active .document-bar>#view-tools .steps button{width:32px;min-width:32px;height:36px;padding:0;}
+.reading-active .document-bar>#view-tools .steps button[aria-selected=true]{background:var(--selected);}
 .document-bar h1{line-height:1.4;margin:0;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .document-bar #edit-state{font-size:12px;color:var(--muted);white-space:nowrap;}
 .document-bar>#open-readweave{display:inline-flex;align-items:center;justify-content:center;min-height:var(--control);padding:6px 12px;text-decoration:none;border:1px solid var(--line);border-radius:var(--radius);white-space:nowrap;}
@@ -20,6 +25,8 @@
 .document-bar>#document-menu>summary{white-space:nowrap;padding:0;width:36px;}
 .reader-product .document-bar>button,.reader-product .document-bar>.button-link,.reader-product .document-bar>details>summary{height:36px;min-height:36px;font-size:13px;}
 .reader-product .document-bar>#toggle-editor{width:36px;min-width:36px;padding:0;border:0;background:transparent;}
+.reader-product .document-bar>.tool-icon,.reader-product .document-bar>#reading-version-menu>summary{width:36px;min-width:36px;padding:0;border:0;background:transparent;}
+.reader-product .document-bar>#send-readweave{background:var(--selected);color:var(--text);}
 .reader-product .document-bar>.issue-trigger{padding:0 10px;background:transparent;border:1px solid var(--line);border-radius:18px;}
 
 .reading-active #tab-result>.panel-heading{display:none;}
@@ -49,7 +56,7 @@
 .tool-menu>summary{display:flex;align-items:center;justify-content:center;gap:6px;border-radius:8px;padding:6px 10px;min-width:var(--control);list-style:none;line-height:1.4;white-space:nowrap;}
 .tool-menu>summary::-webkit-details-marker{display:none;}
 .tool-menu>summary:hover{background:var(--hover);}
-.menu-panel{position:absolute;right:0;top:calc(100% + 4px);min-width:250px;max-width:min(420px,90vw);max-height:70vh;overflow:auto;border:1px solid var(--line);box-shadow:0 6px 30px #0002;border-radius:8px;display:flex;flex-direction:column;z-index:30;}
+.menu-panel{position:absolute;right:0;top:calc(100% + 4px);width:max-content;min-width:220px;max-width:min(360px,calc(100vw - 16px));max-height:70vh;overflow:auto;border:1px solid var(--line);box-shadow:0 6px 30px #0002;border-radius:8px;display:flex;flex-direction:column;z-index:30;}
 .menu-panel label{margin:0;}
 .menu-panel input{width:100%;}
 .menu-panel select{width:100%;}
@@ -224,7 +231,7 @@
 .reader-product .pane-toolbar .select-trigger[aria-expanded=true]{border-color:var(--focus);}
 .draft-tools{margin-left:auto;}
 .reader-modes button[aria-pressed=true]{background:var(--selected)!important;border-color:var(--selected)!important;color:var(--text)!important;}
-.menu-panel{background:var(--raised);border-color:var(--input-line);color:var(--text);padding:16px;gap:12px;}
+.menu-panel{background:var(--raised);border-color:var(--input-line);color:var(--text);padding:8px;gap:4px;}
 .menu-panel label{font-weight:500;font-size:13px;}
 .reader-product .tool-menu>summary:hover{background:var(--hover);}
 .reader-product .tool-icon svg{stroke-width:1.6;}
