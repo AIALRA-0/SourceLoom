@@ -1,0 +1,111 @@
+sourceloom/static/processor_workbench.js
+  s_36a381ab4bccf9::t_68bf1641dd18c6 28,121-122
+  s_36a381ab4bccf9::t_4ffbbb5f782ffb 13
+  s_36a381ab4bccf9::t_fbea952a2abb1f 8,27,29,54-59,68-69,72
+sourceloom/static/processor_library.js
+  s_36a381ab4bccf9::t_68bf1641dd18c6 10
+  s_36a381ab4bccf9::t_d8855fa60c2676 1
+sourceloom/static/processor_icons.js
+  s_36a381ab4bccf9::t_e79e57db0da9c9 1-43
+sourceloom/static/processor.html
+  s_36a381ab4bccf9::t_29db88f4955d1a 32,90
+  s_36a381ab4bccf9::t_37aa60f3939087 35,91
+  s_36a381ab4bccf9::t_68bf1641dd18c6 18-25,31,33-34,36,42-47,86-89,92-97,99
+  s_36a381ab4bccf9::t_fa9e3549445e2e 6-14,17
+frontend/workspace.test.js
+  s_36a381ab4bccf9::t_ff4764feca8bbc 1-2,4-16
+  s_36a381ab4bccf9::t_dd7594c382a013 3,17-32
+sourceloom/static/processor_tokens.css
+  s_36a381ab4bccf9::t_e79e57db0da9c9 1,3-4
+  s_36a381ab4bccf9::t_9b4b7aa6997d61 2
+docs/DESIGN.md
+  s_36a381ab4bccf9::t_e7ca633446a005 1-6,8-14,16-18
+  s_36a381ab4bccf9::t_29db88f4955d1a 7,15,19-28
+sourceloom/static/processor_tree.js
+  s_36a381ab4bccf9::t_e79e57db0da9c9 11
+  s_36a381ab4bccf9::t_68bf1641dd18c6 15-17,26
+  s_36a381ab4bccf9::t_78eefda728c65b 25
+  s_36a381ab4bccf9::t_5aabdb027aeb35 12
+sourceloom/static/processor_appearance.js
+  s_36a381ab4bccf9::t_f8544e18e4148f 1-2,4,6-15
+  s_36a381ab4bccf9::t_d74e51620c5494 3,5
+frontend/appearance.test.js
+  s_36a381ab4bccf9::t_729ddc5fe5f1e9 18-28
+  s_36a381ab4bccf9::t_f8544e18e4148f 1-17
+sourceloom/static/processor_issues.css
+  s_36a381ab4bccf9::t_e79e57db0da9c9 3,5,7-9,11-14,16,18-19,22-24,26,28-29
+  s_36a381ab4bccf9::t_f473b4df355e04 10,20-21,25
+sourceloom/static/processor_startup.js
+  s_36a381ab4bccf9::t_e79e57db0da9c9 11-13
+  s_36a381ab4bccf9::t_0295a32d7a90ce 14-15
+  s_36a381ab4bccf9::t_ff4764feca8bbc 16-25
+sourceloom/static/processor_design.js
+  s_36a381ab4bccf9::t_f8544e18e4148f 6,37-38,98,100-125,136
+  s_36a381ab4bccf9::t_3472ab64105d91 126-129
+  s_36a381ab4bccf9::t_148655bf04c5f9 77-80
+  s_36a381ab4bccf9::t_e79e57db0da9c9 1-4,7,9-11,14,16,18,22,24-32,34-36,39-43,45-49,51-59,61-62,64-73,75-76,81-82,84-90,92-97,137-155
+  s_36a381ab4bccf9::t_faeda9aeefdf22 13
+  s_36a381ab4bccf9::t_a7b47757afe72f 8,12,15,17,19-21,23,44,50,60,63,99
+  s_36a381ab4bccf9::t_9b4b7aa6997d61 74,83
+  s_36a381ab4bccf9::t_4c7f0c7091525a 130-135
+  s_36a381ab4bccf9::t_f473b4df355e04 33
+  s_36a381ab4bccf9::t_7bec9cdeea5e52 5,91
+frontend/startup.test.js
+  s_36a381ab4bccf9::t_ff4764feca8bbc 12,18,21,24-25
+  s_36a381ab4bccf9::t_0295a32d7a90ce 28
+  s_36a381ab4bccf9::t_4f932c603ca5d2 11
+docs/EXECUTOR_REPORTING_RULES.md
+  s_36a381ab4bccf9::t_13cede8faddcd8 1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31-35,37,39,41
+sourceloom/static/processor.css
+  s_36a381ab4bccf9::t_adc91b4e84cd1b 1-4
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_adc91b4e84cd1b 1-6,8-13,19-33,37-66,68-177,179-185,188-210,224-253,255,257-263,267-363
+  s_36a381ab4bccf9::t_37aa60f3939087 14-17,34-36,67,254,256,264-266
+  s_36a381ab4bccf9::t_a1f8da99bb8fc8 213-223
+sourceloom/static/processor_select.js
+  s_36a381ab4bccf9::t_e79e57db0da9c9 1-108,113-118,120-144
+  s_36a381ab4bccf9::t_cb6913749047d7 109-112,119
+AGENTS.md
+  s_36a381ab4bccf9::t_c5e5e1a09400c3 3-5
+docs/APCF_REPORTING_ADAPTER.md
+  s_36a381ab4bccf9::t_4a6ad5a5234ed1 62-69
+  s_36a381ab4bccf9::t_c5e5e1a09400c3 1-61
+frontend/progress.test.js
+  s_36a381ab4bccf9::t_4f932c603ca5d2 44-45
+sourceloom/static/processor_workspace.js
+  s_36a381ab4bccf9::t_8f2f2df21e8b1d 44,63,66
+  s_36a381ab4bccf9::t_813aa0f4cc7d0b 14,17
+  s_36a381ab4bccf9::t_148655bf04c5f9 78
+  s_36a381ab4bccf9::t_9c058f24ac25a2 1-13,15-16,18-31,33-43,45-62,64-65,67-77,79-92,94-95,109-117
+  s_36a381ab4bccf9::t_a8a4270702804b 93,97-105
+  s_36a381ab4bccf9::t_7f7703de743ae4 118
+  s_36a381ab4bccf9::t_4f932c603ca5d2 32
+  s_36a381ab4bccf9::t_c5412e996d8c44 96,106-108
+sourceloom/static/processor_workspace.css
+  s_36a381ab4bccf9::t_37aa60f3939087 34
+  s_36a381ab4bccf9::t_29db88f4955d1a 1-33,35-136
+sourceloom/static/processor.js
+  s_36a381ab4bccf9::t_148655bf04c5f9 751
+  s_36a381ab4bccf9::t_7f7703de743ae4 19,519
+  s_36a381ab4bccf9::t_37aa60f3939087 530
+  s_36a381ab4bccf9::t_23a7f2c60880cb 1-2,4
+sourceloom/static/processor_tree.css
+  s_36a381ab4bccf9::t_adc91b4e84cd1b 6,8-11
+  s_36a381ab4bccf9::t_13170dcb4d989d 1,3-5,7,12-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2549034fc4ffcf2b79b48ff1303fc93ffd28d2c3",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
