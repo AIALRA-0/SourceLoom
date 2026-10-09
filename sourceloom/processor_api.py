@@ -199,6 +199,7 @@ def register(app, store, config):
         from .processor_channels import capabilities as channel_capabilities
         result = channel_capabilities(config)
         result['environment'] = 'development_acceptance' if os.environ.get('SOURCELOOM_ACCEPTANCE') == '1' else 'user'
+        result['auth_mode'] = config.get('auth_mode', 'local')
         result['readweave_configured'] = all(config.get(k) for k in ('readweave_url','readweave_token','readweave_parent'))
         remote = urlsplit(str(config.get('readweave_public_url') or config.get('readweave_url') or ''))
         result['readweave_target'] = (dict(instance_url=f'{remote.scheme}://{remote.hostname}' +
@@ -206,6 +207,11 @@ def register(app, store, config):
             if result['readweave_configured'] and remote.scheme in {'http','https'} and remote.hostname else None)
         result['supported_input'] = ['pdf','md','txt','html','rst','docx','png','jpg','webp','gif','zip']
         return result
+
+    @app.get('/api/processor/readweave-connection')
+    def readweave_connection():
+        from .readweave import connection_status
+        return connection_status(config)
 
     @app.get(prefix)
     def projects():

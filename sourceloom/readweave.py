@@ -28,6 +28,37 @@ def _instance(config):
     return str(config.get('readweave_url') or '').rstrip('/')
 
 
+def connection_status(config):
+    """Check the configured destination by reading its parent, without importing."""
+    if not all(config.get(k) for k in ('readweave_url', 'readweave_token', 'readweave_parent')):
+        return {'status': 'not_configured'}
+    parsed = urlsplit(_instance(config))
+    if (parsed.scheme not in {'http', 'https'} or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment):
+        return {'status': 'invalid_configuration'}
+    try:
+        response = httpx.get(_instance(config) + '/etapi/notes/' +
+                             quote(str(config['readweave_parent']), safe=''),
+                             headers={'Authorization': config['readweave_token']},
+                             timeout=5, follow_redirects=False)
+        if response.status_code in {401, 403}:
+            return {'status': 'unauthorized'}
+        if response.status_code == 404:
+            return {'status': 'parent_missing'}
+        if response.status_code != 200:
+            return {'status': 'unavailable'}
+        if 'json' not in response.headers.get('content-type', ''):
+            return {'status': 'invalid_response'}
+        body = response.json()
+        if not isinstance(body, dict) or body.get('noteId') != config['readweave_parent']:
+            return {'status': 'invalid_response'}
+        return {'status': 'connected'}
+    except httpx.TimeoutException:
+        return {'status': 'timeout'}
+    except (httpx.HTTPError, ValueError):
+        return {'status': 'unavailable'}
+
+
 def _candidate_key(raw):
     with zipfile.ZipFile(BytesIO(raw)) as z:
         meta=json.loads(z.read('!!!meta.json'))

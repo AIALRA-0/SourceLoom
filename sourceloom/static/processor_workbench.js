@@ -7,7 +7,7 @@ const icons = {
   link:'M9 15l6-6M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 2 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0',
   free:'M3 3l18 18M8 16l-1 1a4 4 0 0 1-6-6l3-3m9-1 1-1a4 4 0 0 1 6 6l-3 3',
   focus:'M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5',
-  rotate:'M4 10a8 8 0 1 1 2 9M4 3v7h7', edit:'M4 16l12-12 4 4-12 12H4v-4', more:'M5 12h.01M12 12h.01M19 12h.01',
+  rotate:'M4 10a8 8 0 1 1 2 9M4 3v7h7', edit:'M4 16l12-12 4 4-12 12H4v-4', save:'M4 3h13l3 3v15H4zM8 3v6h8V3M8 21v-7h8v7', more:'M5 12h.01M12 12h.01M19 12h.01',
   copy:'M9 9h11v12H9zM15 9V3H3v12h6', thumbs:'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
   download:'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5', hand:'M7 12V7a1.5 1.5 0 0 1 3 0v4-7a1.5 1.5 0 0 1 3 0v7-6a1.5 1.5 0 0 1 3 0v7-4a1.5 1.5 0 0 1 3 0v7c0 5-2 7-6 7H9l-5-6a2 2 0 0 1 3-2l2 2',
 };
@@ -47,6 +47,7 @@ export class ReadingWorkbench {
     for(const s of ['#download-markdown','#export-package','#query-readweave','#copy-readweave-url'])move(s,more.p);
     const state=el('section','document-menu-state');state.setAttribute('aria-label','成稿状态');move('#delivery-status',state);move('#semantic-status',state);more.p.append(state);
     const receipt=menu('ReadWeave 交付详情');move('#readweave-target',receipt.p);more.p.append(receipt.d);icon(receipt.d.querySelector('summary'),'link','ReadWeave 交付详情','交付详情');
+    const deliverySettings=button('readweave-settings-open','link','ReadWeave 连接设置','ReadWeave 连接设置');deliverySettings.onclick=()=>document.dispatchEvent(new CustomEvent('workbench-settings-request',{detail:{tab:'delivery'}}));receipt.p.append(deliverySettings);
     const facts=menu('材料详情');move('#material-summary',facts.p);move('#document-status',facts.p);more.p.append(facts.d);icon(facts.d.querySelector('summary'),'file','材料详情','材料详情');
     icon(move('#refresh',more.p),'history','刷新当前材料','刷新材料');
     q('.document-head')?.remove();
@@ -62,7 +63,9 @@ export class ReadingWorkbench {
     const shared=el('div','reading-toolbar');shared.id='shared-reading-tools';
     const views=move('.mobile-compare-switch',shared);views.querySelector('#mobile-compare-left').textContent='原件';views.querySelector('#mobile-compare-right').textContent='成稿';
     shared.append(this.controls[2]);right.append(shared,draftTools);toolbar.append(left,right);
-    q('#compare-source').append(this.controls[3]);
+    q('.preview-pane').append(this.controls[3]);
+    const editorActions=el('div','editor-actions');editorActions.setAttribute('role','group');editorActions.setAttribute('aria-label','成稿保存');
+    editorActions.append(icon(q('#save-result'),'save','保存并预览'));left.append(editorActions);
   }
   // Capture existing reader controls before their toolbar is rebuilt.
   get controls(){return this._controls||[];}
@@ -78,6 +81,9 @@ export class ReadingWorkbench {
     const aa=menu('Aa');aa.d.querySelector('summary').setAttribute('aria-label','成稿排版设置');for(const [id,text] of [['reading-size','字号'],['reading-line-height','行距']]){const l=el('label','',text);l.append(nodes[id]);aa.p.append(l);}aa.p.innerHTML+='<label>正文行宽<select id="reading-width"><option value="full">填满面板</option><option value="measure">适中</option></select></label>';
     // innerHTML above would destroy moved control listeners: restore the original nodes.
     for(const id of ['reading-size','reading-line-height']){const clone=aa.p.querySelector('#'+id);clone.replaceWith(nodes[id]);}
+    const scaleLabel=el('label','','预览缩放');
+    const scale=el('div','tool-group draft-zoom-group');scale.innerHTML='<button id="draft-zoom-minus" type="button" aria-label="缩小成稿预览" data-tooltip="缩小成稿预览">−</button><select id="draft-zoom" aria-label="成稿预览缩放"><option value="0.5">50%</option><option value="0.75">75%</option><option value="1" selected>100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select><button id="draft-zoom-plus" type="button" aria-label="放大成稿预览" data-tooltip="放大成稿预览">＋</button>';
+    scaleLabel.append(scale);aa.p.append(scaleLabel);
     const nav=el('details','reader-options tool-menu');nav.append(el('summary','','定位'));const np=el('div','menu-panel');nav.append(np);np.append(nodes['reader-toc'],nodes['reader-pair'],nodes['reader-independent'],el('p','muted','配对只保存本机阅读位置，不改正文'));
     aa.p.append(el('hr'),el('strong','','阅读定位'),...np.childNodes);aa.d.id='reading-settings';
     const focus=menu('专注');icon(focus.d.querySelector('summary'),'focus','专注与全屏阅读');focus.p.append(button('focus-source','focus','专注原件','原件'),icon(q('#focus-reading'),'focus','专注成稿','成稿'),button('reader-fullscreen','focus','全屏阅读','全屏'));
@@ -108,7 +114,6 @@ export class ReadingWorkbench {
     };
     this.documentResize=new ResizeObserver(documentFit);this.documentResize.observe(q('#main-pane'));documentFit();
     const left=q('#reading-controls>.source-toolbar');
-    q('#compare-source').append(q('#mapping-status'));
     const tools=el('div','source-quick-tools');tools.append(button('pdf-thumbnails','thumbs','原件目录与页缩略图'),button('pdf-hand','hand','切换手形平移'),button('pdf-rotate','rotate','顺时针旋转原件'),button('pdf-copy','copy','复制所选原文'),button('pdf-copy-cite','copy','复制所选原文并附出处','引用'));
     const sourceMore=menu('原文件');sourceMore.p.innerHTML='<a id="pdf-original-open" target="_blank" rel="noopener noreferrer">独立打开原件</a><a id="pdf-original-download" download>下载原件</a>';tools.append(sourceMore.d);
     const originalTools=menu('原件工具');originalTools.d.classList.add('source-more');icon(originalTools.d.querySelector('summary'),'more','原件工具');originalTools.p.append(tools);left.append(originalTools.d);
@@ -141,6 +146,8 @@ export class ReadingWorkbench {
     const view=()=>this.deps.reader.pdfView?.('compare');
     originalTools.d.addEventListener('mousedown',e=>{if(e.target.closest('button,summary')&&view()?.captureSelection())e.preventDefault();});
     const attempt=async fn=>{try{await fn();}catch(e){this.deps.notify(e.message||'操作未完成',true);}};
+    q('#draft-zoom').onchange=e=>this.deps.reader.setPreviewScale(e.target.value);
+    for(const [id,delta] of [['draft-zoom-minus',-.25],['draft-zoom-plus',.25]])q('#'+id).onclick=()=>this.deps.reader.setPreviewScale((Number(q('#draft-zoom').value)||1)+delta);
     q('#pdf-zoom-mode').onchange=e=>attempt(()=>view()?.setScale(isNaN(Number(e.target.value))?e.target.value:Number(e.target.value)));
     for(const [id,delta] of [['pdf-zoom-minus',-.25],['pdf-zoom-plus',.25]])q('#'+id).onclick=()=>attempt(()=>view()?.setScale(Math.max(.25,Math.min(4,(Number(view()?.state?.scale)||1)+delta))));
     q('#pdf-rotate').onclick=()=>attempt(()=>view()?.rotate());

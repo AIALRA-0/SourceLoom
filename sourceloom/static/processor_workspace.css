@@ -19,6 +19,13 @@ html,body{height:100%;overflow:hidden}
 .reader-product .activity-rail :is(button,a):hover,.reader-product .activity-rail :is(button,a)[aria-current=true]{background:var(--hover);color:var(--text)}
 .activity-rail .spacer{flex:1;min-height:16px}
 .activity-rail a{display:flex;align-items:center;justify-content:center;text-decoration:none;border-radius:var(--radius)}
+.connection-state{display:flex;align-items:center;gap:8px;margin:16px 0;font-size:14px;}
+.connection-state::before{content:"";width:8px;height:8px;flex:none;border-radius:50%;background:var(--muted);}
+.connection-state[data-state=connected]::before{background:var(--success);}
+.connection-state:is([data-state=unauthorized],[data-state=parent_missing],[data-state=unavailable],[data-state=timeout],[data-state=invalid_response],[data-state=invalid_configuration])::before{background:var(--warning);}
+.connection-details{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 16px;font-size:13px;margin:16px 0;}
+.connection-details dd{margin:0;overflow-wrap:anywhere;}
+#workbench-account-state{margin-top:20px;}
 .layout{display:grid;flex:1;min-width:0;min-height:0;grid-template-columns:var(--workspace-left-width,var(--left-width)) var(--gap) minmax(0,1fr) var(--gap) var(--workspace-right-width,var(--right-width));grid-template-rows:minmax(0,1fr);position:relative}
 :root[data-left-hidden=true] .layout{grid-template-columns:0 0 minmax(0,1fr) var(--gap) var(--workspace-right-width,var(--right-width))}
 :root[data-right-hidden=true] .layout{grid-template-columns:var(--workspace-left-width,var(--left-width)) var(--gap) minmax(0,1fr) 0 0}

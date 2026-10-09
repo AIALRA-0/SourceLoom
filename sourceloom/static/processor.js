@@ -132,9 +132,6 @@ const workbench = new ReadingWorkbench({reader,issues:issueDrawer,api,notify:not
   preview:previewDocument,mappings:sourceMapEntries,representations:()=>loadedVersion?.representations||[]});
 const library = new MaterialLibrary({api,post,current:()=>project,open,refresh:refreshProjects,isDirty:()=>dirty,notify:notice,persist:()=>reader.persist(),tab:()=>showTab(currentTab),leaveReader:()=>workbench.tab('library'),metadataChanged:()=>renderAvailability()});
 const manualHandoff = new ManualHandoff({api,current:()=>project?.id,element,fileRow,copy:copyText,notify:notice,showResult:()=>showTab('result')});
-// The existing save action is available only inside the editor, including a
-// restored editor view; it is not stranded in the hidden legacy toolbar.
-$('.editor-pane').prepend($('#save-result'));
 $('#compare-page-number').addEventListener('change',event=>showSourcePage(event.target.value));
 $('#compare-page-number').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();showSourcePage(event.target.value);}});
 function documentStatus() {
@@ -757,7 +754,7 @@ $('#representation-form').addEventListener('submit',protect(async event=>{
   }finally{setLocked(false);}
 }));
 window.addEventListener('beforeunload',event=>{if (dirty) {event.preventDefault(); event.returnValue = '';}});
-templateWorkspace=initializeDesign({library,reader,current:()=>project,isDirty:()=>dirty,open:id=>library.open(id),showTab:()=>showTab(currentTab),notify:notice,api,list:()=>projects});
+templateWorkspace=initializeDesign({library,reader,current:()=>project,isDirty:()=>dirty,open:id=>library.open(id),showTab:()=>showTab(currentTab),notify:notice,api,capabilities:()=>capabilities,list:()=>projects});
 async function boot() {
   const librarySpace=new URLSearchParams(location.search).get('space');
   const requestedTab=new URLSearchParams(location.search).get('tab');

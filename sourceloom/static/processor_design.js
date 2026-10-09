@@ -39,23 +39,45 @@ export function initializeDesign(deps) {
   const settings = document.createElement('dialog'); settings.id = 'workbench-settings-dialog'; settings.className = 'workbench-settings';
   settings.setAttribute('aria-labelledby','workbench-settings-title');
   settings.innerHTML = `<header class="dialog-heading"><h2 id="workbench-settings-title">工作台设置</h2><button type="button" data-dismiss aria-label="关闭设置">${globalThis.WIcons('close')}</button></header>
-    <nav class="settings-tabs" aria-label="设置分类"><button type="button" data-settings-tab="appearance" aria-current="true">外观</button><button type="button" data-settings-tab="layout">布局</button><button type="button" data-settings-tab="workspace">工作区</button></nav>
+    <nav class="settings-tabs" aria-label="设置分类"><button type="button" data-settings-tab="appearance" aria-current="true">外观</button><button type="button" data-settings-tab="layout">布局</button><button type="button" data-settings-tab="workspace">工作区</button><button type="button" data-settings-tab="delivery">ReadWeave</button></nav>
     <form id="workbench-settings-form"><section data-settings-panel="appearance"><label>主题<select name="theme"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label><label>控件密度<select name="density"><option value="comfortable">舒适</option><option value="compact">紧凑</option></select></label></section>
     <section data-settings-panel="layout" hidden><label>左侧面板<select name="leftView"><option value="explorer">材料</option><option value="inspector">检查器</option></select></label><label class="check-label"><input name="hideLeft" type="checkbox">收起左面板</label><label class="check-label"><input name="hideRight" type="checkbox">收起右面板</label><p class="muted">拖动分隔条调整宽度；拖动面板标题或点击交换移动面板。窄屏使用同一面板的抽屉，阅读位置保持。</p></section>
     <section data-settings-panel="workspace" hidden><p>工作台显示设置保存在此浏览器。材料、原件和成稿由原有保存服务管理，不随主题切换改变。</p></section>
+    <section data-settings-panel="delivery" hidden><h3>ReadWeave 交付</h3><p>保存成稿只写入 SourceLoom。只有点击“导入 ReadWeave”并确认，才向目标笔记库交付；连接检查不会导入或修改笔记。</p><p id="readweave-connection-state" class="connection-state" role="status" data-state="unknown">正在读取连接配置</p><dl class="connection-details"><dt>目标实例</dt><dd id="readweave-instance">尚未配置</dd><dt>父笔记</dt><dd id="readweave-parent">尚未配置</dd></dl><div class="inline-actions"><button id="readweave-check-connection" type="button">检查连接</button><a id="readweave-instance-open" class="button-link" target="_blank" rel="noopener noreferrer" hidden>打开 ReadWeave</a></div><p class="muted">连接参数由服务配置管理，访问凭据不会显示或保存到浏览器。当前稿件是否导入，请查看文档的交付详情。</p></section>
     <p class="settings-message" role="status"></p><footer><button type="button" data-dismiss>取消</button><button type="submit" class="primary" disabled>应用设置</button></footer></form>`;
   document.body.append(settings);
   const form = settings.querySelector('form'), message = settings.querySelector('.settings-message');
+  const selectSettingsTab=tab=>{
+    for(const p of settings.querySelectorAll('[data-settings-panel]'))p.hidden=p.dataset.settingsPanel!==tab;
+    for(const b of settings.querySelectorAll('[data-settings-tab]'))b.setAttribute('aria-current',String(b.dataset.settingsTab===tab));
+    form.querySelector('footer').hidden=tab==='delivery';
+  };
+  let connectionToken=0;
+  const connectionLabels={not_configured:'未配置',invalid_configuration:'连接配置无效',connected:'已连接 · 父笔记可读取',unauthorized:'连接未获授权，请检查服务配置',parent_missing:'目标父笔记不存在',unavailable:'连接不可用',invalid_response:'没有取得有效的笔记回执',timeout:'连接检查超时，可重试'};
+  const connectionState=(state,label)=>{const n=$('#readweave-connection-state');n.dataset.state=state;n.textContent=label;};
+  const renderDelivery=cap=>{
+    const target=cap.readweave_target||{};$('#readweave-instance').textContent=target.instance_url||'尚未配置';$('#readweave-parent').textContent=target.parent_note_id||'尚未配置';
+    const configured=Boolean(cap.readweave_configured);connectionState(configured?'configured':'not_configured',configured?'已配置 · 尚未检测连接':'未配置 · 成稿仍可保存在 SourceLoom');
+    $('#readweave-check-connection').disabled=!configured;
+    const link=$('#readweave-instance-open');link.hidden=true;link.removeAttribute('href');
+    try{const url=new URL(target.instance_url);if(['http:','https:'].includes(url.protocol)&&!url.username&&!url.password){link.href=url.href;link.hidden=false;}}catch{}
+  };
   $('#workbench-settings').onclick = () => {
     trigger = document.activeElement; draft = {...prefs,...workspace.config}; form.elements.theme.value = draft.theme; form.elements.density.value = draft.density;form.elements.leftView.value=draft.leftView;form.elements.hideLeft.checked=draft.hideLeft;form.elements.hideRight.checked=draft.hideRight;
-    form.querySelector('[type=submit]').disabled = true; message.textContent = ''; settings.showModal(); globalThis.WBSelect.enhance(settings);
+    form.querySelector('[type=submit]').disabled = true; message.textContent = '';renderDelivery(deps.capabilities?.()||{});selectSettingsTab('appearance');settings.showModal(); globalThis.WBSelect.enhance(settings);
+  };
+  document.addEventListener('workbench-settings-request',e=>{$('#workbench-settings').click();selectSettingsTab(e.detail?.tab||'appearance');});
+  $('#readweave-check-connection').onclick=async()=>{
+    const token=++connectionToken,b=$('#readweave-check-connection');b.disabled=true;connectionState('checking','正在检查连接');
+    try{const r=await deps.api('/api/processor/readweave-connection');if(token===connectionToken&&settings.open)connectionState(r.status,connectionLabels[r.status]||'连接状态未知');}
+    catch{if(token===connectionToken&&settings.open)connectionState('unavailable','连接检查未完成，请重试或重新登录');}
+    finally{if(token===connectionToken&&settings.open)b.disabled=!((deps.capabilities?.()||{}).readweave_configured);}
   };
   settings.querySelectorAll('[data-dismiss]').forEach(b => b.onclick = () => settings.close());
-  settings.addEventListener('close',()=>{draft=null;globalThis.WBSelect.close();trigger?.focus({preventScroll:true});});
+  settings.addEventListener('close',()=>{draft=null;++connectionToken;globalThis.WBSelect.close();trigger?.focus({preventScroll:true});});
   settings.querySelector('nav').onclick = e => {
     const tab = e.target.closest('[data-settings-tab]')?.dataset.settingsTab; if (!tab) return;
-    for (const p of settings.querySelectorAll('[data-settings-panel]')) p.hidden = p.dataset.settingsPanel !== tab;
-    for (const b of settings.querySelectorAll('[data-settings-tab]')) b.setAttribute('aria-current',String(b.dataset.settingsTab===tab));
+    selectSettingsTab(tab);
   };
   form.onchange = () => { draft = {...workspace.config,theme:form.elements.theme.value,density:form.elements.density.value,leftView:form.elements.leftView.value,hideLeft:form.elements.hideLeft.checked,hideRight:form.elements.hideRight.checked};form.querySelector('[type=submit]').disabled=false; };
   form.onsubmit = e => {
@@ -63,6 +85,7 @@ export function initializeDesign(deps) {
     try { localStorage.setItem(KEY, JSON.stringify(draft)); prefs = {theme:draft.theme,density:draft.density};workspace.configure(draft);apply(); settings.close(); }
     catch { message.textContent = '浏览器未能保存设置。当前阅读保留，请检查存储权限后重试。'; }
   };
+  installAccountDialog(deps);
   const palette = document.createElement('dialog'); palette.id = 'workbench-palette'; palette.setAttribute('aria-label','查找工作台操作');
   palette.innerHTML = '<label>查找操作<input type="search" placeholder="输入操作名称" autocomplete="off"></label><div class="command-results"></div><footer class="muted">Enter 执行 · Escape 关闭</footer>';
   document.body.append(palette);
@@ -97,6 +120,21 @@ export function initializeDesign(deps) {
   installTooltips();
   installMenus();
   return workspace;
+}
+
+function installAccountDialog(deps) {
+  const trigger=document.querySelector('#workbench-login'),dialog=document.createElement('dialog');let token=0;
+  dialog.id='workbench-account-dialog';dialog.className='workbench-settings';dialog.setAttribute('aria-labelledby','workbench-account-title');
+  dialog.innerHTML=`<header class="dialog-heading"><h2 id="workbench-account-title">账户与登录</h2><button type="button" data-dismiss aria-label="关闭账户窗口">${globalThis.WIcons('close')}</button></header><p id="workbench-account-state" role="status">正在检查会话</p><p class="muted">官网身份由统一登录页认证。SourceLoom 不在此窗口收集密码，也不会把本机访问当作官网登录。</p><div class="inline-actions"><a id="workbench-sign-in" class="button-link" href="/_aialra_auth/sign-in">登录或重新登录</a><button type="button" data-dismiss>返回阅读</button></div>`;
+  document.body.append(dialog);const state=dialog.querySelector('[role=status]'),link=dialog.querySelector('#workbench-sign-in');
+  dialog.querySelectorAll('[data-dismiss]').forEach(b=>b.onclick=()=>dialog.close());
+  dialog.addEventListener('close',()=>{++token;trigger.focus({preventScroll:true});});
+  trigger.onclick=async()=>{
+    const current=++token;state.textContent='正在检查会话';link.hidden=true;dialog.showModal();
+    try{const cap=await deps.api('/api/processor/capabilities');if(current!==token||!dialog.open)return;
+      const remote=cap.auth_mode==='proxy';state.textContent=remote?'当前官网登录会话有效':'当前为本机工作台，不需要账号登录；官网登录请使用正式站';link.hidden=!remote;
+    }catch{if(current===token&&dialog.open){state.textContent='未能确认会话，可通过官网登录页重新认证';link.hidden=location.hostname==='127.0.0.1'||location.hostname==='localhost';}}
+  };
 }
 
 function installMenus() {
