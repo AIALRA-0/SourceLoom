@@ -1,0 +1,36 @@
+sourceloom/static/processor_workbench.js
+  s_36a381ab4bccf9::t_a69b1a1248a9ec 5-6,17,33,35,89,95,170-171
+  s_36a381ab4bccf9::t_b46ed8a5b12ef1 18,36,94
+  s_36a381ab4bccf9::t_e8b9ba172be8d8 34
+  s_36a381ab4bccf9::t_48a56055893403 92
+sourceloom/static/processor_design.js
+  s_36a381ab4bccf9::t_304badc8f1ca59 153
+  s_36a381ab4bccf9::t_a69b1a1248a9ec 107
+sourceloom/static/processor_tree.css
+  s_36a381ab4bccf9::t_a69b1a1248a9ec 3
+docs/DESIGN.md
+  s_36a381ab4bccf9::t_48a56055893403 33,37
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_b46ed8a5b12ef1 15-16
+  s_36a381ab4bccf9::t_a69b1a1248a9ec 17-19,28-29,59,234
+sourceloom/static/processor_tree.js
+  s_36a381ab4bccf9::t_388d92167a44f9 28
+sourceloom/static/processor_workspace.css
+  s_36a381ab4bccf9::t_a69b1a1248a9ec 71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5976bb469e7f2d195d0005c0aaed542f381da20d",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
