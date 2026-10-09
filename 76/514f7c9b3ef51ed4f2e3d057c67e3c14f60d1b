@@ -1,0 +1,50 @@
+sourceloom/static/processor_workspace.css
+  s_36a381ab4bccf9::t_0cc34f1dede773 17,19-21,116,135-136
+sourceloom/processor_tree.py
+  s_36a381ab4bccf9::t_2825a0910dc816 144,150,189,227
+frontend/startup.test.js
+  s_36a381ab4bccf9::t_685a0a067f1599 19,34
+tests/test_processor_reading_toolbar.py
+  s_36a381ab4bccf9::t_d850cec9917798 59,62,65-71,73-78,80-81
+sourceloom/static/processor_tree.css
+  s_36a381ab4bccf9::t_2825a0910dc816 9,12
+sourceloom/static/processor.html
+  s_36a381ab4bccf9::t_0cc34f1dede773 26,34-36,57
+sourceloom/static/processor.js
+  s_36a381ab4bccf9::t_0cc34f1dede773 497-498,505,509,766-774,783-785,790
+sourceloom/static/processor_icons.js
+  s_36a381ab4bccf9::t_0cc34f1dede773 11
+sourceloom/static/processor_startup.js
+  s_36a381ab4bccf9::t_0cc34f1dede773 6-7
+tests/test_processor_tree.py
+  s_36a381ab4bccf9::t_30dea22898f829 29-45
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_0cc34f1dede773 2-7,53-55,105-112,185,191,195-196
+  s_36a381ab4bccf9::t_cbc3035ea7384e 197-201
+  s_36a381ab4bccf9::t_e965363bd13bcd 22
+  s_36a381ab4bccf9::t_2511f97c4f926b 113
+sourceloom/static/processor_tree.js
+  s_36a381ab4bccf9::t_2825a0910dc816 11,13,16,19,25,40-47
+sourceloom/static/processor_workbench.js
+  s_36a381ab4bccf9::t_2511f97c4f926b 71
+  s_36a381ab4bccf9::t_0cc34f1dede773 42,48-51,53,72-73,86,120-123,128-129,132-134
+  s_36a381ab4bccf9::t_94fd6a7c0fd8b2 130-131
+sourceloom/static/processor_design.js
+  s_36a381ab4bccf9::t_0cc34f1dede773 15,19,95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "76514f7c9b3ef51ed4f2e3d057c67e3c14f60d1b",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
