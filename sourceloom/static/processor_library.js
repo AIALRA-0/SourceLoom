@@ -1,4 +1,4 @@
-import {MaterialTree} from './processor_tree.js?v=startup-layout-20261003';
+import {MaterialTree} from './processor_tree.js?v=apcf-ui-20261009-1';
 const q=s=>document.querySelector(s);
 const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
 export class MaterialLibrary {
@@ -7,7 +7,7 @@ export class MaterialLibrary {
     const nav=q('.library-nav')||node('nav',undefined,'library-nav');nav.setAttribute('aria-label','材料空间');
     for(const [mode,label] of [['mine','我的材料'],['examples','示例库'],['archives','已归档'],['trash','回收站']]){const b=nav.querySelector(`[data-library-mode="${mode}"]`)||node('button',label);b.type='button';b.dataset.libraryMode=mode;b.disabled=false;b.onclick=()=>this.show(mode);if(!b.parentElement)nav.append(b);}
     if(!nav.isConnected)q('#material-search').closest('label').before(nav);
-    this.view=node('section',undefined,'library-view');this.view.id='library-view';this.view.hidden=true;q('main').append(this.view);
+    this.view=node('section',undefined,'library-view');this.view.id='library-view';this.view.hidden=true;q('#main-content').append(this.view);
     this.trial=node('button','试用副本');this.trial.id='sample-trial';this.trial.type='button';this.trial.hidden=true;q('#reading-document-bar').insertBefore(this.trial,q('#toggle-editor'));
     this.trial.onclick=()=>this.trySample(this.deps.current()?.id);
     this.archive=node('button','移入归档');this.archive.type='button';this.archive.id='archive-material';this.archive.onclick=()=>this.archiveCurrent();q('#reading-document-bar>.tool-menu:last-child .menu-panel').append(this.archive);

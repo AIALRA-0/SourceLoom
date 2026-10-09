@@ -8,24 +8,24 @@ const early=fs.readFileSync(new URL('../sourceloom/static/processor_startup.js',
 function prepaint(value,{mobile=false,denyStorage=false}={}){
   const styles={},classes=new Set(),events={};
   const status={hidden:false,role:'status',message:{textContent:''},querySelector(){return this.message;},setAttribute(k,v){if(k==='role')this.role=v;}};
-  const context={localStorage:{getItem(){if(denyStorage)throw Error('storage disabled');return value;}},matchMedia:()=>({matches:!mobile}),document:{documentElement:{style:{setProperty(k,v){styles[k]=v;}}},body:{classList:{add(c){classes.add(c);}}},getElementById(id){return id==='processor-entry'?{addEventListener(k,fn){events[k]=fn;}}:status;}}};
-  vm.runInNewContext(early,context);return {width:styles['--material-tree-width']||'250px',classes,events,status};
+  const context={localStorage:{getItem(key){if(denyStorage)throw Error('storage disabled');return key==='sourceloom-workspace-layout/1'?null:value;}},matchMedia:()=>({matches:!mobile}),document:{documentElement:{dataset:{},style:{setProperty(k,v){styles[k]=v;}}},body:{classList:{add(c){classes.add(c);}}},getElementById(id){return id==='processor-entry'?{addEventListener(k,fn){events[k]=fn;}}:status;}}};
+  vm.runInNewContext(early,context);return {width:styles['--workspace-left-width']||'256px',classes,events,status};
 }
 test('stable shell and empty-state decision exist before module execution',()=>{
   assert.ok(early);assert.match(html,/<section id="empty" class="empty" hidden>/);
   assert.match(html,/<link id="processor-tree-styles"[^>]*rel="stylesheet"/);
   assert.match(html,/<section id="startup-status"[^>]*role="status"/);
-  assert.equal((html.match(/class="library-nav"/g)||[]).length,1);
+  assert.equal((html.match(/class="library-nav activity-rail"/g)||[]).length,1);
   assert.equal((html.match(/class="tree-tools"/g)||[]).length,1);
 });
-for(const [name,value,width] of [['missing',null,'250px'],['saved',JSON.stringify({width:340}),'340px'],['upper bound',JSON.stringify({width:900}),'460px'],['lower bound',JSON.stringify({width:100}),'200px'],['corrupt','not-json','250px'],['non numeric',JSON.stringify({width:'oops'}),'250px']]){
+for(const [name,value,width] of [['missing',null,'256px'],['saved',JSON.stringify({width:340}),'340px'],['upper bound',JSON.stringify({width:900}),'400px'],['lower bound',JSON.stringify({width:100}),'216px'],['corrupt','not-json','256px'],['non numeric',JSON.stringify({width:'oops'}),'256px']]){
   test('prepaint geometry: '+name,()=>assert.equal(prepaint(value).width,width));
 }
-test('desktop collapsed preference does not hide mobile navigation',()=>{
-  assert.ok(prepaint('{"collapsed":true}').classes.has('sidebar-collapsed'));
+test('template startup does not restore the removed sidebar class',()=>{
+  assert.equal(prepaint('{"collapsed":true}').classes.has('sidebar-collapsed'),false);
   assert.equal(prepaint('{"collapsed":true}',{mobile:true}).classes.has('sidebar-collapsed'),false);
 });
-test('unavailable preference storage leaves a usable shell',()=>assert.equal(prepaint(null,{denyStorage:true}).width,'250px'));
+test('unavailable preference storage leaves a usable shell',()=>assert.equal(prepaint(null,{denyStorage:true}).width,'256px'));
 test('entry module error has explicit failure text and not false empty state',()=>{
   const state=prepaint(null);state.events.error();assert.equal(state.status.role,'alert');assert.match(state.status.message.textContent,/未能加载/);
 });

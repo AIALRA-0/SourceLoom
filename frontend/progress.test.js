@@ -41,7 +41,8 @@ test('current document and reading controls share layout rules within their scop
   const styles = readFileSync(new URL('../sourceloom/static/processor_workbench.css', import.meta.url), 'utf8');
   assert.match(styles, /\.document-bar\s*\{[^}]*display:flex;[^}]*align-items:center/s);
   assert.match(styles, /\.pane-toolbar\s*\{[^}]*height:48px;[^}]*display:flex;[^}]*align-items:center/s);
-  assert.match(source, /e\.key==='Escape'[^]*?\.tool-menu\[open\][^]*?d\.open=false/);
+  const sharedMenus=readFileSync(new URL('../sourceloom/static/processor_design.js',import.meta.url),'utf8');
+  assert.match(sharedMenus,/e\.key!=='Escape'[^]*?\.tool-menu\[open\][^]*?last\.open=false/);
   assert.match(source, /ArrowLeft[^]*?ArrowRight[^]*?Home[^]*?End[^]*?\.focus\(\)/);
 });
 

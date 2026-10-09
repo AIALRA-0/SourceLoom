@@ -1,0 +1,43 @@
+/* Original 24 × 24 line icons. One grid, one stroke, no emoji or icon font. */
+(function(g){
+const paths={
+ workspace:'<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 3v18M8 8h13"/>',
+ files:'<rect x="7" y="7" width="13" height="14" rx="2"/><path d="M16 7V3H3v14h4"/>',
+ file:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
+ folder:'<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+ folderOpen:'<path d="M3 9V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2M3 10h19l-3 11H5Z"/>',
+ search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
+ trash:'<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
+ settings:'<path d="M4 6h16M4 12h16M4 18h16"/><rect x="7" y="3" width="4" height="6" rx="1"/><rect x="14" y="9" width="4" height="6" rx="1"/><rect x="8" y="15" width="4" height="6" rx="1"/>',
+ components:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+ help:'<circle cx="12" cy="12" r="9"/><path d="M9.5 8.7a2.5 2.5 0 1 1 3.8 2.1c-1.3.7-1.3 1.2-1.3 2.2M12 17h.01"/>',
+ plus:'<path d="M12 4v16M4 12h16"/>', minus:'<path d="M4 12h16"/>',
+ more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+ close:'<path d="m6 6 12 12M6 18 18 6"/>', right:'<path d="m9 5 7 7-7 7"/>', down:'<path d="m5 9 7 7 7-7"/>',
+ leftPanel:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>', rightPanel:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+ grip:'<circle cx="9" cy="5" r=".5"/><circle cx="15" cy="5" r=".5"/><circle cx="9" cy="12" r=".5"/><circle cx="15" cy="12" r=".5"/><circle cx="9" cy="19" r=".5"/><circle cx="15" cy="19" r=".5"/>',
+ swap:'<path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/>',
+ collapse:'<path d="m8 3 4 4 4-4M8 21l4-4 4 4M4 12h16"/>',
+ sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1 1M18 18l1 1M5 19l1-1M18 6l1-1"/>',
+ moon:'<path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10Z"/>',
+ edit:'<path d="m15 4 5 5M4 20l1-6L16 3a2 2 0 0 1 3 0l2 2a2 2 0 0 1 0 3L10 19Z"/>',
+ eye:'<path d="M2 12S6 5 12 5s10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+ save:'<path d="M4 3h13l4 4v14H3V3Z"/><path d="M7 3v6h10V3M7 21v-8h10v8"/>',
+ table:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>',
+ graph:'<rect x="2" y="8" width="6" height="8" rx="2"/><rect x="16" y="2" width="6" height="8" rx="2"/><rect x="16" y="14" width="6" height="8" rx="2"/><path d="M8 12h4V6h4M12 12v6h4"/>',
+ check:'<path d="m5 12 4 4L19 6"/>', copy:'<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+ cut:'<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="m9 8 12 12M9 16 12 12m3-3 6-6"/>',
+ paste:'<rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="2" width="6" height="6" rx="1"/>',
+ restore:'<path d="M3 10a9 9 0 1 1 1 8M3 4v6h6M12 7v5l3 2"/>',
+ move:'<path d="M12 3v18M3 12h18m-12-6 3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3"/>',
+ download:'<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>', upload:'<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
+ history:'<path d="M3 10a9 9 0 1 1 2 8M3 4v6h6M12 7v5l3 2"/>',
+ info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',
+ warning:'<path d="M12 3 2 21h20ZM12 9v5M12 18h.01"/>',
+ arrow:'<path d="M4 12h16m-6-6 6 6-6 6"/>',
+ fit:'<path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/>',
+ link:'<path d="m10 13 4-4M8 16l-2 2a4 4 0 0 1-5-5l5-5a4 4 0 0 1 5 0m2 8a4 4 0 0 0 5 0l5-5a4 4 0 0 0-5-5l-2 2"/>',
+ command:'<path d="M8 8h8v8H8ZM8 8H5a3 3 0 1 1 3-3Zm8 0V5a3 3 0 1 1 3 3Zm0 8h3a3 3 0 1 1-3 3Zm-8 0v3a3 3 0 1 1-3-3Z"/>'
+};
+g.WIcons=(name,cls='')=>`<svg class="icon ${cls}" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]||paths.file}</svg>`;
+})(globalThis);

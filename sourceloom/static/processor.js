@@ -1,6 +1,7 @@
-import { MaterialLibrary } from './processor_library.js?v=startup-layout-20261003';
+import { initializeDesign } from './processor_design.js?v=apcf-ui-20261009-1';
+import { MaterialLibrary } from './processor_library.js?v=apcf-ui-20261009-1';
 import { LinkedReader } from './processor_reader.js?v=non-generation-baseline-20261002';
-import { ReadingWorkbench } from './processor_workbench.js?v=official-golive-20261002';
+import { ReadingWorkbench } from './processor_workbench.js?v=apcf-ui-20261009-1';
 import { IssueDrawer } from './processor_issues.js?v=official-golive-20261002';
 import { ManualHandoff } from './processor_manual_handoff.js?v=manual-handoff-20261001';
 import { webChannels, webGenerationChannel } from './processor_web_channels.js?v=web-only-20261003';
@@ -15,6 +16,7 @@ let actionStarted = 0, actionTicker = null, currentOperation = '', readweaveURL 
 let preparationPoll = null;
 let versionEpoch=0, versionSelectionEpoch=0;
 let openingProjectId=null;
+let templateWorkspace=null;
 let openRead=null;
 let issueApplying=false;
 const actionTrace = [];
@@ -514,7 +516,7 @@ async function open(id, initialTab = null) {
   if(epoch!==openEpoch || project?.id!==id)return;
   const local = localStorage.getItem(`sourceloom-processor-edit:${id}`);
   if (local && local !== $('#result-markdown').value) {setMarkdown(local,true); notice('已恢复这份材料在本机未保存的编辑；保存后会成为一个新版本');}
-  schedulePoll();library.selected();
+  schedulePoll();library.selected();templateWorkspace?.opened(project);
 }
 function sourcePresentationKey(value) {
   const state=value?.processor||{};
@@ -525,7 +527,7 @@ function sourcePresentationKey(value) {
 function render({source=true}={}) {
   $('#material-title').textContent = project.library?.display_name || project.title;
   $('#material-title').title=project.library?.display_name || project.title;$('#material-title').tabIndex=0;
-  $('#breadcrumb').textContent = `材料工作台 / ${project.title}`;
+  $('#breadcrumb').textContent = project.library?.path ? `材料工作台 / ${project.library.path}` : '材料工作台';
   const pages = processor().page_count || project.inventory?.page_count;
   $('#material-summary').textContent = [pages ? `${pages} 页` : null, `${items(pack?.resources || processor().resources).length} 项资源`, `${versions().length} 个成稿版本`].filter(Boolean).join(' · ');
   $('#document-status').textContent = documentStatus(); $('#document-status').classList.toggle('warning', requests().some(isUnknown));
@@ -595,7 +597,6 @@ function showImport() {$('#import-form').reset(); $('#import-status').textConten
 $('#new-material').addEventListener('click',showImport); $('#empty-import').addEventListener('click',showImport); $('#open-import').addEventListener('click',showImport);
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click',()=>button.closest('dialog').close());
 for (const button of document.querySelectorAll('[data-tab],[data-go]')) button.addEventListener('click',()=>showTab(button.dataset.tab || button.dataset.go));
-$('#sidebar-toggle').addEventListener('click',()=>workbench.toggleSidebar());
 $('#refresh').addEventListener('click',protect(async()=>{operation('正在刷新材料与任务状态');await refreshProjects(); await refreshCurrent();await loadReadweaveStatus();operationDone('材料与任务状态已更新');}));
 $('#mode-manual').addEventListener('click',()=>setMode('manual'));
 $('#mode-automatic').addEventListener('click',()=>setMode('automatic'));
@@ -747,6 +748,7 @@ $('#representation-form').addEventListener('submit',protect(async event=>{
   }finally{setLocked(false);}
 }));
 window.addEventListener('beforeunload',event=>{if (dirty) {event.preventDefault(); event.returnValue = '';}});
+templateWorkspace=initializeDesign({library,reader,current:()=>project,isDirty:()=>dirty,open:id=>library.open(id),showTab:()=>showTab(currentTab),notify:notice,api,list:()=>projects});
 async function boot() {
   const librarySpace=new URLSearchParams(location.search).get('space');
   const requestedTab=new URLSearchParams(location.search).get('tab');

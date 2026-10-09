@@ -3,34 +3,48 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SourceLoom · 材料工作台</title>
-  <link rel="stylesheet" href="/static/processor.css?v=visual-unification-20260930">
-  <link rel="stylesheet" href="/static/processor_workbench.css?v=startup-layout-20261003">
-  <link rel="stylesheet" href="/static/processor_issues.css?v=official-golive-20261002">
-  <link id="processor-tree-styles" rel="stylesheet" href="/static/processor_tree.css?v=startup-layout-20261003">
-  <link rel="preload" as="script" href="/static/processor_startup.js?v=startup-layout-20261003">
-  <link rel="modulepreload" href="/static/processor_library.js?v=startup-layout-20261003">
-  <script id="processor-entry" type="module" src="/static/processor.js?v=startup-layout-20261003"></script>
+  <link rel="stylesheet" href="/static/processor_tokens.css?v=apcf-ui-20261009-1">
+  <link rel="stylesheet" href="/static/processor.css?v=apcf-ui-20261009-1">
+  <link rel="stylesheet" href="/static/processor_workbench.css?v=apcf-ui-20261009-1">
+  <link rel="stylesheet" href="/static/processor_workspace.css?v=apcf-ui-20261009-1">
+  <link rel="stylesheet" href="/static/processor_issues.css?v=apcf-ui-20261009-1">
+  <link id="processor-tree-styles" rel="stylesheet" href="/static/processor_tree.css?v=apcf-ui-20261009-1">
+  <link rel="preload" as="script" href="/static/processor_startup.js?v=apcf-ui-20261009-1">
+  <link rel="modulepreload" href="/static/processor_library.js?v=apcf-ui-20261009-1">
+  <script id="processor-entry" type="module" src="/static/processor.js?v=apcf-ui-20261009-1"></script>
 </head>
 <body class="reader-product">
-  <script src="/static/processor_startup.js?v=startup-layout-20261003"></script>
-  <div class="app-shell">
-    <aside class="sidebar" id="sidebar">
-      <a class="brand" href="/">SourceLoom<span>把材料整理好，开始阅读</span></a>
-      <button class="primary" id="new-material">＋ 导入材料</button>
-      <nav class="library-nav" aria-label="材料空间">
+  <script src="/static/processor_startup.js?v=apcf-ui-20261009-1"></script>
+  <div id="app">
+    <header class="workbench-topbar">
+      <a class="workspace-brand" href="/"><strong>SourceLoom</strong><span>材料工作台</span></a>
+      <button id="workbench-command" class="command-trigger" type="button" aria-haspopup="dialog"><span>查找材料与操作</span><kbd>Ctrl K</kbd></button>
+      <div class="workbench-top-actions"><button id="workbench-sidebar" class="tool-icon" type="button" aria-label="显示或收起左面板"></button><button id="workbench-inspector" class="tool-icon" type="button" aria-label="显示或收起右面板"></button><button id="workbench-settings" class="tool-icon" type="button" aria-label="工作台设置"></button></div>
+    </header>
+    <div class="work-area">
+      <nav class="library-nav activity-rail" aria-label="工作台空间">
         <button type="button" data-library-mode="mine" aria-current="true" disabled>我的材料</button>
         <button type="button" data-library-mode="examples" disabled>示例库</button>
         <button type="button" data-library-mode="archives" disabled>已归档</button>
         <button type="button" data-library-mode="trash" disabled>回收站</button>
       </nav>
+      <div class="layout" id="layout">
+      <div class="slot" id="left-slot"><div class="drop-target" aria-hidden="true">移至左侧</div>
+    <aside class="sidebar pane" id="sidebar" data-view="explorer">
+
+      <header class="pane-head"><strong>材料</strong><div class="pane-actions"><button class="tool-icon" type="button" data-panel-swap="explorer" aria-label="交换材料面板位置"></button><button class="tool-icon" type="button" data-panel-hide="explorer" aria-label="收起材料面板"></button></div></header>
+      <button class="primary" id="new-material">＋ 导入材料</button>
       <label class="search"><span class="sr-only">搜索材料</span><input id="material-search" type="search" placeholder="搜索材料"></label>
       <div class="tree-tools"><button type="button" disabled>新建文件夹</button><button type="button" disabled>折叠全部</button><button type="button" disabled>排序</button></div>
       <div class="tree-status" role="status"></div>
       <nav id="material-list" class="material-tree" aria-label="已保存材料"><p class="muted">正在连接工作台…</p></nav>
       <div class="sidebar-footer"><p>原件与历史版本独立保存</p></div>
-    </aside>
-    <main>
-      <header class="topbar"><button id="sidebar-toggle" class="icon mobile-only" aria-label="显示材料列表">☰</button><span id="breadcrumb">材料工作台</span><button id="refresh" class="icon" aria-label="刷新材料">↻</button></header>
+    </aside></div>
+      <div class="splitter" id="split-left" tabindex="0" role="separator" aria-orientation="vertical" aria-label="左面板宽度"></div>
+      <main class="main-pane" id="main-pane">
+      <div class="tabs-bar"><div class="tabs" id="document-tabs" role="tablist" aria-label="已打开材料"></div><button type="button" id="tab-import" class="tool-icon" aria-label="导入并打开材料">＋</button></div>
+      <div class="main-toolbar" id="content-toolbar"><nav id="breadcrumb" aria-label="材料路径">材料工作台</nav><div class="view-tools" id="view-tools"></div><button id="sidebar-toggle" class="tool-icon" aria-label="显示材料列表"></button><button id="refresh" class="tool-icon" aria-label="刷新材料">↻</button></div>
+      <div class="main-content" id="main-content" tabindex="-1">
       <div id="acceptance-banner" class="acceptance-banner" role="status" hidden>开发验收环境 · 本页材料和回执仅用于测试</div>
       <div id="notice" role="status" aria-live="polite" hidden></div>
       <div id="operation-status" class="operation-status" role="status" aria-live="polite" hidden><span class="activity-mark" aria-hidden="true"></span><span id="operation-message"></span><span id="operation-elapsed" class="muted"></span></div>
@@ -69,8 +83,20 @@
           <section class="card history"><h3>模型交接记录</h3><p class="muted">手动导回和新请求分别记录，未决请求不会被清除</p><div id="request-history"></div></section>
         </section>
       </section>
-    </main>
+      </div>
+      <footer class="main-foot"><span id="workspace-save-state">尚未打开材料</span><span id="workspace-main-meta"></span></footer>
+      </main>
+      <div class="splitter" id="split-right" tabindex="0" role="separator" aria-orientation="vertical" aria-label="右面板宽度"></div>
+      <div class="slot" id="right-slot"><div class="drop-target" aria-hidden="true">移至右侧</div><aside class="pane" id="workbench-inspector-panel" data-view="inspector">
+        <header class="pane-head"><strong>检查器</strong><div class="pane-actions"><button class="tool-icon" type="button" data-panel-swap="inspector" aria-label="交换检查器位置"></button><button class="tool-icon" type="button" data-panel-hide="inspector" aria-label="收起检查器"></button></div></header>
+        <nav class="inspector-tabs" aria-label="检查器视图"><button type="button" data-inspector-tab="properties" aria-selected="true">属性</button><button type="button" data-inspector-tab="versions" aria-selected="false">版本</button></nav>
+        <div class="inspector-content"><section id="inspector-properties"></section><section id="inspector-versions" hidden></section></div><footer class="panel-foot">原件与历史版本独立保存</footer>
+      </aside></div>
+      </div>
+    </div>
+    <footer class="statusbar"><span id="workspace-space-state">我的材料</span><span id="workspace-selection-state">尚未选择材料</span></footer>
   </div>
+  <dialog id="panel-drawer" class="panel-drawer" aria-label="工作台面板"></dialog>
   <dialog id="import-dialog"><form id="import-form"><div class="dialog-heading"><h2>导入一份材料</h2><button type="button" data-close class="icon" aria-label="关闭">×</button></div><label>材料名称<input name="title" required maxlength="180" placeholder="例如：一篇带图论文"></label><label>原始文件<input name="files" type="file" multiple accept=".pdf,.docx,.md,.markdown,.txt,.rst,.html,.htm,.zip,.png,.jpg,.jpeg,.webp,.gif"></label><p class="muted">正文与配图可一起上传；原始文件会完整保留</p><label>或使用网页地址<input name="url" type="url" placeholder="https://"></label><label>阅读偏好<textarea name="preferences" rows="3">忠实、完整地改写为自然中文，保持作者立场、数字、条件和不确定性；必要时解释，不扩成课程</textarea></label><div class="dialog-actions"><button type="button" data-close>取消</button><button type="submit" class="primary">保存并准备材料</button></div><p id="import-status" role="status" class="muted"></p></form></dialog>
   <div id="issues-host" class="issue-drawer"></div>
   <dialog id="image-dialog"><div class="dialog-heading"><h2 id="image-dialog-title">查看原始资源</h2><button type="button" data-close class="icon" aria-label="关闭">×</button></div><img id="image-dialog-image" alt="" class="image-large"><p id="image-dialog-caption" class="muted"></p></dialog>

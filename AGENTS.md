@@ -1,6 +1,8 @@
 # SourceLoom 开发协作约定
 
-执行 Agent 给用户的阶段回报、验收与交付，遵守 [执行回报规范](docs/EXECUTOR_REPORTING_RULES.md)：简短 BP 加五步验收，完整技术证据另存文件。该规范只约束工程回报，不得进入文章 Prompt、模型任务包、格式语义、用户正文或外部 Skill。
+执行 Agent 每轮开始、上下文恢复、作用域变化与最终收口前，重新读取本文件及实际适用的子目录规则，并遵守 [执行回报规范](docs/EXECUTOR_REPORTING_RULES.md) 与 [APCF 工程回报适配](docs/APCF_REPORTING_ADAPTER.md)。正式交付采用 APCF 的十区块报告，完整执行目标与当前验收逐项展示；简短 BP 和五步验收只用于帮助理解，不代替正式合同。该规范只约束工程回报，不得进入文章 Prompt、模型任务包、格式语义、用户正文或外部 Skill。
+
+先确认当前实际工作树的 APCF 入口与安装状态。VPS 发布目录安装过框架，不代表本地检出自动安装或加载了同一规则；没有原生 IT/TR、Routing Receipt、Gate 或 Finalize 时必须如实说明，不把项目报告适配冒充原生生命周期通过。当前用户明确更正高于历史模板；机器验收账本保持 v2，用户报告按最新要求逐条写成完整自然语句，具体覆盖与冲突处理见适配文档。
 
 当前产品与启动入口见 [README](README.md)，远程运行只以 [生产部署说明](deploy/README.md) 为准。新材料使用处理器；历史生成 Worker 不是默认服务。
 
