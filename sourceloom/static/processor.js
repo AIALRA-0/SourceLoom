@@ -491,7 +491,7 @@ async function open(id, initialTab = null) {
   for(const id of ['source-viewer','compare-source-viewer']) {$('#'+id).replaceChildren();$('#'+id).dataset.sourceKey='';}
   openRead?.abort();openRead=new AbortController();
   clearTimeout(pollTimer); const epoch = ++openEpoch;openingProjectId=id;
-  const startup=$('#startup-status');startup.hidden=false;startup.setAttribute('role','status');startup.querySelector('a').hidden=true;startup.querySelector('.loading-heading span:last-child').textContent='正在读取这份材料';
+  const startup=$('#startup-status');startup.hidden=false;startup.setAttribute('role','status');startup.querySelector('a').hidden=true;startup.querySelector('.loading-heading span:last-child').textContent='正在读取材料';
   $('#workspace').hidden=true;$('#empty').hidden=true;$('#content-toolbar').inert=true;
   let next;
   try{

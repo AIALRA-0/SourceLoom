@@ -10,8 +10,8 @@ export class MaterialLibrary {
     this.view=node('section',undefined,'library-view');this.view.id='library-view';this.view.hidden=true;q('#main-content').append(this.view);
     this.trial=node('button','试用副本');this.trial.id='sample-trial';this.trial.type='button';this.trial.hidden=true;q('#reading-document-bar').insertBefore(this.trial,q('#document-menu'));
     this.trial.onclick=()=>this.trySample(this.deps.current()?.id);
-    this.archive=node('button','移入归档');this.archive.type='button';this.archive.id='archive-material';this.archive.onclick=()=>this.archiveCurrent();q('#reading-document-bar>.tool-menu:last-child .menu-panel').append(this.archive);
-    this.tree=new MaterialTree({...this.deps,open:id=>this.open(id),restoreArchive:id=>this.restore(id),tryExample:id=>this.trySample(id),metadataChanged:r=>this.metadataChanged(r)});
+
+    this.tree=new MaterialTree({...this.deps,open:id=>this.open(id),restoreArchive:id=>this.restore(id),archiveMaterial:id=>this.archive(id),tryExample:id=>this.trySample(id),metadataChanged:r=>this.metadataChanged(r)});
     this.setNav('mine');
   }
   setNav(mode){this.mode=mode;for(const b of q('.library-nav').children)b.setAttribute('aria-current',String(b.dataset.libraryMode===mode));}
@@ -43,7 +43,7 @@ export class MaterialLibrary {
   }
   async open(id){const epoch=++this.epoch;this.view.hidden=true;await this.deps.open(id);if(epoch!==this.epoch)return;const current=this.deps.current();q('#workspace').hidden=!current;q('#empty').hidden=!!current;if(current)this.deps.tab();this.selected();}
   selected(){
-    const p=this.deps.current(),trashed=p?.trashed===true||p?.library?.trashed===true||this.tree?.getNode(p?.id)?.trashed===true,example=p?.library?.readonly===true&&!trashed;const readonly=example||trashed;this.tree?.syncCurrent();this.trial.hidden=!example;this.archive.hidden=readonly;const space=trashed?'trash':example?'examples':p?.library?.archived?'archive':'mine';if(this.view.hidden){this.setNav(space==='archive'?'archives':space);if(this.tree.mode!==space)void this.tree.showMode(space);}
+    const p=this.deps.current(),trashed=p?.trashed===true||p?.library?.trashed===true||this.tree?.getNode(p?.id)?.trashed===true,example=p?.library?.readonly===true&&!trashed;const readonly=example||trashed;this.tree?.syncCurrent();this.trial.hidden=!example;const space=trashed?'trash':example?'examples':p?.library?.archived?'archive':'mine';if(this.view.hidden){this.setNav(space==='archive'?'archives':space);if(this.tree.mode!==space)void this.tree.showMode(space);}
     const baseline=example&&p.library.content_kind==='source_baseline';
     const paneTitle=q('.draft-toolbar .pane-title');if(paneTitle)paneTitle.textContent=baseline?'原文与处置基线':'成稿';
     q('#result-preview').title=baseline?'原文与处置基线预览':'图文成稿预览';
@@ -57,8 +57,9 @@ export class MaterialLibrary {
   async placeImported(project){const parent=this.tree.importParent;this.tree.importParent=null;if(!parent)return;await this.tree.refresh();const n=this.tree.getNode(project.id);if(!n)throw Error('新材料尚未出现在目录，请从根目录使用“移动到”');this.tree.selected=new Set([n.id]);await this.tree.perform('move',{parent_id:parent});}
   metadataChanged(response){const p=this.deps.current();if(!p)return;const nodes=response.nodes||response.items||response.changed||[];const n=Array.isArray(nodes)?nodes.find(n=>n.id===p.id):null;const fresh=n||this.tree.getNode(p.id);const affected=response.affected_ids?.includes(p.id);if(affected&&['trash','restore'].includes(response.action)){p.library=p.library||{};p.trashed=response.action==='trash';p.library.trashed=p.trashed;p.library.readonly=p.library.trashed;}const titleValue=affected&&response.action==='rename'?response.title:fresh?.title;if(titleValue){p.library=p.library||{};p.library.display_name=titleValue;const title=q('#material-title');if(title)title.textContent=titleValue;}if(fresh&&'trashed' in fresh){p.library=p.library||{};p.library.trashed=fresh.trashed;p.library.readonly=fresh.trashed||p.library.space==='examples';}this.deps.metadataChanged?.(response);this.selected();}
   async trySample(id){const b=this.trial;b.disabled=true;try{const p=await this.deps.post(`/api/processor/examples/${encodeURIComponent(id)}/trial`);await this.deps.refresh();await this.open(p.id||p.project?.id);}catch(e){this.deps.notify(e.message,true);}finally{b.disabled=false;}}
-  async archiveCurrent(){if(this.deps.isDirty()){this.deps.notify('先保存编辑再归档',true);return;}const p=this.deps.current();if(!p||p.library?.readonly)return;
+  async archive(id){if(this.deps.isDirty()){this.deps.notify('先保存编辑再归档',true);return;}const current=this.deps.current(),n=this.tree.getNode(id);if(!n||n.kind!=='material'||this.tree.mode!=='mine'||(current?.id===id&&current.library?.readonly))return;
     if(!confirm('移入可恢复归档？原件、正文和历史版本都会保留。'))return;
-    try{await this.deps.post(`/api/processor/projects/${encodeURIComponent(p.id)}/archive`);await this.deps.refresh();await this.show('archives');}catch(e){this.deps.notify(e.message,true);}}
+    try{await this.deps.post(`/api/processor/projects/${encodeURIComponent(id)}/archive`);if(current?.id===id){await this.deps.refresh();await this.show('archives');}else await this.tree.refresh();this.deps.notify('材料已移入可恢复归档');}catch(e){this.deps.notify(e.message,true);}}
+
   async restore(id){try{await this.deps.post(`/api/processor/projects/${encodeURIComponent(id)}/restore`);await this.deps.refresh();await this.show('archives');this.deps.notify('材料已恢复到我的材料');}catch(e){this.deps.notify(e.message,true);}}
 }

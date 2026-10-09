@@ -8,7 +8,7 @@ const icons = {
   free:'M3 3l18 18M8 16l-1 1a4 4 0 0 1-6-6l3-3m9-1 1-1a4 4 0 0 1 6 6l-3 3',
   focus:'M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5',
   rotate:'M4 10a8 8 0 1 1 2 9M4 3v7h7', edit:'M4 16l12-12 4 4-12 12H4v-4', save:'M4 3h13l3 3v15H4zM8 3v6h8V3M8 21v-7h8v7', more:'M5 12h.01M12 12h.01M19 12h.01',
-  copy:'M9 9h11v12H9zM15 9V3H3v12h6', thumbs:'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
+  copy:'M9 9h11v12H9zM15 9V3H3v12h6', chapters:'M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01', thumbs:'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
   download:'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5', hand:'M7 12V7a1.5 1.5 0 0 1 3 0v4-7a1.5 1.5 0 0 1 3 0v7-6a1.5 1.5 0 0 1 3 0v7-4a1.5 1.5 0 0 1 3 0v7c0 5-2 7-6 7H9l-5-6a2 2 0 0 1 3-2l2 2',
 };
 function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text)n.textContent=text;return n;}
@@ -78,18 +78,20 @@ export class ReadingWorkbench {
     find.p.innerHTML='<label>在原件中查找<input id="pdf-search" type="search" placeholder="输入原文文字"></label><div class="inline-actions"><button id="pdf-search-prev" type="button">上一处</button><button id="pdf-search-next" type="button">下一处</button><output id="pdf-search-count" role="status">等待原件载入</output></div>';
     const draftFind=menu('查找');icon(draftFind.d.querySelector('summary'),'search','查找成稿');const label=el('label','','在成稿中查找');label.append(nodes['reader-search']);draftFind.p.append(label,nodes['reader-search-next']);
     const zoom=el('div','tool-group pdf-zoom-group');zoom.innerHTML='<button id="pdf-zoom-minus" type="button" aria-label="缩小原件" title="缩小原件">−</button><select id="pdf-zoom-mode" aria-label="原件缩放"><option value="width">适合宽度</option><option value="page">整页适合</option><option value="0.25">25%</option><option value="0.5">50%</option><option value="1">100%</option><option value="2">200%</option><option value="4">400%</option></select><button id="pdf-zoom-plus" type="button" aria-label="放大原件" title="放大原件">＋</button>';
-    const aa=menu('Aa');aa.d.querySelector('summary').setAttribute('aria-label','成稿排版设置');for(const [id,text] of [['reading-size','字号'],['reading-line-height','行距']]){const l=el('label','',text);l.append(nodes[id]);aa.p.append(l);}aa.p.innerHTML+='<label>正文行宽<select id="reading-width"><option value="full">填满面板</option><option value="measure">适中</option></select></label>';
-    // innerHTML above would destroy moved control listeners: restore the original nodes.
-    for(const id of ['reading-size','reading-line-height']){const clone=aa.p.querySelector('#'+id);clone.replaceWith(nodes[id]);}
-    const scaleLabel=el('label','','预览缩放');
+    const aa=menu('Aa');aa.d.querySelector('summary').setAttribute('aria-label','成稿排版设置');
+    const line=el('label','','行距');line.append(nodes['reading-line-height']);aa.p.append(line);
+    const width=el('label','','正文行宽');width.innerHTML+='<select id="reading-width" aria-label="正文行宽"><option value="full">填满面板</option><option value="measure">适中</option></select>';aa.p.append(width);aa.d.id='reading-settings';
+    const font=el('div','tool-group draft-font-group');font.dataset.toolLabel='字号';nodes['reading-size'].setAttribute('aria-label','成稿字号');font.append(nodes['reading-size']);
     const scale=el('div','tool-group draft-zoom-group');scale.innerHTML='<button id="draft-zoom-minus" type="button" aria-label="缩小成稿预览" data-tooltip="缩小成稿预览">−</button><select id="draft-zoom" aria-label="成稿预览缩放"><option value="0.5">50%</option><option value="0.75">75%</option><option value="1" selected>100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select><button id="draft-zoom-plus" type="button" aria-label="放大成稿预览" data-tooltip="放大成稿预览">＋</button>';
-    scaleLabel.append(scale);aa.p.append(scaleLabel);
-    const nav=el('details','reader-options tool-menu');nav.append(el('summary','','定位'));const np=el('div','menu-panel');nav.append(np);np.append(nodes['reader-toc'],nodes['reader-pair'],nodes['reader-independent'],el('p','muted','配对只保存本机阅读位置，不改正文'));
-    aa.p.append(el('hr'),el('strong','','阅读定位'),...np.childNodes);aa.d.id='reading-settings';
+    scale.dataset.toolLabel='预览缩放';
+    const nav=menu('章节');nav.d.classList.add('chapter-navigation');icon(nav.d.querySelector('summary'),'chapters','成稿章节','章节');nodes['reader-toc'].setAttribute('aria-label','选择成稿章节');nav.p.append(nodes['reader-toc']);
+    const pair=icon(nodes['reader-pair'],'link','配对当前两处：只保存本机阅读位置','配对当前两处');pair.classList.add('reader-location-action');
+    const independent=icon(nodes['reader-independent'],'history','返回上次独立位置','返回独立位置');independent.classList.add('reader-location-action');
     const focus=menu('专注');icon(focus.d.querySelector('summary'),'focus','专注与全屏阅读');focus.p.append(button('focus-source','focus','专注原件','原件'),icon(q('#focus-reading'),'focus','专注成稿','成稿'),button('reader-fullscreen','focus','全屏阅读','全屏'));
     const pages=q('.compare-page-tools');
     const title=el('span','pane-title','成稿');
-    this._controls=[[group,find.d,pages,zoom],[title,draftFind.d,aa.d,focus.d],sync,nodes['mapping-status']];
+    this.draftPrimary=[scale,font,nav.d,focus.d,pair,independent];this.draftOverflow=aa.p;
+    this._controls=[[group,find.d,pages,zoom],[title,draftFind.d,...this.draftPrimary,aa.d],sync,nodes['mapping-status']];
   }
   bind(){
     const layout=q('#result-layout'),restore=q('#restore-comparison');
@@ -140,6 +142,15 @@ export class ReadingWorkbench {
         }
       }
       draft.classList.toggle('compact-tools',draft.clientWidth>0&&draft.clientWidth<380&&!layout.classList.contains('source-only'));
+      if(draft.getClientRects().length){
+        const draftTools=draft.querySelector('.draft-tools');
+        for(const node of this.draftPrimary)if(node.parentElement!==draftTools)draftTools.insertBefore(node,q('#reading-settings'));
+        const sharedWidth=[...shared.children].filter(n=>n.getClientRects().length).reduce((sum,n)=>sum+n.getBoundingClientRect().width,0)+4;
+        const budget=Math.max(72,(narrow?toolbar.clientWidth:draft.clientWidth)-sharedWidth-(narrow?16:28));
+        let available=budget-76;
+        for(const node of this.draftPrimary){const width=node.getBoundingClientRect().width+4;if(available>=width)available-=width;else this.draftOverflow.append(node);}
+        if(narrow)draft.style.maxWidth=budget+'px';else draft.style.removeProperty('max-width');
+      }
     };
     this.toolResize=new ResizeObserver(fitTools);this.toolResize.observe(left);this.toolResize.observe(draft);this.toolResize.observe(toolbar);
     const thumb=el('dialog','thumbnail-dialog');thumb.id='pdf-navigation';thumb.innerHTML='<div class="dialog-heading"><h2>原件目录与页面</h2><button type="button" aria-label="关闭原件导航">×</button></div><nav id="pdf-outline" aria-label="原生文档目录"></nav><div id="pdf-thumbnail-list" class="pdf-thumbnail-list"></div>';document.body.append(thumb);thumb.querySelector('button').onclick=()=>thumb.close();
