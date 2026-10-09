@@ -336,7 +336,11 @@ def register(app, store, config):
         import mimetypes
         mime = item.get('mime') or mimetypes.guess_type(item['name'])[0] or 'application/octet-stream'
         inline = mime in SAFE_IMAGE or mime=='application/pdf'
-        return Response(store.read_blob(key),media_type=mime if inline else 'application/octet-stream',
+        path = store.root/'blobs'/key
+        # Keep the existing full-byte integrity check, including file changes
+        # which restore timestamps. Stream only the requested range afterwards.
+        store.read_blob(key)
+        return FileResponse(path,media_type=mime if inline else 'application/octet-stream',
             headers={'Content-Disposition':('attachment' if download or not inline else 'inline')+"; filename*=UTF-8''"+quote(Path(item['name']).name),
                      'Content-Security-Policy':"sandbox; default-src 'none'",
                      'Content-Encoding':'identity', 'Cache-Control':'private, max-age=31536000, immutable'})

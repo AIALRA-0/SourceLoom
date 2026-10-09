@@ -104,7 +104,7 @@ def create_app(config=None):
         response.headers["Referrer-Policy"]="no-referrer"
         response.headers["Cache-Control"]=("private, max-age=0, must-revalidate"
                                            if request.url.path.startswith('/static/') else "no-store")
-        if (request.method in {'GET','HEAD'} and response.status_code==200
+        if (request.method in {'GET','HEAD'} and response.status_code in {200,206}
                 and re.fullmatch(r'/api/(?:projects/[a-zA-Z0-9_-]+/assets|processor/projects/[a-zA-Z0-9_-]+/files)/[0-9a-f]{64}',request.url.path)):
             response.headers['Cache-Control']='private, max-age=31536000, immutable'
         if "Content-Security-Policy" not in response.headers:

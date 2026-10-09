@@ -135,7 +135,7 @@ export class PDFDocumentView {
     try{
       this.emit('正在读取原 PDF…');
       this.documentLease=acquireDocument(this.url+':'+this.identity.sourceDigest,{url:this.url,cMapUrl:new URL('cmaps/',vendor).href,cMapPacked:true,standardFontDataUrl:new URL('standard_fonts/',vendor).href,
-        wasmUrl:new URL('wasm/',vendor).href,isEvalSupported:false,enableXfa:false,disableAutoFetch:true});
+        wasmUrl:new URL('wasm/',vendor).href,isEvalSupported:false,enableXfa:false,rangeChunkSize:262144,disableStream:true,disableAutoFetch:true});
       this.task=this.documentLease.task;
       this.task.onProgress=progress=>{if(this.valid())this.emit(progress.total?`正在读取原 PDF · ${Math.round(progress.loaded/progress.total*100)}%`:'正在读取原 PDF…');};
       const doc=await this.wait(this.task.promise,'原 PDF 读取');if(!this.valid())return;this.task.onProgress=null;this.doc=doc;
