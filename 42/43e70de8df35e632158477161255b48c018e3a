@@ -1,0 +1,41 @@
+sourceloom/processor_api.py
+  s_36a381ab4bccf9::t_31aa093405336a 202,211-214
+  s_36a381ab4bccf9::t_56ba37f8fd69b9 215
+sourceloom/static/processor.js
+  s_36a381ab4bccf9::t_31aa093405336a 757
+sourceloom/static/processor_design.js
+  s_36a381ab4bccf9::t_922f577661ad1f 125-139
+  s_36a381ab4bccf9::t_738954008d4b32 74
+  s_36a381ab4bccf9::t_e2206b8d84c7a7 42,46,50-64,67-73,77,80,88
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_5a16a6904281b7 55,84-85,114-121,131,141-143
+sourceloom/readweave.py
+  s_36a381ab4bccf9::t_31aa093405336a 31-61
+sourceloom/static/processor_workspace.css
+  s_36a381ab4bccf9::t_922f577661ad1f 22-28
+sourceloom/static/processor.html
+  s_36a381ab4bccf9::t_31aa093405336a 36
+tests/test_processor_connection_status.py
+  s_36a381ab4bccf9::t_738954008d4b32 1-68
+sourceloom/static/processor_reader.js
+  s_36a381ab4bccf9::t_5a16a6904281b7 69-70,445,448-456
+sourceloom/static/processor_workbench.js
+  s_36a381ab4bccf9::t_922f577661ad1f 50
+  s_36a381ab4bccf9::t_5a16a6904281b7 10,66-68,84-86,149-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4243e70de8df35e632158477161255b48c018e3a",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
