@@ -56,27 +56,29 @@ def test_narrow_source_tools_reuse_nodes_and_restore_order_without_reader_work()
     const source=fs.readFileSync(arg.root+'/sourceloom/static/processor_workbench.js','utf8');
     const fit=source.slice(source.indexOf('    const sourceFind=this.controls[0][1]'),source.indexOf("    const thumb=el('dialog','thumbnail-dialog')"));
     const node=(name,width)=>({name,parentElement:null,getBoundingClientRect:()=>({width})});
-    function holder(name){return {name,children:[],clientWidth:450,insertBefore(n,target){if(n.parentElement){n.parentElement.children.splice(n.parentElement.children.indexOf(n),1);}this.children.splice(target?this.children.indexOf(target):this.children.length,0,n);n.parentElement=this;},append(...nodes){for(const n of nodes)this.insertBefore(n,null);},prepend(...nodes){for(const n of nodes.reverse()){if(n.parentElement)n.parentElement.children.splice(n.parentElement.children.indexOf(n),1);this.children.unshift(n);n.parentElement=this;}}};}
+    function holder(name){return {name,children:[],clientWidth:450,getClientRects:()=>[{}],insertBefore(n,target){if(n.parentElement){n.parentElement.children.splice(n.parentElement.children.indexOf(n),1);}this.children.splice(target?this.children.indexOf(target):this.children.length,0,n);n.parentElement=this;},append(...nodes){for(const n of nodes)this.insertBefore(n,null);},prepend(...nodes){for(const n of nodes.reverse()){if(n.parentElement)n.parentElement.children.splice(n.parentElement.children.indexOf(n),1);this.children.unshift(n);n.parentElement=this;}}};}
     const left=holder('left'),panel=holder('panel'),originalTools={p:panel,d:node('menu',36)},group=node('view',62),find=node('find',36),pages=node('pages',140),zoom=node('zoom',154);
     left.children=[group,find,pages,zoom,originalTools.d];for(const n of left.children)n.parentElement=left;
+    zoom.children=[node('minus',36),node('choice',80),node('plus',36)];const thumbs=node('thumbs',36),rotate=node('rotate',36),hand=node('hand',36);panel.append(thumbs,rotate,hand);
     const compact=[],draft=holder('draft');draft.clientWidth=500;draft.classList={toggle(name,on){compact.push(on);}};const toolbar=holder('toolbar'),shared=node('shared',70);draft.append(shared);let narrow=false;const layout={classList:{contains:()=>false}};
     const workbench={controls:[[group,find,pages,zoom]]};let callback;
-    const ctx={left,originalTools,layout,q:s=>s==='#reading-controls'?toolbar:s==='#shared-reading-tools'?shared:draft,getComputedStyle:()=>({display:narrow?'flex':'grid'}),ResizeObserver:class{constructor(fn){callback=fn;}observe(){}},workbench};vm.createContext(ctx);vm.runInContext('(function(){'+fit+'}).call(workbench)',ctx);
-    left.clientWidth=500;callback();if(find.parentElement!==left||zoom.parentElement!==left)throw Error('ample source space should keep main tools');
-    left.clientWidth=280;draft.clientWidth=259;callback();if(find.parentElement!==panel||zoom.parentElement!==panel||pages.parentElement!==left)throw Error('narrow source lost paging or failed to move existing secondary controls');
-    callback();if(panel.children.length!==2)throw Error('observer added duplicate tools');
-    left.clientWidth=500;draft.clientWidth=500;callback();if(left.children.map(n=>n.name).join(',')!=='view,find,pages,zoom,menu'||panel.children.length)throw Error('widening failed to restore the same control nodes');
+    const ctx={left,originalTools,layout,q:s=>s==='#reading-controls'?toolbar:s==='#shared-reading-tools'?shared:s==='#pdf-thumbnails'?thumbs:s==='#pdf-rotate'?rotate:s==='#pdf-hand'?hand:draft,getComputedStyle:()=>({display:narrow?'flex':'grid'}),ResizeObserver:class{constructor(fn){callback=fn;}observe(){}},workbench};vm.createContext(ctx);vm.runInContext('(function(){'+fit+'}).call(workbench)',ctx);
+    const original=[group,find,pages,zoom,thumbs,rotate,hand,originalTools.d];
+    const unique=()=>{const all=[...left.children,...panel.children];if(all.length!==original.length||new Set(all).size!==original.length||original.some(n=>!all.includes(n)))throw Error('layout duplicated or lost an original node');};
+    left.clientWidth=700;callback();if(original.some(n=>n.parentElement!==left))throw Error('ample source space did not expose all tools');unique();
+    left.clientWidth=280;draft.clientWidth=259;callback();if(zoom.parentElement!==panel||pages.parentElement!==left||find.parentElement!==left)throw Error('priority allocation lost paging or search');unique();
+    const count=panel.children.length;callback();if(panel.children.length!==count)throw Error('observer added duplicate tools');unique();
+    left.clientWidth=700;draft.clientWidth=500;callback();if(panel.children.length||original.some(n=>n.parentElement!==left))throw Error('widening failed to restore original nodes');
     if(!compact.includes(true)||compact.at(-1)!==false)throw Error('narrow draft compact state did not restore');
-    narrow=true;toolbar.clientWidth=400;callback();
-    if(shared.parentElement!==toolbar||group.parentElement!==panel||pages.parentElement!==panel)throw Error('phone row failed to move original controls into reachable menu');
-    const count=panel.children.length;callback();if(panel.children.length!==count)throw Error('narrow observer duplicated controls');
-    toolbar.clientWidth=700;callback();if(pages.parentElement!==left)throw Error('roomier single-pane toolbar did not recover paging');
-    narrow=false;left.clientWidth=500;callback();if(shared.parentElement!==draft||left.children.map(n=>n.name).join(',')!=='view,find,pages,zoom,menu'||panel.children.length)throw Error('wide split did not restore original nodes');
-    narrow=true;toolbar.clientWidth=400;
-    vm.runInContext('(function(){'+fit+'}).call(workbench)',ctx);callback();
+    narrow=true;toolbar.clientWidth=400;left.clientWidth=400;callback();
+    if(shared.parentElement!==toolbar||pages.parentElement!==left||zoom.parentElement!==left)throw Error('phone row failed to expose page and zoom controls');unique();
+    callback();unique();
+    narrow=false;left.clientWidth=700;callback();if(shared.parentElement!==draft||panel.children.length)throw Error('wide split did not restore original nodes');unique();
+    narrow=true;toolbar.clientWidth=400;left.clientWidth=400;
+    vm.runInContext('(function(){'+fit+'}).call(workbench)',ctx);callback();unique();
     narrow=false;left.clientWidth=280;callback();
-    if(find.parentElement!==panel||zoom.parentElement!==panel)throw Error('phone-first widening failed to measure actual source tool requirements');
-    left.clientWidth=500;callback();if(panel.children.length)throw Error('phone-first widening did not restore ample column');
+    if(zoom.parentElement!==panel||pages.parentElement!==left)throw Error('phone-first widening failed to respect source width');unique();
+    left.clientWidth=700;callback();if(panel.children.length)throw Error('phone-first widening did not restore ample column');unique();
     process.stdout.write('true');
     """
     result=subprocess.run([shutil.which('node'),'-e',script],input=json.dumps({'root':str(ROOT)}),text=True,encoding='utf-8',capture_output=True,check=True,timeout=10)

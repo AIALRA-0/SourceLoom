@@ -141,13 +141,13 @@ class ProcessorTree:
         cx.create_collation('PROCESSOR_NAME',lambda a,b:(name_key(a)>name_key(b))-(name_key(a)<name_key(b)))
         rows=[]
         if offset<folder_total:
-            order='created DESC,id' if sort=='recent' else 'name COLLATE PROCESSOR_NAME,id'
+            order='created DESC,id' if sort=='recent' else 'name COLLATE PROCESSOR_NAME DESC,id DESC' if sort=='reverse' else 'name COLLATE PROCESSOR_NAME,id'
             selected=cx.execute('SELECT * FROM library_folders WHERE '+folder_where+' ORDER BY '+order+' LIMIT ? OFFSET ?',(*folder_params,limit,offset))
             rows=[dict(id=f['id'],kind='folder',title=f['name'],parent_id=parent_id,path=path,revision=f['revision'],
                        archived=False,trashed=bool(f['trashed']),created=f['created'],child_count=0) for f in selected]
         wanted=limit-len(rows)
         if wanted:
-            order='created DESC,id' if sort=='recent' else 'title COLLATE NOCASE,id'
+            order='created DESC,id' if sort=='recent' else 'title COLLATE NOCASE DESC,id DESC' if sort=='reverse' else 'title COLLATE NOCASE,id'
             selected=cx.execute('SELECT * FROM processor_material_meta WHERE '+doc_where+' ORDER BY '+order+' LIMIT ? OFFSET ?',
                                 (parent_id,wanted,max(0,offset-folder_total)))
             rows.extend(dict(id=d['id'],kind='document',title=d['title'],parent_id=parent_id,path=path,revision=d['revision'],
@@ -186,7 +186,7 @@ class ProcessorTree:
                 if matches:
                     folder_rows.append(dict(id=fid,kind='folder',title=row['name'],parent_id=row['parent'],path=paths.get(row['parent'],''),
                                             revision=row['revision'],archived=False,trashed=bool(row['trashed']),created=row['created'],child_count=0))
-            folder_rows.sort(key=lambda r: (-(r['created'] or 0) if sort=='recent' else name_key(r['title']),r['id']))
+            folder_rows.sort(key=lambda r: (-(r['created'] or 0) if sort=='recent' else name_key(r['title']),r['id']),reverse=sort=='reverse')
             doc_where='trashed=1' if space=='trash' else 'trashed=0 AND archived='+str(int(space=='archive'))
             counts={r[0]:r[1] for r in cx.execute('SELECT parent,COUNT(*) FROM processor_material_meta WHERE '+doc_where+' GROUP BY parent')}
             for fid in visible_f:
@@ -224,7 +224,7 @@ class ProcessorTree:
                 rows=folder_rows[offset:offset+limit]
                 wanted=limit-len(rows);doc_offset=max(0,offset-len(folder_rows))
                 if wanted:
-                    order='created DESC,id' if sort=='recent' else 'title COLLATE NOCASE,id'
+                    order='created DESC,id' if sort=='recent' else 'title COLLATE NOCASE DESC,id DESC' if sort=='reverse' else 'title COLLATE NOCASE,id'
                     docs=cx.execute('SELECT * FROM processor_material_meta WHERE '+doc_where+' ORDER BY '+order+' LIMIT ? OFFSET ?',(*params,wanted,doc_offset))
                     rows.extend(dict(id=d['id'],kind='document',title=d['title'],parent_id=d['parent'],path=paths.get(d['parent'],''),
                                      revision=d['revision'],archived=bool(d['archived']),trashed=bool(d['trashed']),created=d['created'],child_count=0) for d in docs)

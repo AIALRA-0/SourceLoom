@@ -3,8 +3,8 @@
   document.getElementById('processor-entry')?.addEventListener('error', () => {
     const status = document.getElementById('startup-status');
     if (status && !status.hidden) {
-      status.querySelector('span').textContent = '界面组件未能加载，请重新加载。';
-      status.setAttribute('role', 'alert');
+      status.querySelector('.loading-heading span:last-child').textContent = '界面组件未能加载，请重新加载。';
+      status.setAttribute('role', 'alert');status.querySelector('a').hidden=false;
     }
   });
   try {

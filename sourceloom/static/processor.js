@@ -494,17 +494,19 @@ async function open(id, initialTab = null) {
   for(const id of ['source-viewer','compare-source-viewer']) {$('#'+id).replaceChildren();$('#'+id).dataset.sourceKey='';}
   openRead?.abort();openRead=new AbortController();
   clearTimeout(pollTimer); const epoch = ++openEpoch;openingProjectId=id;
+  const startup=$('#startup-status');startup.hidden=false;startup.setAttribute('role','status');startup.querySelector('a').hidden=true;startup.querySelector('.loading-heading span:last-child').textContent='正在读取这份材料';
+  $('#workspace').hidden=true;$('#empty').hidden=true;$('#content-toolbar').inert=true;
   let next;
   try{
     next=await api(`${base}/projects/${encodeURIComponent(id)}?reading=true`,{signal:openRead.signal});
     if(next?.id!==id||!next?.processor)throw new Error('没有收到当前材料的完整数据，请重新打开该材料。');
   }
   catch(error){
-    if(epoch===openEpoch){openingProjectId=null;if(project){reader.prepare();reader.attachPreview();}}
+    if(epoch===openEpoch){openingProjectId=null;$('#content-toolbar').inert=false;if(project){startup.hidden=true;$('#workspace').hidden=false;reader.prepare();reader.attachPreview();}else{startup.setAttribute('role','alert');startup.querySelector('.loading-heading span:last-child').textContent='这份材料暂未读取成功';startup.querySelector('a').hidden=false;}}
     throw error;
   }
   if (epoch !== openEpoch) return;
-  project = next;openingProjectId=null; pack = null; sourceMap = null; loadedVersion = null; readweaveReceipt=null; selectedVersion = null; dirty = false; previewKey = '';sourcePage = 1;selectedResourceIds.clear();
+  project = next;openingProjectId=null;$('#content-toolbar').inert=false; pack = null; sourceMap = null; loadedVersion = null; readweaveReceipt=null; selectedVersion = null; dirty = false; previewKey = '';sourcePage = 1;selectedResourceIds.clear();
   $('#startup-status').hidden = true; $('#empty').hidden = true; $('#workspace').hidden = false; $('#sidebar').classList.remove('open');
   localStorage.setItem('sourceloom-processor-project',id); history.replaceState(null,'',`?material=${encodeURIComponent(id)}`);
   renderReadweaveStatus(null);
@@ -761,11 +763,15 @@ async function boot() {
   const requestedTab=new URLSearchParams(location.search).get('tab');
   setMode(localStorage.getItem('sourceloom-processor-mode')==='automatic'?'automatic':'manual');
   setCompareLeft('source');setMobileCompareSide('right');
-  const results = await Promise.allSettled([refreshProjects(),api(`${base}/capabilities`)]);
-  if (results[1].status === 'fulfilled') capabilities = results[1].value;
-  $('#acceptance-banner').hidden = capabilities.environment !== 'development_acceptance';
-  if (results[0].status === 'rejected') throw results[0].reason;
-  if (results[1].status === 'rejected') notice('暂时无法读取自动通道配置，手动交接仍可使用',true);
+  // Auxiliary reads start together, but a known document does not wait for them.
+  const catalog=refreshProjects();
+  const auxiliary=Promise.allSettled([catalog,api(`${base}/capabilities`)]).then(results=>{
+    if(results[1].status==='fulfilled')capabilities=results[1].value;
+    $('#acceptance-banner').hidden=capabilities.environment!=='development_acceptance';
+    drawChannels();
+    if(results[0].status==='rejected')notice('材料目录暂时无法读取，已打开的正文仍可阅读',true);
+    if(results[1].status==='rejected')notice('暂时无法读取自动通道配置，手动交接仍可使用',true);
+  });
   // Resolve the destination before opening a document: library/handoff links must
   // not briefly mount the last article and then dismantle its reader again.
   if(['examples','archives','trash'].includes(librarySpace)) {
@@ -774,12 +780,13 @@ async function boot() {
     return;
   }
   const id = new URLSearchParams(location.search).get('material') || localStorage.getItem('sourceloom-processor-project');
-  if (id) await open(id, requestedTab);
-  else if (projects.length) await open(projects.find(entry=>entry.state==='candidate')?.id || projects[0].id, requestedTab);
+  if (id) {await open(id, requestedTab);return;}
+  await catalog;
+  if (projects.length) await open(projects.find(entry=>entry.state==='candidate')?.id || projects[0].id, requestedTab);
   else { $('#startup-status').hidden = true; $('#empty').hidden = false; }
 }
 boot().catch(error=>{
   const startup=$('#startup-status');
-  if(!startup.hidden){startup.querySelector('span').textContent='工作台暂未打开，请重新加载。';startup.setAttribute('role','alert');}
+  if(!startup.hidden){startup.querySelector('.loading-heading span:last-child').textContent='工作台暂未打开，请重新加载';startup.setAttribute('role','alert');startup.querySelector('a').hidden=false;}
   notice(error.message || '工作台暂时无法连接',true);
 });

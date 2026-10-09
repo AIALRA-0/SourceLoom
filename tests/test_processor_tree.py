@@ -26,6 +26,23 @@ def folder(tree,title,parent=None,rid=None):
     return tree.actions(dict(action='create_folder',title=title,parent_id=parent,request_id=rid or identity()))['node']
 
 
+def test_reverse_sort_preserves_order_across_root_and_child_pages(tmp_path):
+    store,tree=setup(tmp_path)
+    parent=folder(tree,'Parent')
+    for scope in (None,parent['id']):
+        for name in ('A','B','C','D'):
+            folder(tree,name,scope)
+            doc(store,name,scope)
+        normal=tree.tree(parent_id=scope,sort='name',limit=500)['nodes']
+        expected=[n['id'] for kind in ('folder','document') for n in reversed(normal) if n['kind']==kind]
+        actual=[]
+        for offset in range(0,len(expected),2):
+            actual.extend(n['id'] for n in tree.tree(parent_id=scope,sort='reverse',limit=2,offset=offset)['nodes'])
+        assert actual==expected
+    assert all(store.get(n['id'])['processor']['versions'][0]['markdown']=='原中文正文\n\n{{resource:src-00001}}'
+               for n in tree.tree(folders_only=False,sort='reverse')['nodes'] if n['kind']=='document')
+
+
 def doc(store,title='文档',parent=None):
     p=processor.create(store,title)
     def update(p):

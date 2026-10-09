@@ -39,17 +39,18 @@ export class ReadingWorkbench {
     doc.append(el('button','issue-trigger','检查问题'));doc.lastChild.id='issue-trigger';
     icon(move('#toggle-editor',doc),'edit','编辑成稿');move('#send-readweave',doc);move('#open-readweave',doc);
     const more=menu('更多');more.d.id='document-menu';more.p.append(versions.d);move('.steps',q('#view-tools'));move('#import-markdown',more.p);
-    icon(versions.d.querySelector('summary'),'history','版本历史');
+    icon(versions.d.querySelector('summary'),'history','版本历史','版本历史');
     for(const [selector,type] of [['#import-markdown','upload'],['#download-markdown','download'],['#export-package','copy'],['#send-readweave','handoff'],['#open-readweave','link']])actionIcon(q(selector)||doc.querySelector(selector)||more.p.querySelector(selector),type);
     q('.steps').classList.add('document-steps');
     for(const [name,type,label] of [['material','file','原件与资源'],['handoff','handoff','交给模型'],['result','focus','成稿与导出']])icon(q(`.steps [data-tab="${name}"]`),type,label,label);
     icon(more.d.querySelector('summary'),'more','文档操作与版本历史');
     for(const s of ['#download-markdown','#export-package','#query-readweave','#copy-readweave-url'])move(s,more.p);
-    more.p.append(el('hr'));move('#delivery-status',more.p);move('#semantic-status',more.p);move('#readweave-target',more.p);
-    const facts=menu('材料详情');move('#material-summary',facts.p);move('#document-status',facts.p);more.p.append(facts.d);
-    move('#refresh',more.p);
+    const state=el('section','document-menu-state');state.setAttribute('aria-label','成稿状态');move('#delivery-status',state);move('#semantic-status',state);more.p.append(state);
+    const receipt=menu('ReadWeave 交付详情');move('#readweave-target',receipt.p);more.p.append(receipt.d);icon(receipt.d.querySelector('summary'),'link','ReadWeave 交付详情','交付详情');
+    const facts=menu('材料详情');move('#material-summary',facts.p);move('#document-status',facts.p);more.p.append(facts.d);icon(facts.d.querySelector('summary'),'file','材料详情','材料详情');
+    icon(move('#refresh',more.p),'history','刷新当前材料','刷新材料');
     q('.document-head')?.remove();
-    const history=menu('交接记录');move('#request-history',history.p);more.p.append(history.d);
+    const history=menu('交接记录');move('#request-history',history.p);more.p.append(history.d);icon(history.d.querySelector('summary'),'history','交接记录','交接记录');
     const restore=el('button','restore-comparison','恢复对照');restore.id='restore-comparison';restore.type='button';restore.hidden=true;doc.append(restore,more.d);q('#workspace').prepend(doc);
     const toolbar=q('.compare-toolbar');toolbar.replaceChildren();toolbar.classList.add('reading-controls');toolbar.id='reading-controls';
     // Kept native controls retain their existing listeners and selectors.
@@ -67,13 +68,9 @@ export class ReadingWorkbench {
   get controls(){return this._controls||[];}
   capture(){
     const nodes={};for(const id of ['compare-left','reader-unlock','reader-link','reading-size','reading-line-height','mapping-status','reader-toc','reader-search','reader-search-next','reader-pair','reader-independent'])nodes[id]=q('#'+id);
-    const group=el('div','tool-group');nodes['compare-left'].setAttribute('aria-label','对照左侧视图');group.append(nodes['compare-left']);
-    const syncMenu=menu('自由');syncMenu.d.id='reading-sync';syncMenu.d.classList.add('reader-modes');
-    const syncSummary=syncMenu.d.querySelector('summary');
-    syncMenu.p.append(icon(nodes['reader-unlock'],'free','解锁：两侧自由阅读','自由阅读'),icon(nodes['reader-link'],'link','连锁：按最近操作侧立即对齐','连锁对照'),el('p','muted','连锁立即按最近操作的一侧对齐；自由模式两侧互不影响'));
-    const updateMode=()=>{const linked=nodes['reader-link'].getAttribute('aria-pressed')==='true';icon(syncSummary,linked?'link':'free',linked?'连锁对照：选择阅读模式':'自由阅读：选择阅读模式',linked?'连锁':'自由');};
-    new MutationObserver(updateMode).observe(nodes['reader-link'],{attributes:true,attributeFilter:['aria-pressed']});updateMode();
-    for(const node of [nodes['reader-unlock'],nodes['reader-link']])node.addEventListener('click',()=>{syncMenu.d.open=false;syncSummary.focus({preventScroll:true});});
+    const group=el('div','tool-group source-view-group');nodes['compare-left'].setAttribute('aria-label','对照左侧视图');group.append(nodes['compare-left']);
+    const sync=el('div','reader-modes');sync.id='reading-sync';sync.setAttribute('role','group');sync.setAttribute('aria-label','阅读模式');
+    sync.append(icon(nodes['reader-unlock'],'free','解锁：两侧自由阅读','自由'),icon(nodes['reader-link'],'link','连锁：按最近操作侧立即对齐','连锁'));
     const find=menu('查找');find.d.id='reading-find';icon(find.d.querySelector('summary'),'search','查找原件或成稿');
     find.p.innerHTML='<label>在原件中查找<input id="pdf-search" type="search" placeholder="输入原文文字"></label><div class="inline-actions"><button id="pdf-search-prev" type="button">上一处</button><button id="pdf-search-next" type="button">下一处</button><output id="pdf-search-count" role="status">等待原件载入</output></div>';
     const draftFind=menu('查找');icon(draftFind.d.querySelector('summary'),'search','查找成稿');const label=el('label','','在成稿中查找');label.append(nodes['reader-search']);draftFind.p.append(label,nodes['reader-search-next']);
@@ -86,7 +83,7 @@ export class ReadingWorkbench {
     const focus=menu('专注');icon(focus.d.querySelector('summary'),'focus','专注与全屏阅读');focus.p.append(button('focus-source','focus','专注原件','原件'),icon(q('#focus-reading'),'focus','专注成稿','成稿'),button('reader-fullscreen','focus','全屏阅读','全屏'));
     const pages=q('.compare-page-tools');
     const title=el('span','pane-title','成稿');
-    this._controls=[[group,find.d,pages,zoom],[title,draftFind.d,aa.d,focus.d],syncMenu.d,nodes['mapping-status']];
+    this._controls=[[group,find.d,pages,zoom],[title,draftFind.d,aa.d,focus.d],sync,nodes['mapping-status']];
   }
   bind(){
     const layout=q('#result-layout'),restore=q('#restore-comparison');
@@ -120,32 +117,22 @@ export class ReadingWorkbench {
     const sourceFind=this.controls[0][1],pages=this.controls[0][2],zoom=this.controls[0][3];
     const draft=q('.draft-toolbar');
     const toolbar=q('#reading-controls'),shared=q('#shared-reading-tools'),group=this.controls[0][0];
-    let sourceWidth=0;
+    // The source toolbar spends its actual width on frequent actions first.
+    // Original nodes move between the toolbar and overflow; listeners stay intact.
+    const primary=[pages,zoom,sourceFind,q('#pdf-thumbnails'),group,q('#pdf-rotate'),q('#pdf-hand')];
+    const widths=new Map();
     const fitTools=()=>{
       const narrow=getComputedStyle(toolbar).display==='flex';
       const sharedHost=narrow?toolbar:draft;
       if(shared.parentElement!==sharedHost)sharedHost.prepend(shared);
-      if(narrow){
-        if(group.parentElement!==originalTools.p)originalTools.p.prepend(group);
-        if(sourceFind.parentElement!==originalTools.p)originalTools.p.append(sourceFind,zoom);
-        const pageHost=toolbar.clientWidth<560?originalTools.p:left;
-        if(pages.parentElement!==pageHost)pageHost.insertBefore(pages,pageHost===left?originalTools.d:null);
-      }else{
-        if(group.parentElement!==left)left.prepend(group);
-        if(pages.parentElement!==left)left.insertBefore(pages,originalTools.d);
-      }
-      if(!narrow&&left.clientWidth){
-        if(!sourceWidth){
-          // A phone-first session has never measured the expanded group.
-          // Restore and measure the same nodes within this update before deciding
-          // whether the available source column can actually accommodate them.
-          if(sourceFind.parentElement!==left)left.insertBefore(sourceFind,pages);
-          if(zoom.parentElement!==left)left.insertBefore(zoom,originalTools.d);
-          sourceWidth=[...left.children].reduce((sum,n)=>sum+n.getBoundingClientRect().width,18+(left.children.length-1)*4);
+      if(left.getClientRects().length){
+        for(const node of primary)if(node.parentElement!==left)left.insertBefore(node,originalTools.d);
+        for(const node of primary){const width=node===zoom?[...node.children].filter(n=>!n.hidden).reduce((sum,n)=>sum+n.getBoundingClientRect().width,8):node.getBoundingClientRect().width;if(width)widths.set(node,width);}
+        let available=left.clientWidth-(narrow?44:52);
+        for(const node of primary){const width=(widths.get(node)||36)+4;const show=available>=width;
+          if(show){available-=width;if(node.parentElement!==left)left.insertBefore(node,originalTools.d);}
+          else originalTools.p.append(node);
         }
-        const compact=left.clientWidth<sourceWidth;
-        if(compact&&zoom.parentElement===left){originalTools.p.prepend(sourceFind,zoom);}
-        else if(!compact&&zoom.parentElement!==left){left.insertBefore(sourceFind,pages);left.insertBefore(zoom,originalTools.d);}
       }
       draft.classList.toggle('compact-tools',draft.clientWidth>0&&draft.clientWidth<380&&!layout.classList.contains('source-only'));
     };

@@ -12,11 +12,11 @@ export function initializeDesign(deps) {
   const workspace = new TemplateWorkspace(deps);
   $('#workbench-command').insertAdjacentHTML('afterbegin',globalThis.WIcons('search'));$('.workspace-brand').insertAdjacentHTML('afterbegin',globalThis.WIcons('workspace'));
   const labels = { mine: ['folder', '我的材料'], examples: ['components', '示例库'], archives: ['history', '已归档'], trash: ['trash', '回收站'] };
-  for (const button of $('.library-nav').querySelectorAll('button')) {
+  for (const button of $('.library-nav').querySelectorAll('[data-library-mode]')) {
     const [name, label] = labels[button.dataset.libraryMode];
     button.innerHTML = globalThis.WIcons(name);button.setAttribute('aria-label', label);button.dataset.tooltip = label;
   }
-  for(const [id,icon] of [['workbench-sidebar','leftPanel'],['workbench-inspector','rightPanel'],['workbench-settings','settings'],['sidebar-toggle','folder']]) $('#'+id).innerHTML=globalThis.WIcons(icon);
+  for(const [id,icon] of [['workbench-sidebar','leftPanel'],['workbench-inspector','rightPanel'],['workbench-settings','settings'],['workbench-login','account'],['sidebar-toggle','folder']]) $('#'+id).innerHTML=globalThis.WIcons(icon);
   for(const b of document.querySelectorAll('[data-panel-swap]'))b.innerHTML=globalThis.WIcons('swap');
   for(const b of document.querySelectorAll('[data-panel-hide]'))b.innerHTML=globalThis.WIcons('close');
   const apply = () => {
@@ -92,7 +92,7 @@ export function initializeDesign(deps) {
   let queued = false;
   const enhance = () => { queued=false;globalThis.WBSelect.enhance(document); };
   new MutationObserver(records=>{if(queued||!records.some(r=>r.target.closest?.('select')||[...r.addedNodes].some(n=>n.nodeType===1&&(n.matches('select')||n.querySelector('select')))))return;queued=true;queueMicrotask(enhance);}).observe(document.body,{childList:true,subtree:true});
-  document.addEventListener('pdf-state',enhance);
+  document.addEventListener('pdf-state',()=>globalThis.WBSelect.enhance($('#reading-controls')));
   enhance(); apply();
   installTooltips();
   installMenus();

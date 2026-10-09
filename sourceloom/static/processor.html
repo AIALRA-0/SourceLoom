@@ -23,7 +23,7 @@
     <header class="workbench-topbar">
       <a class="workspace-brand" href="/"><strong>SourceLoom</strong><span>材料工作台</span></a>
       <button id="workbench-command" class="command-trigger" type="button" aria-haspopup="dialog"><span>查找材料与操作</span><kbd>Ctrl K</kbd></button>
-      <div class="workbench-top-actions"><button id="workbench-sidebar" class="tool-icon" type="button" aria-label="显示或收起左面板"></button><button id="workbench-inspector" class="tool-icon" type="button" aria-label="显示或收起右面板"></button><button id="workbench-settings" class="tool-icon" type="button" aria-label="工作台设置"></button></div>
+      <div class="workbench-top-actions"><button id="workbench-sidebar" class="tool-icon" type="button" aria-label="显示或收起左面板"></button><button id="workbench-inspector" class="tool-icon" type="button" aria-label="显示或收起右面板"></button></div>
     </header>
     <div class="work-area">
       <nav class="library-nav activity-rail" aria-label="工作台空间">
@@ -31,6 +31,9 @@
         <button type="button" data-library-mode="examples" disabled>示例库</button>
         <button type="button" data-library-mode="archives" disabled>已归档</button>
         <button type="button" data-library-mode="trash" disabled>回收站</button>
+        <span class="spacer" aria-hidden="true"></span>
+        <button id="workbench-settings" class="tool-icon" type="button" aria-label="工作台设置"></button>
+        <a id="workbench-login" class="tool-icon" href="/_aialra_auth/sign-in" aria-label="登录或重新登录" data-tooltip="登录或重新登录"></a>
       </nav>
       <div class="layout" id="layout">
       <div class="slot" id="left-slot"><div class="drop-target" aria-hidden="true">移至左侧</div>
@@ -39,7 +42,6 @@
       <header class="pane-head"><strong>材料</strong><div class="pane-actions"><button class="tool-icon" type="button" data-panel-swap="explorer" aria-label="交换材料面板位置"></button><button class="tool-icon" type="button" data-panel-hide="explorer" aria-label="收起材料面板"></button></div></header>
       <button class="primary" id="new-material">＋ 导入材料</button>
       <label class="search"><span class="sr-only">搜索材料</span><input id="material-search" type="search" placeholder="搜索材料"></label>
-      <div class="tree-tools"><button type="button" disabled>新建文件夹</button><button type="button" disabled>折叠全部</button><button type="button" disabled>排序</button></div>
       <div class="tree-status" role="status"></div>
       <nav id="material-list" class="material-tree" aria-label="已保存材料"><p class="muted">正在连接工作台…</p></nav>
       <div class="sidebar-footer"><p>原件与历史版本独立保存</p></div>
@@ -52,7 +54,7 @@
       <div id="acceptance-banner" class="acceptance-banner" role="status" hidden>开发验收环境 · 本页材料和回执仅用于测试</div>
       <div id="notice" role="status" aria-live="polite" hidden></div>
       <div id="operation-status" class="operation-status" role="status" aria-live="polite" hidden><span class="activity-mark" aria-hidden="true"></span><span id="operation-message"></span><span id="operation-elapsed" class="muted"></span></div>
-      <section id="startup-status" class="startup-status" role="status" aria-live="polite"><span>正在打开工作台…</span> <a href="" aria-label="重新加载工作台">重新加载</a></section>
+      <section id="startup-status" class="startup-status" role="status" aria-live="polite"><div class="loading-heading"><span class="loading-document" aria-hidden="true"></span><span>正在读取材料</span></div><p>先显示正文和当前原件页，其他资源随后载入</p><a href="" aria-label="重新加载工作台" hidden>重新加载</a></section>
       <noscript><p>此工作台需要 JavaScript。请启用后重新加载。</p></noscript>
       <section id="empty" class="empty" hidden>
         <span class="eyebrow">原件 → 模型成稿 → 图文阅读包</span>

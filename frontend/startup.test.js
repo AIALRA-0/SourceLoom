@@ -16,7 +16,7 @@ test('stable shell and empty-state decision exist before module execution',()=>{
   assert.match(html,/<link id="processor-tree-styles"[^>]*rel="stylesheet"/);
   assert.match(html,/<section id="startup-status"[^>]*role="status"/);
   assert.equal((html.match(/class="library-nav activity-rail"/g)||[]).length,1);
-  assert.equal((html.match(/class="tree-tools"/g)||[]).length,1);
+  assert.equal((html.match(/class="tree-tools"/g)||[]).length,0);
 });
 for(const [name,value,width] of [['missing',null,'256px'],['saved',JSON.stringify({width:340}),'340px'],['upper bound',JSON.stringify({width:900}),'400px'],['lower bound',JSON.stringify({width:100}),'216px'],['corrupt','not-json','256px'],['non numeric',JSON.stringify({width:'oops'}),'256px']]){
   test('prepaint geometry: '+name,()=>assert.equal(prepaint(value).width,width));
@@ -31,7 +31,7 @@ test('entry module error has explicit failure text and not false empty state',()
 });
 async function startup(search,projects=[],last=null){
   const nodes=Object.fromEntries(['#startup-status','#empty','#acceptance-banner'].map(k=>[k,{hidden:k==='#empty'}]));
-  const calls=[];const c={base:"/api/processor",URLSearchParams,location:{search},localStorage:{getItem(k){return k==='sourceloom-processor-project'?last:null;}},setMode(){},setCompareLeft(){},setMobileCompareSide(){},refreshProjects:async()=>{},api:async()=>({}),capabilities:{},projects,$:s=>nodes[s],notice(){},library:{show:async space=>calls.push(['space',space])},open:async(...args)=>calls.push(['open',...args])};
+  const calls=[];const c={base:"/api/processor",URLSearchParams,location:{search},localStorage:{getItem(k){return k==='sourceloom-processor-project'?last:null;}},setMode(){},setCompareLeft(){},setMobileCompareSide(){},refreshProjects:async()=>{},api:async()=>({}),drawChannels(){},capabilities:{},projects,$:s=>nodes[s],notice(){},library:{show:async space=>calls.push(['space',space])},open:async(...args)=>calls.push(['open',...args])};
   const body=app.slice(app.indexOf('async function boot()'),app.indexOf('boot().catch('));
   vm.createContext(c);vm.runInContext(body,c);await c.boot();return {calls,nodes};
 }
