@@ -8,7 +8,7 @@ export class MaterialLibrary {
     for(const [mode,label] of [['mine','我的材料'],['examples','示例库'],['archives','已归档'],['trash','回收站']]){const b=nav.querySelector(`[data-library-mode="${mode}"]`)||node('button',label);b.type='button';b.dataset.libraryMode=mode;b.disabled=false;b.onclick=()=>this.show(mode);if(!b.parentElement)nav.append(b);}
     if(!nav.isConnected)q('#material-search').closest('label').before(nav);
     this.view=node('section',undefined,'library-view');this.view.id='library-view';this.view.hidden=true;q('#main-content').append(this.view);
-    this.trial=node('button','试用副本');this.trial.id='sample-trial';this.trial.type='button';this.trial.hidden=true;q('#reading-document-bar').insertBefore(this.trial,q('#toggle-editor'));
+    this.trial=node('button','试用副本');this.trial.id='sample-trial';this.trial.type='button';this.trial.hidden=true;q('#reading-document-bar').insertBefore(this.trial,q('#document-menu'));
     this.trial.onclick=()=>this.trySample(this.deps.current()?.id);
     this.archive=node('button','移入归档');this.archive.type='button';this.archive.id='archive-material';this.archive.onclick=()=>this.archiveCurrent();q('#reading-document-bar>.tool-menu:last-child .menu-panel').append(this.archive);
     this.tree=new MaterialTree({...this.deps,open:id=>this.open(id),restoreArchive:id=>this.restore(id),tryExample:id=>this.trySample(id),metadataChanged:r=>this.metadataChanged(r)});
@@ -19,7 +19,7 @@ export class MaterialLibrary {
     if(this.deps.isDirty()){this.deps.notify('先保存当前编辑，再切换材料空间',true);return;}
     this.deps.persist();this.setNav(mode);const epoch=++this.epoch;
     if(mode==='mine'){await this.tree.showMode('mine');if(epoch!==this.epoch)return;this.view.hidden=true;q('#workspace').hidden=!this.deps.current();q('#empty').hidden=!!this.deps.current();this.deps.tab();return;}
-    q('#workspace').hidden=true;q('#empty').hidden=true;document.body.classList.remove('reading-active');this.view.hidden=false;
+    q('#workspace').hidden=true;q('#empty').hidden=true;if(this.deps.leaveReader)this.deps.leaveReader();else document.body.classList.remove('reading-active');this.view.hidden=false;
     if(mode==='trash'){await this.tree.showMode('trash');if(epoch!==this.epoch)return;this.view.replaceChildren(node('h1','回收站'),node('p','选择左侧条目，可只读查看、恢复原位置或恢复到指定目录。永久删除需要再次确认。'));return;}
     await this.tree.showMode(mode==='archives'?'archive':'examples');if(epoch!==this.epoch)return;
     this.view.replaceChildren(node('p','正在读取材料…'));

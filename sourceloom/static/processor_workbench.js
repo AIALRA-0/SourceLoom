@@ -77,26 +77,60 @@ export class ReadingWorkbench {
     new MutationObserver(refreshFocus).observe(layout,{attributes:true,attributeFilter:['class']});refreshFocus();
     restore.onclick=()=>this.deps.reader.layoutChange(()=>{layout.classList.remove('source-only','preview-only');q('#focus-source').setAttribute('aria-pressed','false');q('#focus-reading').setAttribute('aria-pressed','false');document.body.dataset.readerFocus='both';refreshFocus();});
     q('#issue-trigger').onclick=async()=>{if(this.deps.canProcessIssues?.()===false){this.deps.notify('请先保存当前修改，再处理本版本的问题',true);return;}if(document.fullscreenElement)await document.exitFullscreen();this.deps.issues.open(this.deps.context());};
+    const documentBar=q('#reading-document-bar'),documentMenu=q('#document-menu>.menu-panel');
+    const secondary=['#edit-state','#toggle-editor','#send-readweave','#open-readweave','#restore-comparison'].map(q);
+    const documentFit=()=>{
+      const width=q('#main-pane').clientWidth;
+      for(const node of secondary){
+        const inMenu=width<620&&(node.id!=='toggle-editor'||width<460);
+        const host=inMenu?documentMenu:documentBar;
+        if(node.parentElement!==host){if(inMenu)host.append(node);else host.insertBefore(node,q('#document-menu'));}
+      }
+      const state=q('#edit-state'),issue=q('#issue-trigger');
+      if(state.parentElement===documentBar&&state.nextElementSibling!==issue)documentBar.insertBefore(state,issue);
+      this.editorControl(document.body.classList.contains('editing-active'));
+    };
+    this.documentResize=new ResizeObserver(documentFit);this.documentResize.observe(q('#main-pane'));documentFit();
     const left=q('#reading-controls>.source-toolbar');
     q('#compare-source').append(q('#mapping-status'));
     const tools=el('div','source-quick-tools');tools.append(button('pdf-thumbnails','thumbs','原件目录与页缩略图'),button('pdf-hand','hand','切换手形平移'),button('pdf-rotate','rotate','顺时针旋转原件'),button('pdf-copy','copy','复制所选原文'),button('pdf-copy-cite','copy','复制所选原文并附出处','引用'));
     const sourceMore=menu('原文件');sourceMore.p.innerHTML='<a id="pdf-original-open" target="_blank" rel="noopener noreferrer">独立打开原件</a><a id="pdf-original-download" download>下载原件</a>';tools.append(sourceMore.d);
-    const originalTools=menu('原件工具');originalTools.d.classList.add('source-more');originalTools.p.append(tools);left.append(originalTools.d);
+    const originalTools=menu('原件工具');originalTools.d.classList.add('source-more');icon(originalTools.d.querySelector('summary'),'more','原件工具');originalTools.p.append(tools);left.append(originalTools.d);
     // A narrow split keeps paging in place; existing secondary controls move
     // into the same menu instead of covering the other pane or shrinking text.
     const sourceFind=this.controls[0][1],pages=this.controls[0][2],zoom=this.controls[0][3];
     const draft=q('.draft-toolbar');
+    const toolbar=q('#reading-controls'),shared=q('#shared-reading-tools'),group=this.controls[0][0];
     let sourceWidth=0;
     const fitTools=()=>{
-      if(left.clientWidth){
-        if(!sourceWidth&&sourceFind.parentElement===left){sourceWidth=[...left.children].reduce((sum,n)=>sum+n.getBoundingClientRect().width,18+(left.children.length-1)*4);}
+      const narrow=getComputedStyle(toolbar).display==='flex';
+      const sharedHost=narrow?toolbar:draft;
+      if(shared.parentElement!==sharedHost)sharedHost.prepend(shared);
+      if(narrow){
+        if(group.parentElement!==originalTools.p)originalTools.p.prepend(group);
+        if(sourceFind.parentElement!==originalTools.p)originalTools.p.append(sourceFind,zoom);
+        const pageHost=toolbar.clientWidth<560?originalTools.p:left;
+        if(pages.parentElement!==pageHost)pageHost.insertBefore(pages,pageHost===left?originalTools.d:null);
+      }else{
+        if(group.parentElement!==left)left.prepend(group);
+        if(pages.parentElement!==left)left.insertBefore(pages,originalTools.d);
+      }
+      if(!narrow&&left.clientWidth){
+        if(!sourceWidth){
+          // A phone-first session has never measured the expanded group.
+          // Restore and measure the same nodes within this update before deciding
+          // whether the available source column can actually accommodate them.
+          if(sourceFind.parentElement!==left)left.insertBefore(sourceFind,pages);
+          if(zoom.parentElement!==left)left.insertBefore(zoom,originalTools.d);
+          sourceWidth=[...left.children].reduce((sum,n)=>sum+n.getBoundingClientRect().width,18+(left.children.length-1)*4);
+        }
         const compact=left.clientWidth<sourceWidth;
         if(compact&&zoom.parentElement===left){originalTools.p.prepend(sourceFind,zoom);}
         else if(!compact&&zoom.parentElement!==left){left.insertBefore(sourceFind,pages);left.insertBefore(zoom,originalTools.d);}
       }
       draft.classList.toggle('compact-tools',draft.clientWidth>0&&draft.clientWidth<380&&!layout.classList.contains('source-only'));
     };
-    this.toolResize=new ResizeObserver(fitTools);this.toolResize.observe(left);this.toolResize.observe(draft);
+    this.toolResize=new ResizeObserver(fitTools);this.toolResize.observe(left);this.toolResize.observe(draft);this.toolResize.observe(toolbar);
     const thumb=el('dialog','thumbnail-dialog');thumb.id='pdf-navigation';thumb.innerHTML='<div class="dialog-heading"><h2>原件目录与页面</h2><button type="button" aria-label="关闭原件导航">×</button></div><nav id="pdf-outline" aria-label="原生文档目录"></nav><div id="pdf-thumbnail-list" class="pdf-thumbnail-list"></div>';document.body.append(thumb);thumb.querySelector('button').onclick=()=>thumb.close();
     const view=()=>this.deps.reader.pdfView?.('compare');
     originalTools.d.addEventListener('mousedown',e=>{if(e.target.closest('button,summary')&&view()?.captureSelection())e.preventDefault();});
@@ -117,7 +151,22 @@ export class ReadingWorkbench {
     for(const toolbar of document.querySelectorAll('.pane-toolbar,.reading-toolbar')){toolbar.setAttribute('role','toolbar');toolbar.setAttribute('aria-label',toolbar.classList.contains('source-toolbar')?'原件工具':toolbar.classList.contains('reading-toolbar')?'对照模式':'成稿工具');toolbar.addEventListener('keydown',e=>{if(e.target.closest('[role=toolbar]')!==toolbar)return;if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key)||['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))return;const buttons=[...toolbar.querySelectorAll('button,summary,select')].filter(n=>n.getClientRects().length&&!n.disabled&&!n.closest('details:not([open]) .menu-panel')&&n.closest('[role=toolbar]')===toolbar);const i=buttons.indexOf(e.target);if(i<0)return;e.preventDefault();buttons[e.key==='Home'?0:e.key==='End'?buttons.length-1:(i+(e.key==='ArrowLeft'?-1:1)+buttons.length)%buttons.length].focus();});}
   }
   async refresh(){const c=this.deps.context();if(!c.projectId||!c.versionId)return;const token=++this.summaryToken;try{const r=await this.deps.api(`/api/processor/projects/${encodeURIComponent(c.projectId)}/versions/${encodeURIComponent(c.versionId)}/issues`);if(token!==this.summaryToken||c.projectId!==this.deps.context().projectId||c.versionId!==this.deps.context().versionId)return;this.referenceGroups=[...(r.issues||[]),...(r.resolved||[])];this.referenceContext=c;this.refreshTableActions();const issues=r.issues||[];q('#issue-trigger').textContent=issues.length===1&&issues[0].kind==='table'?`表格待确认 1 处`:r.summary||`${issues.length} 处待确认`;q('#issue-trigger').dataset.count=r.issues?.length||0;}catch{if(token===this.summaryToken)q('#issue-trigger').textContent='查看检查建议';}}
-  tab(name){document.body.classList.toggle('reading-active',name==='result');if(name!=='result')q('#result-layout').classList.remove('source-only');}
+  editorControl(editing){const node=q('#toggle-editor'),label=editing?'查看原件对照':'编辑成稿';icon(node,'edit',label,node.parentElement===q('#document-menu>.menu-panel')?label:'');}
+  tab(name){
+    const reading=name==='result',doc=q('#reading-document-bar'),toolbar=q('#content-toolbar'),views=q('#view-tools'),more=q('#document-menu>.menu-panel');
+    document.body.classList.toggle('reading-active',reading);
+    if(reading){
+      if(doc.parentElement!==toolbar)toolbar.insertBefore(doc,q('#sidebar-toggle'));
+      if(views.parentElement!==more)more.prepend(views);
+    }else{
+      // Close before moving the chosen action out of its menu; delegated click
+      // handling can no longer find the old owner after reparenting.
+      q('#document-menu').open=false;
+      if(doc.parentElement!==q('#workspace'))q('#workspace').prepend(doc);
+      if(views.parentElement!==toolbar)toolbar.insertBefore(views,q('#sidebar-toggle'));
+      q('#result-layout').classList.remove('source-only');
+    }
+  }
   toggleSidebar(){document.dispatchEvent(new CustomEvent('workbench-panel-request',{detail:{view:'explorer',action:'toggle'}}));}
   closeSidebar(){document.dispatchEvent(new CustomEvent('workbench-panel-request',{detail:{view:'explorer',action:'hide'}}));}
   refreshTableActions(){const doc=this.deps.preview();for(const table of doc?.querySelectorAll('table')||[]){const b=table.previousElementSibling?.querySelector('.table-view-action');if(!b)continue;const info=this.loupe.tableReference(table);b.textContent=info.precision==='table'?'查看原表':'查看原页';b.title=info.page?`第 ${info.page} 页${info.precision==='table'?'的原表区域':'完整原页'}`:'查看来源位置';const location=b.parentElement.querySelector('.table-source-location');location.textContent=info.page?`第 ${info.page} 页`: '来源位置待核对';}}

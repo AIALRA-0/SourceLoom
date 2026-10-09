@@ -17,7 +17,6 @@ html,body{height:100%;overflow:hidden}
 .reader-product .activity-rail button{width:var(--rail-control);height:var(--rail-control);min-height:var(--rail-control);padding:0;border:0;background:transparent;color:var(--secondary);position:relative;flex:none}
 .activity-rail svg{width:18px;height:18px;flex:none}
 .reader-product .activity-rail button:hover,.reader-product .activity-rail button[aria-current=true]{background:var(--hover);color:var(--text)}
-.activity-rail button[aria-current=true]::before{content:"";position:absolute;left:0;top:calc(50% - 7px);width:2px;height:14px;background:var(--text);border-radius:2px}
 .activity-rail .spacer{flex:1}
 .layout{display:grid;flex:1;min-width:0;min-height:0;grid-template-columns:var(--workspace-left-width,var(--left-width)) var(--gap) minmax(0,1fr) var(--gap) var(--workspace-right-width,var(--right-width));grid-template-rows:minmax(0,1fr);position:relative}
 :root[data-left-hidden=true] .layout{grid-template-columns:0 0 minmax(0,1fr) var(--gap) var(--workspace-right-width,var(--right-width))}
@@ -70,7 +69,7 @@ html,body{height:100%;overflow:hidden}
 #main-content{flex:1;min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;position:relative;overflow-anchor:none}
 .reading-active #main-content{display:flex;flex-direction:column;overflow:hidden}
 .reading-active #main-content>#workspace{flex:1;min-height:0;height:auto;max-height:none;width:100%;margin:0}
-.main-foot{height:30px;min-height:30px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 16px;border-top:1px solid var(--line);font-size:var(--small-font);color:var(--muted);flex:none}
+.main-foot{height:var(--footer-height);min-height:var(--footer-height);display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 16px;border-top:1px solid var(--line);font-size:var(--small-font);color:var(--muted);flex:none}
 .main-foot>span{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .statusbar{padding:0 16px 0 var(--rail);display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--muted);font-size:var(--small-font);min-width:0}
 .statusbar>span{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -81,7 +80,7 @@ html,body{height:100%;overflow:hidden}
 .sidebar>.tree-tools{padding:0 12px;min-height:36px;flex:none}
 .sidebar>.tree-status{padding:4px 16px;flex:none}
 .sidebar>#material-list{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
-.panel-foot,.sidebar-footer{padding:8px 12px;border-top:1px solid var(--line);font-size:var(--small-font);color:var(--muted);flex:none;min-height:34px}
+.panel-foot,.sidebar-footer{padding:8px 12px;border-top:1px solid var(--line);font-size:var(--small-font);color:var(--muted);flex:none;min-height:var(--footer-height)}
 .sidebar-footer p{margin:0}
 .inspector-tabs{display:flex;gap:24px;height:44px;min-height:44px;margin:0 20px;border-bottom:1px solid var(--line);flex:none}
 .reader-product .inspector-tabs button{height:44px;min-height:44px;padding:0;font-size:var(--tree-font);border:0;border-radius:0;background:transparent;color:var(--secondary);position:relative}

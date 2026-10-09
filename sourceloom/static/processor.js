@@ -130,7 +130,7 @@ const issueDrawer = new IssueDrawer({host:$('#issues-host'),
 const workbench = new ReadingWorkbench({reader,issues:issueDrawer,api,notify:notice,
   context:()=>({projectId:project?.id,versionId:selectedVersion,readonly:project?.library?.readonly===true}),canProcessIssues:()=>!dirty,resources:resourceItems,
   preview:previewDocument,mappings:sourceMapEntries,representations:()=>loadedVersion?.representations||[]});
-const library = new MaterialLibrary({api,post,current:()=>project,open,refresh:refreshProjects,isDirty:()=>dirty,notify:notice,persist:()=>reader.persist(),tab:()=>showTab(currentTab),metadataChanged:()=>renderAvailability()});
+const library = new MaterialLibrary({api,post,current:()=>project,open,refresh:refreshProjects,isDirty:()=>dirty,notify:notice,persist:()=>reader.persist(),tab:()=>showTab(currentTab),leaveReader:()=>workbench.tab('library'),metadataChanged:()=>renderAvailability()});
 const manualHandoff = new ManualHandoff({api,current:()=>project?.id,element,fileRow,copy:copyText,notify:notice,showResult:()=>showTab('result')});
 // The existing save action is available only inside the editor, including a
 // restored editor view; it is not stranded in the hidden legacy toolbar.
@@ -554,7 +554,14 @@ function setCompareLeft(kind) {
   reader.layoutChange(()=>{
     $('#compare-source').hidden=kind!=='source';$('.editor-pane').hidden=kind!=='editor';
     $('#compare-left').value=kind;
+    $('#mobile-compare-left').textContent=kind==='editor'?'编辑':'原件';
+    if(kind==='editor'&&getComputedStyle($('#reading-controls')).display==='flex'){
+      $('#result-layout').classList.add('mobile-left');
+      $('#mobile-compare-left').setAttribute('aria-selected','true');
+      $('#mobile-compare-right').setAttribute('aria-selected','false');
+    }
   });
+  $('#document-menu').open=false;
 }
 function setMobileCompareSide(side) {
   reader.layoutChange(()=>{
@@ -684,7 +691,7 @@ $('#version-picker').addEventListener('change',protect(async event=>{const id = 
   const selected=project.library?.readonly?project:await post(`${base}/projects/${encodeURIComponent(pid)}/select-version`,{version_id:id});
   if(epoch!==openEpoch||pid!==project?.id||token!==versionSelectionEpoch)return;
   project=selected; await loadVersion(id); drawChecks();}));
-$('#toggle-editor').addEventListener('click',()=>{const next=$('#compare-left').value==='editor'?'source':'editor';setCompareLeft(next);$('#toggle-editor').textContent=next==='editor'?'查看原件对照':'打开编辑器';$('#toggle-editor').setAttribute('aria-pressed',String(next==='editor'));if(next==='editor' && $('#result-layout').classList.contains('preview-only')) $('#focus-reading').click();});
+$('#toggle-editor').addEventListener('click',()=>{const next=$('#compare-left').value==='editor'?'source':'editor';setCompareLeft(next);workbench.editorControl(next==='editor');$('#toggle-editor').setAttribute('aria-pressed',String(next==='editor'));if(next==='editor' && $('#result-layout').classList.contains('preview-only')) $('#focus-reading').click();});
 $('#focus-reading').addEventListener('click',()=>reader.layoutChange(()=>{const focused=$('#result-layout').classList.toggle('preview-only');$('#focus-reading').setAttribute('aria-pressed',String(focused));$('#focus-reading').textContent=focused?'恢复左右对照':'专心阅读';}));
 $('#download-markdown').addEventListener('click',event=>{event.preventDefault(); if (!selectedVersion || !loadedVersion) return;operation('正在准备已保存的 Markdown');if (markdownBlob) URL.revokeObjectURL(markdownBlob); markdownBlob = URL.createObjectURL(new Blob([loadedVersion.markdown || loadedVersion.raw_markdown || loadedVersion.content || ''],{type:'text/markdown;charset=utf-8'})); const link = element('a'); link.href = markdownBlob; link.download = `${project.title.replace(/[\\/:*?"<>|]/g,'_')}.md`; link.click();operationDone('已保存版本的 Markdown 已准备下载');});
 async function downloadPrepared(anchor) {
