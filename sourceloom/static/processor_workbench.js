@@ -15,7 +15,16 @@ function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className
 function icon(node,type,label,short=''){node.replaceChildren();const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('aria-hidden','true');svg.innerHTML=`<path d="${icons[type]||icons.menu}"/>`;node.append(svg);if(short)node.append(el('span','',short));node.classList.add('tool-icon');node.removeAttribute('title');node.setAttribute('aria-label',label);node.dataset.tooltip=label;return node;}
 function button(id,type,label,short=''){const n=el('button');n.type='button';n.id=id;return icon(n,type,label,short);}
 // Delivery labels may change after a receipt; preserve the original business node.
-function actionIcon(node,type){const decorate=()=>{if(node.querySelector('svg'))return;const label=node.textContent.trim()||node.getAttribute('aria-label');icon(node,type,label,label);};decorate();new MutationObserver(decorate).observe(node,{childList:true});return node;}
+function actionIcon(node,type){
+  const decorate=()=>{
+    if(node.hasAttribute('title')){node.dataset.actionReason=node.title;node.removeAttribute('title');}
+    const label=node.querySelector('svg')?node.dataset.actionLabel:node.textContent.trim()||node.getAttribute('aria-label');node.dataset.actionLabel=label;
+    if(!node.querySelector('svg'))icon(node,type,label,label);
+    const description=node.disabled&&node.dataset.actionReason?`${label}：${node.dataset.actionReason}`:label;
+    node.dataset.tooltip=description;node.setAttribute('aria-label',description);
+  };
+  decorate();new MutationObserver(decorate).observe(node,{childList:true,attributes:true,attributeFilter:['title','disabled']});return node;
+}
 function menu(label){const d=el('details','tool-menu'),s=el('summary','',label);s.setAttribute('aria-label',label);const p=el('div','menu-panel');d.append(s,p);return {d,p};}
 function move(s,p){const n=q(s);if(n)p.append(n);return n;}
 
