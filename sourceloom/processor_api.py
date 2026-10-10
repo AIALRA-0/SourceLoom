@@ -526,11 +526,21 @@ def register(app, store, config):
         return Response(processor.export_package(store,processor.project(store,pid)),media_type='application/zip',
             headers={'Content-Disposition':'attachment; filename="SourceLoom-ReadWeave.zip"'})
 
+    @app.get('/api/processor/readweave-destinations')
+    def readweave_destinations(parent: str | None = None,offset: int=0):
+        from .readweave import destinations
+        return destinations(config,parent,offset)
+
     @app.post(prefix+'/{pid}/readweave')
-    def readweave(pid:str):
-        from .readweave import import_candidate
-        processor.project(store,pid)
-        return import_candidate(store,config,pid)
+    def readweave(pid:str,body:dict | None=None):
+        from .readweave import import_candidate,target_config
+        p=processor.project(store,pid)
+        body=body or {}
+        if body.get('version_id') and body['version_id']!=p['processor'].get('active_version'):
+            raise Conflict('成稿版本已改变，请重新打开导入窗口')
+        if body.get('source_digest') and body['source_digest']!=p['processor'].get('source_digest'):
+            raise Conflict('原件已改变，请重新打开导入窗口')
+        return import_candidate(store,target_config(config,body.get('parent_id')),pid,version_id=body.get('version_id'),source_digest=body.get('source_digest'))
 
     @app.get(prefix+'/{pid}/readweave-status')
     def readweave_status(pid:str):

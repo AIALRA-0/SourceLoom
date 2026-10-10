@@ -5,6 +5,7 @@ import time
 import re
 from uuid import uuid4
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import zipfile
 from urllib.parse import parse_qs, quote, urlsplit
@@ -57,6 +58,42 @@ def connection_status(config):
         return {'status': 'timeout'}
     except (httpx.HTTPError, ValueError):
         return {'status': 'unavailable'}
+
+
+def destinations(config, parent=None, offset=0):
+    """Browse native note children lazily; never expose the business credential."""
+    parent = str(parent or config.get('readweave_parent') or '')
+    if not isinstance(offset,int) or offset<0:raise Conflict('目录分页位置无效')
+    if not parent or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', parent):
+        raise Conflict('ReadWeave 目录标识无效')
+    if not config.get('readweave_url') or not config.get('readweave_token') or note_url(config, parent) is None:
+        raise Conflict('ReadWeave 尚未正确配置')
+    with httpx.Client(base_url=_instance(config)+'/etapi/', headers={'Authorization':config['readweave_token']}, timeout=10, follow_redirects=False) as c:
+        response=c.get('notes/'+quote(parent,safe=''));response.raise_for_status();note=response.json()
+        if note.get('noteId')!=parent or note.get('isProtected') or note.get('type') not in {'text','book'}:
+            raise Conflict('请选择可访问的普通笔记目录')
+        children=[]
+        def child(nid):
+            r=c.get('notes/'+quote(str(nid),safe=''));r.raise_for_status();n=r.json()
+            if n.get('isProtected') or n.get('type') not in {'text','book'}:return None
+            return {'id':n['noteId'],'title':n.get('title') or n['noteId'],'has_children':bool(n.get('childNoteIds'))}
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for n in pool.map(child,[nid for nid in note.get('childNoteIds',[])[offset:offset+40] if not str(nid).startswith('_')]):
+                if n:children.append(n)
+        return {'parent':{'id':parent,'title':note.get('title') or parent},'default_id':config['readweave_parent'],'children':children,'next_offset':offset+40 if len(note.get('childNoteIds',[]))>offset+40 else None}
+
+
+def target_config(config, parent):
+    """A per-operation target does not rewrite shared connection settings."""
+    if not parent or parent==config.get('readweave_parent'):return config
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',str(parent)):
+        raise Conflict('ReadWeave 目录标识无效')
+    # Validate the exact note without enumerating its descendants.
+    with httpx.Client(base_url=_instance(config)+'/etapi/',headers={'Authorization':config['readweave_token']},timeout=10,follow_redirects=False) as c:
+        r=c.get('notes/'+quote(str(parent),safe=''));r.raise_for_status();n=r.json()
+    if n.get('noteId')!=parent or n.get('isProtected') or n.get('type') not in {'text','book'}:
+        raise Conflict('请选择可访问的普通笔记目录')
+    return dict(config,readweave_parent=parent)
 
 
 def _candidate_key(raw):
@@ -121,8 +158,7 @@ def import_status(store, config, pid):
                 'candidate':key,'note_url':None}
     if receipt.get('candidate')!=key:
         raise Conflict('ReadWeave 导入回执身份与当前候选不一致')
-    target_matches=(receipt.get('parent')==config['readweave_parent'] and
-                    receipt.get('instance')==_instance(config))
+    target_matches=(bool(receipt.get('parent')) and receipt.get('instance')==_instance(config))
     receipt['note_url']=(note_url(config,receipt.get('note_id')) if target_matches and
                          receipt.get('status') in {'readback_passed','readback_gaps'} else None)
     if not target_matches:
@@ -196,12 +232,16 @@ def _confirmed_navigation(raw, navigation):
                 readback_canonical_sha256=canonical_sha)
 
 
-def import_candidate(store,config,pid):
+def import_candidate(store,config,pid,*,version_id=None,source_digest=None):
     if not all(config.get(k) for k in ['readweave_url','readweave_token','readweave_parent']):
         raise Conflict('先配置 ReadWeave 的地址、接口凭据与专用候选父笔记')
     if note_url(config,'configured-note') is None:
         raise Conflict('ReadWeave 地址必须是不带凭据、查询或片段的 HTTP(S) 实例地址')
     p=store.get(pid)
+    if version_id and version_id!=(p.get('processor') or {}).get('active_version'):
+        raise Conflict('成稿版本已改变，请重新打开导入窗口')
+    if source_digest and source_digest!=(p.get('processor') or {}).get('source_digest'):
+        raise Conflict('原件已改变，请重新打开导入窗口')
     from .checks import can_publish
     if (p.get('production') or {}).get('pipeline')=='active_composition_v2' and not can_publish(p):
         raise Conflict('只有已完成语义核对并由用户接受的当前版本才能导入 ReadWeave')

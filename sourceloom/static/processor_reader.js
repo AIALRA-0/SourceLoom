@@ -1,5 +1,5 @@
 import {clamp, locate, mapPoint} from './reader_geometry.js';
-import {PDFDocumentView} from './processor_pdf.js?v=long-chinese-reader-20261001';
+import {PDFDocumentView} from './processor_pdf.js?v=pdf-readweave-20261009';
 
 const $=id=>document.getElementById(id);
 const pageOf=r=>Number(r?.page || String(r?.locator||'').match(/page\[(\d+)\]/i)?.[1] || 0);

@@ -14,3 +14,6 @@
 .pdf-text-status{position:absolute;bottom:8px;left:8px;padding:4px 8px;background:white;color:#555;font:13px system-ui;z-index:5}
 .pdf-hand,.pdf-hand .textLayer span{cursor:grab!important;user-select:none!important}
 .pdf-hand:active,.pdf-hand:active .textLayer span{cursor:grabbing!important}
+
+.pdf-load-state{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;color:var(--muted);font-size:12px;position:sticky;top:0;z-index:7;background:var(--surface);}
+.pdf-load-state a{color:var(--text);text-decoration:underline;white-space:nowrap;}

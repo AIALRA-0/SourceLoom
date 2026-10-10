@@ -1,12 +1,13 @@
-import { initializeDesign } from './processor_design.js?v=return-ui-20261009';
-import { MaterialLibrary } from './processor_library.js?v=return-ui-20261009';
-import { LinkedReader } from './processor_reader.js?v=non-generation-baseline-20261002';
-import { ReadingWorkbench } from './processor_workbench.js?v=return-ui-20261009';
+import { ReadWeaveImport } from './processor_readweave.js?v=pdf-readweave-20261009';
+import { initializeDesign } from './processor_design.js?v=pdf-readweave-20261009';
+import { MaterialLibrary } from './processor_library.js?v=pdf-readweave-20261009';
+import { LinkedReader } from './processor_reader.js?v=pdf-readweave-20261009';
+import { ReadingWorkbench } from './processor_workbench.js?v=pdf-readweave-20261009';
 import { IssueDrawer } from './processor_issues.js?v=official-golive-20261002';
-import { ManualHandoff } from './processor_manual_handoff.js?v=return-ui-20261009';
-import { Feedback } from './processor_feedback.js?v=return-ui-20261009';
-import { ReturnUpload, uploadReturn } from './processor_return_upload.js?v=return-ui-20261009';
-import { MaterialImport } from './processor_import.js?v=return-ui-20261009';
+import { ManualHandoff } from './processor_manual_handoff.js?v=pdf-readweave-20261009';
+import { Feedback } from './processor_feedback.js?v=pdf-readweave-20261009';
+import { ReturnUpload, uploadReturn } from './processor_return_upload.js?v=pdf-readweave-20261009';
+import { MaterialImport } from './processor_import.js?v=pdf-readweave-20261009';
 import { webChannels, webGenerationChannel } from './processor_web_channels.js?v=web-only-20261003';
 import { readJSON } from './processor_read.js?v=loading-reliability-20261004';
 const $ = selector => document.querySelector(selector);
@@ -365,7 +366,7 @@ function renderReadweaveStatus(receipt) {
   if (url) $('#open-readweave').href = url; else $('#open-readweave').removeAttribute('href');
   const labels = {not_configured:'未配置 ReadWeave',not_ready:'成稿尚未具备导入条件',not_submitted:'尚未导入',submitted:'已提交，正在等待原操作结果；不会再次创建笔记',imported:'已创建笔记，等待读回核对',readback_passed:'已导入并读回核对',readback_gaps:'读回存在差异，请下载包回查'};
   const target=capabilities.readweave_target || {};
-  $('#readweave-target').textContent = [labels[status] || status,target.instance_url ? `实例 ${target.instance_url}` : null,target.parent_note_id ? `父笔记 ${target.parent_note_id}` : null,receipt?.phase,receipt?.note_id ? `笔记 ${receipt.note_id}` : null].filter(Boolean).join(' · ');
+  $('#readweave-target').textContent = [labels[status] || status,target.instance_url ? `实例 ${target.instance_url}` : null,(receipt?.parent||target.parent_note_id) ? `父笔记 ${receipt?.parent||target.parent_note_id}` : null,receipt?.phase,receipt?.note_id ? `笔记 ${receipt.note_id}` : null].filter(Boolean).join(' · ');
   const checks=activeChecks(),version=activeVersion();
   const valid=(version.mechanical_pass ?? processor().mechanical_pass ?? checks.ok ?? checks.valid)===true;
   $('#send-readweave').disabled = readonly || locked || !valid || !version.id || ['submitted','imported','readback_passed','readback_gaps'].includes(status);
@@ -692,26 +693,26 @@ document.addEventListener('click',event=>{const anchor=event.target.closest?.('a
   if(anchor.dataset.prepared==='true')return;
   event.preventDefault();protect(()=>downloadPrepared(anchor))(event);
 });
-async function importReadweave(queryOnly=false) {
+const readweaveImport=new ReadWeaveImport({
+  read:api,
+  context:()=>({id:project?.id,title:project?.title,version:activeVersion()?.id,sourceDigest:processor().source_digest,defaultId:capabilities.readweave_target?.parent_note_id}),
+  submit:(parent,snapshot)=>importReadweave(false,parent,snapshot)
+});
+async function importReadweave(queryOnly=false,parentId=null,snapshot=null) {
   if(locked)return;
-  if(!queryOnly) {
-    const version=activeVersion();
-    const count=(pack?.attachments||[]).length,images=resourceItems().filter(item=>item.kind==='image'&&resourceUsage(item)==='body').length;
-    const target=capabilities.readweave_target || {};
-    const detail=`目标实例：${target.instance_url || '当前配置的 ReadWeave 实例'}\n父笔记：${target.parent_note_id || '当前配置的测试父笔记'}\n标题：${project.title}\n版本：${version.id}\n${images} 项正文图片 · ${count} 个附件\n状态：Candidate，未完成语义核对\n\n确认导入这一版？`;
-    if(!confirm(detail))return;
-  }
+  const id=project?.id,epoch=openEpoch;
   setLocked(true);operation(queryOnly?'正在查询原导入操作':'正在提交 ReadWeave 导入');
   try {
-    const result=await post(pidPath('/readweave'));
+    const result=await post(pidPath('/readweave'),{parent_id:parentId||readweaveReceipt?.parent,version_id:snapshot?.version||activeVersion()?.id,source_digest:snapshot?.sourceDigest||processor().source_digest});
+    if(id!==project?.id||epoch!==openEpoch)return result;
     await loadReadweaveStatus();
     if(result?.note_url && result?.note_id && result?.status==='readback_passed') operationDone('ReadWeave 已导入并读回核对，可打开实际笔记');
     else if(result?.status==='submitted'||result?.status==='imported') operation('原导入操作正在处理中；可以查询同一操作');
     else operationError(result?.message || '导入尚未取得可核对的完整结果，原操作记录已保留');
-    await refreshCurrent();
+    await refreshCurrent();return result;
   } finally {setLocked(false);}
 }
-$('#send-readweave').addEventListener('click',protect(()=>importReadweave(false)));
+$('#send-readweave').addEventListener('click',protect(event=>readweaveImport.open(event.currentTarget)));
 $('#query-readweave').addEventListener('click',protect(()=>importReadweave(true)));
 $('#copy-readweave-url').addEventListener('click',protect(async()=>{if(!readweaveURL)throw new Error('尚无可核对的笔记地址');operation('正在复制笔记地址');await copyText(readweaveURL);operationDone('已复制真实笔记地址');}));
 $('#open-readweave').addEventListener('click',()=>{if(!readweaveURL)return;operation('正在打开已读回的 ReadWeave 笔记');operationDone('已向浏览器请求在新标签页打开笔记');});

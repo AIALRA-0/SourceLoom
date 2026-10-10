@@ -85,7 +85,7 @@ export class PDFDocumentView {
     container.addEventListener('scroll',this.scroll,{passive:true});
     this.resize=new ResizeObserver(()=>{
       if(this.destroyed||!this.doc||!container.clientWidth)return;
-      if(Math.abs((this.lastWidth||0)-container.clientWidth)<1&&(this.mode!=='page'||Math.abs((this.lastHeight||0)-container.clientHeight)<1))return;
+      if(Math.abs((this.lastWidth||0)-container.clientWidth)<1&&(this.mode!=='page'||Math.abs((this.lastHeight||0)-container.clientHeight)<1)){void this.renderVisible();return;}
       this.lastWidth=container.clientWidth;
       if(!window.getSelection()?.isCollapsed && container.contains(window.getSelection()?.anchorNode))return;
       this.relayout();
@@ -95,10 +95,16 @@ export class PDFDocumentView {
     this.dragEnd=()=>{this.drag=null;};
     this.selectionBegan=()=>{this.selectionEpoch=(this.selectionEpoch||0)+1;};container.addEventListener('pointerdown',this.selectionBegan);
     container.addEventListener('pointerdown',this.dragStart);container.addEventListener('pointermove',this.dragMove);container.addEventListener('pointerup',this.dragEnd);container.addEventListener('pointercancel',this.dragEnd);
+    this.loadState=element('div','pdf-load-state');this.loadState.setAttribute('role','status');
+    this.loadMessage=element('span',null,'正在读取原件');
+    const originalLink=element('a',null,'打开原文件');originalLink.href=this.originalURL();originalLink.target='_blank';originalLink.rel='noopener noreferrer';
+    this.loadState.append(this.loadMessage,originalLink);container.prepend(this.loadState);
     this.ready=this.open();
   }
   valid(){return !this.destroyed&&this.current()&&this.container.isConnected;}
-  emit(message){if(!this.valid())return;this.message=message||this.message;const state=this.state;this.onState?.(state);this.container.dispatchEvent(new CustomEvent('pdf-state',{bubbles:true,detail:state}));}
+  emit(message){if(!this.valid())return;this.message=message||this.message;
+    if(this.loadMessage){const readable=this.rows?.some(row=>row.canvas);this.loadMessage.textContent=readable?'原件已显示':this.message||'正在读取原件';this.loadState.hidden=!!readable;}
+    const state=this.state;this.onState?.(state);this.container.dispatchEvent(new CustomEvent('pdf-state',{bubbles:true,detail:state}));}
   get state(){return {loaded:!!this.doc,version:pdfjs.version,pages:this.rows.length,scale:this.scale,scaleMode:this.mode,rotation:this.rotation,hand:this.hand,
     query:this.query,hits:this.hits.length,hit:this.hitIndex+1,indexed:this.indexed,indexing:!!this.indexing,message:this.message,
     rendered:this.rows.filter(r=>r.canvas).map(r=>r.page),textPages:this.rows.filter(r=>r.textLayer).map(r=>r.page),identity:this.identity};}
@@ -140,7 +146,7 @@ export class PDFDocumentView {
       this.task.onProgress=progress=>{if(this.valid())this.emit(progress.total?`正在读取原 PDF · ${Math.round(progress.loaded/progress.total*100)}%`:'正在读取原 PDF…');};
       const doc=await this.wait(this.task.promise,'原 PDF 读取');if(!this.valid())return;this.task.onProgress=null;this.doc=doc;
       const stack=this.container.querySelector('.source-document')||element('div','source-document');
-      if(!stack.isConnected)this.container.replaceChildren(stack);this.stack=stack;stack.classList.add('pdf-document');
+      if(!stack.isConnected)this.container.replaceChildren(...(this.loadState?[this.loadState]:[]),stack);this.stack=stack;stack.classList.add('pdf-document');
       this.rows=[];Array.from({length:doc.numPages},(_,index)=>{
         const page=index+1;let sheet=stack.querySelector(`.source-sheet[data-page="${page}"]`);
         if(!sheet){sheet=element('section','source-sheet');sheet.dataset.page=page;sheet.setAttribute('aria-label',`原件第 ${page} 页`);stack.append(sheet);}
@@ -254,23 +260,29 @@ export class PDFDocumentView {
     const current=()=>this.valid()&&revision===this.revision&&row.pendingFrame===pending&&(!visibleOnly||this.wanted?.has(row));
     const promise=this.wait((async()=>{
         await renderTask.promise;if(!current())return;
+        const selected=this.captureSelection(),oldFrame=row.frame,oldCanvas=row.canvas,oldText=row.textLayer;
+        const publish=()=>{
+          if(oldFrame)oldFrame.replaceWith(frame);else row.sheet.prepend(frame);
+          Object.assign(row,{frame,canvas,textLayer:pending.textLayer,noText:!pending.textLayer,committedViewport:viewport,renderRevision:revision});
+          oldText?.cancel();if(oldCanvas)oldCanvas.width=oldCanvas.height=0;
+          if(row.fallback)row.fallback.hidden=true;row.sheet.querySelector('.page-load-state')?.remove();
+        };
+        // First display can publish the bitmap while auxiliary layers load.
+        // A previously readable frame keeps its selection until its replacement is complete.
+        if(!oldFrame){publish();this.emit('原件页面已显示 · 正在准备文字与链接');}
         if(!row.text){const text=await row.pdfPage.getTextContent();if(!current())return;row.text=text;}if(!current())return;
         if(row.text.items.some(item=>item.str?.trim())){
           const container=element('div','textLayer');frame.append(container);
-          pending.textLayer=new pdfjs.TextLayer({textContentSource:row.text,container,viewport});
+          pending.textLayer=new pdfjs.TextLayer({textContentSource:row.text,container,viewport});if(!oldFrame)row.textLayer=pending.textLayer;
           await pending.textLayer.render();container.dataset.page=String(row.page);
         }else frame.append(element('span','pdf-text-status','该页没有可用的原生文字层 · 可查看原页图像'));
         if(!current())return;
         frame.append(await this.renderLinks(row,viewport));if(!current())return;
-        const selected=this.captureSelection(),oldFrame=row.frame,oldCanvas=row.canvas,oldText=row.textLayer;
-        // Publish the correct bitmap and all interaction layers together.
-        if(oldFrame)oldFrame.replaceWith(frame);else row.sheet.prepend(frame);
-        Object.assign(row,{frame,canvas,textLayer:pending.textLayer,noText:!pending.textLayer,committedViewport:viewport,renderRevision:revision});
-        this.restoreSelection(selected);oldText?.cancel();if(oldCanvas)oldCanvas.width=oldCanvas.height=0;
-        if(row.fallback)row.fallback.hidden=true;row.sheet.querySelector('.page-load-state')?.remove();this.paintHits(row);this.emit();
+        if(oldFrame)publish();else Object.assign(row,{textLayer:pending.textLayer,noText:!pending.textLayer});
+        row.sheet.querySelector('.page-load-state')?.remove();this.restoreSelection(selected);this.paintHits(row);this.emit('原件页面已显示');
     })(),`第 ${row.page} 页绘制`,()=>{renderTask.cancel();pending.textLayer?.cancel();}).catch(error=>{
       if(error.name!=='RenderingCancelledException'&&current()){
-        row.failed=true;this.failure(row,error,()=>{row.failed=false;this.renderPage(row);});
+        row.failed=true;this.failure(row,error,()=>{row.failed=false;row.renderRevision=-1;this.renderPage(row);});
       }
     }).finally(()=>{
         if(row.frame!==frame){pending.textLayer?.cancel();canvas.width=canvas.height=0;}

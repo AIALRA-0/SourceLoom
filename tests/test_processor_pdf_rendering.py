@@ -78,6 +78,11 @@ const result={};
  const {v,row,drawn,old}=setup();v.wanted=new Set([row]);const pending=v.renderPage(row,{visibleOnly:true});v.wanted.clear();drawn.resolve();await pending;
  assert.equal(row.frame,old);assert.equal(row.sheet.children[0],old);result.late_visible_bitmap_cannot_publish_offscreen=true;
 }
+{
+ const {v,row,drawn}=setup();row.frame=null;row.canvas=null;row.sheet.replaceChildren();textGate=gate();v.failure=(r,e)=>{r.layerFailure=e.message};
+ const pending=v.renderPage(row);drawn.resolve();await new Promise(r=>setImmediate(r));assert.ok(row.canvas,'first bitmap must not wait for text');assert.equal(row.sheet.children.length,1);result.first_bitmap_precedes_text=true;
+ const bitmap=row.canvas;textGate.reject(new Error('auxiliary layer unavailable'));await pending;assert.equal(row.canvas,bitmap);assert.equal(bitmap.width,100);assert.equal(row.layerFailure,'auxiliary layer unavailable');result.text_failure_retains_first_bitmap=true;textGate=null;
+}
 console.log(JSON.stringify(result));
 '''
 
@@ -91,7 +96,7 @@ def pdf_regressions():
     return json.loads(completed.stdout)
 
 @pytest.mark.parametrize('case',[
-    'atomic_publish','stale_revision_preserves_old','stale_identity_preserves_old',
+    'first_bitmap_precedes_text','text_failure_retains_first_bitmap','atomic_publish','stale_revision_preserves_old','stale_identity_preserves_old',
     'render_error_preserves_old','concurrent_passes_share_frame','rotation_transforms_entire_frame',
     'distant_frame_reclaimed','distant_selection_keeps_text_not_bitmap','unchanged_geometry_skips_rebuild',
     'pending_page_proxies_ignore_layout','ready_page_proxies_resume_layout',

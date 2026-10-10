@@ -435,3 +435,11 @@
 #operation-elapsed{flex:none;font-size:12px;}
 .reader-product .feedback-close{flex:none;min-width:28px;min-height:28px;padding:0;}
 @media(max-width:600px){.return-dropzone{flex-wrap:wrap;}.return-file-button{width:100%;}.reading-active #operation-status{width:calc(100vw - 32px);}.operation-status{flex-wrap:wrap;}.feedback-close{margin-left:auto;}}
+
+.readweave-import-dialog{width:min(560px,calc(100vw - 32px));max-height:calc(100dvh - 48px);overflow:auto;}
+.readweave-target-presets,.readweave-path{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;}
+.readweave-folders{display:grid;gap:4px;max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:var(--radius);padding:8px;}
+.readweave-folders button{text-align:left;justify-content:flex-start;padding:8px 12px;background:transparent;border:0;}
+.readweave-folders button:hover,.readweave-folders button:focus-visible{background:var(--hover);}
+.readweave-import-target{font-weight:600;overflow-wrap:anywhere;}
+.readweave-import-state{min-height:2em;color:var(--muted);}
