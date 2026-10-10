@@ -1,0 +1,56 @@
+sourceloom/math_render.py
+  s_36a381ab4bccf9::t_891dee4ad7e7c2 4,59-78
+sourceloom/static/processor_workspace.js
+  s_36a381ab4bccf9::t_7b7bf93a98255e 66,76,78,80,87,90
+sourceloom/static/processor_feedback.js
+  s_36a381ab4bccf9::t_891dee4ad7e7c2 1-22
+sourceloom/static/processor_return_upload.js
+  s_36a381ab4bccf9::t_abcd39c2ed63cf 1-50,56-58
+  s_36a381ab4bccf9::t_a16c75c525469b 51-55
+tests/test_processor_return_upload.py
+  s_36a381ab4bccf9::t_7b7bf93a98255e 1-51,69-113
+  s_36a381ab4bccf9::t_a16c75c525469b 52-68
+  s_36a381ab4bccf9::t_689be4a9db4194 114
+sourceloom/processor_api.py
+  s_36a381ab4bccf9::t_901215fa2fe480 16,377-427
+  s_36a381ab4bccf9::t_7b7bf93a98255e 354-355
+  s_36a381ab4bccf9::t_93aede83e82736 428
+sourceloom/processor.py
+  s_36a381ab4bccf9::t_901215fa2fe480 1028-1029,1052-1053,1086-1096
+frontend/return-upload.test.js
+  s_36a381ab4bccf9::t_823ad427040a60 1-16
+sourceloom/static/processor.html
+  s_36a381ab4bccf9::t_b21eada26cf37c 7-9,11,13-14,16,18
+sourceloom/static/processor.js
+  s_36a381ab4bccf9::t_975c5635755c35 1-2,4,6-9,18,36-38,41-43,45,118-131,308,608-609,660
+sourceloom/static/processor_design.js
+  s_36a381ab4bccf9::t_36b83f1c8e20e4 5
+sourceloom/static/processor_library.js
+  s_36a381ab4bccf9::t_49b1ceff78b4b6 1
+sourceloom/static/processor_manual_handoff.js
+  s_36a381ab4bccf9::t_a7a40c063741be 37-38
+sourceloom/static/processor_tree.js
+  s_36a381ab4bccf9::t_77e66ad20cdce4 33,39-40
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_3c3a717e3ca9f8 145-146,420-437
+tests/test_manual_handoff.py
+  s_36a381ab4bccf9::t_ba87cb0080e344 136,154,156,163,174-175,179
+tests/test_processor_reading_stability.py
+  s_36a381ab4bccf9::t_040f4dac82f990 269-277,279,281
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "021dfdada912da8138b5aa510fd4592567bb449a",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
