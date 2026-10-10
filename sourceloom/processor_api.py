@@ -47,7 +47,6 @@ def register(app, store, config):
     from .processor_intake import MaterialIntake, ACTIVE_PHASES
     intake = MaterialIntake(store)
     app.state.processor_intake = intake
-    app.add_event_handler('shutdown', intake.close)
     presentations, compilations, previews, issue_views = (_ReadingDerivatives() for _ in range(4))
 
     @lru_cache(maxsize=512)

@@ -59,6 +59,7 @@ def create_app(config=None):
     @asynccontextmanager
     async def lifespan(app):
         yield
+        app.state.processor_intake.close()
         pipeline.executor.shutdown(wait=False,cancel_futures=True)
         app.state.processor_executor.shutdown(wait=False,cancel_futures=True)
     app=FastAPI(title="SourceLoom",version="0.1.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)

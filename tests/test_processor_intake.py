@@ -151,3 +151,18 @@ def test_restart_marks_interrupted_upload_resumable_without_sending_a_model(clie
         assert wait(c, pid)['phase'] == 'complete'
     finally:
         worker.close()
+
+
+def test_application_shutdown_closes_the_preparation_worker(tmp_path, monkeypatch):
+    from sourceloom.processor_intake import MaterialIntake
+    closed = threading.Event()
+    real = MaterialIntake.close
+    def close(self):
+        real(self)
+        closed.set()
+    monkeypatch.setattr(MaterialIntake, 'close', close)
+    app = create_app(dict(data_dir=str(tmp_path), auth_mode='local', provider='manual', external_worker=True))
+    with TestClient(app) as c:
+        assert c.get('/health').status_code == 200
+        assert not closed.is_set()
+    assert closed.is_set()
