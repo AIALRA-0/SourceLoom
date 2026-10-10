@@ -462,9 +462,20 @@ def intake(store, uploads, source_url=None, asset_aliases=None, progress=None):
             try:
                 for n, page in enumerate(reader.pages):
                     locator = f"{name}/page[{n+1}]"
-                    rendered = pdf[n].render(scale=1.3).to_pil()
-                    buf = BytesIO()
-                    rendered.save(buf, "PNG")
+                    if progress:
+                        progress(dict(phase='pdf_pages',completed=n,total=len(reader.pages),detail=name))
+                    pdf_page = pdf[n]
+                    bitmap = pdf_page.render(scale=1.3)
+                    try:
+                        rendered = bitmap.to_pil()
+                        buf = BytesIO()
+                        # PNG remains lossless; avoid the slower default encoder
+                        # while explicitly releasing each page's native buffers.
+                        rendered.save(buf, "PNG", compress_level=1)
+                        rendered.close()
+                    finally:
+                        bitmap.close()
+                        pdf_page.close()
                     key = store.blob(buf.getvalue())
                     resources.append(dict(id=key, name=f"page-{n+1}.png", sha256=key, size=len(buf.getvalue()), mime="image/png"))
                     coords = []

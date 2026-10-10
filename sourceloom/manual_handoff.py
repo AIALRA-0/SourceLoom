@@ -15,13 +15,13 @@ from . import processor
 START_MESSAGE = '请用文件工具读取附件任务包中的 START_HERE.md，按其中要求处理完整材料；需要看图时实际打开包内对应图像，完成后返回完整 Markdown 文件。'
 
 
-def pack_zip(store, pid):
+def pack_zip(store, pid, *, pack=None):
     """Package the normal task, including original bytes, for one-file handoff.
 
     Model selection and actual ZIP/image tool availability belong to the target
     chat. Creating an archive does not certify that chat's capabilities.
     """
-    pack = processor.task_pack(store, pid)
+    pack = pack or processor.task_pack(store, pid)
     attachments = []
     for number, original in enumerate(pack['attachments'], 1):
         name = str(original['name']).replace('\\', '/').rsplit('/', 1)[-1]

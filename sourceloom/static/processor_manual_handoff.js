@@ -7,6 +7,9 @@ export class ManualHandoff {
     this.download=document.querySelector('#task-pack-download');
     this.copy=document.querySelector('#copy-prompt');
     document.querySelector('#manual-handoff').prepend(this.root);
+    const details=deps.element('div',undefined,'handoff-details');
+    details.append(document.querySelector('#prompt-details'),document.querySelector('#attachment-details'));
+    document.querySelector('#manual-handoff').append(details);
     this.draw();
   }
   message(){return START_MESSAGE;}
@@ -26,12 +29,13 @@ export class ManualHandoff {
     const el=this.deps.element;
     this.root.replaceChildren();
     this.copy.textContent='复制开始指令';
-    this.root.append(el('p','下载一份完整任务包，在你选择的 xhigh 对话中上传，粘贴开始指令；完成后导回 Markdown。正文、图表和有效要求都在包内。'));
-    const actions=el('div',undefined,'source-tools');
+    const steps=el('ol',undefined,'handoff-steps');this.root.append(steps);
+    for(const text of ['下载任务包，在 GPT 对话中上传','复制开始指令，交给模型处理','取得完整 .md 或 .txt 文件，在这里上传成稿'])steps.append(el('li',text));
+    const actions=el('div',undefined,'handoff-actions');
     if(this.data)this.download.href=this.data.package_url;
     actions.append(this.download,this.copy);
-    const back=el('button','导回成稿');back.type='button';
+    const back=el('button','上传 GPT 成稿');back.type='button';
     back.addEventListener('click',this.deps.showResult);actions.append(back);
-    this.root.append(actions,el('p','目标会话需要实际解包、读取正文并查看必要图像；这一能力仍待该会话验证，不能仅凭 ZIP 下载成功算通过。现有成稿可以直接导回，不受通道验证影响。','muted'));
+    this.root.append(actions,el('p','上传后检查预览，并点击保存图标保存新版本。任务包按内容生成唯一索引；下载成功不代表模型已读完附件。','muted'));
   }
 }

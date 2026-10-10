@@ -69,13 +69,16 @@ class Store:
         finally:
             cx.close()
 
-    def create(self, title, mode="rewrite", budget=0.5):
+    def create(self, title, mode="rewrite", budget=0.5, *, initialize=None):
         pid = identity()
         body = dict(id=pid, title=title, mode=mode, created=time.time(), revision=0,
                     state="collecting", inventory=None, plan=None, draft=None, review=None,
                     accepted_revision=None, repair_rounds=0, budget_usd=budget, max_calls=12,
                     active_job=None, goal="完整保留材料，并按必要前提循序讲清", research=None)
         with self.connect() as cx:
+            if initialize is not None:
+                cx.execute('BEGIN IMMEDIATE')
+                initialize(body, cx)
             cx.execute("INSERT INTO projects VALUES(?,?)", (pid, json.dumps(body, ensure_ascii=False)))
         return body
 

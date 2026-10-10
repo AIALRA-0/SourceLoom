@@ -141,8 +141,8 @@
 .result-layout.source-only #compare-divider{display:none;}
 .result-layout.preview-only .compare-left-pane{display:none;}
 .result-layout.preview-only #compare-divider{display:none;}
-.reading-active #operation-status{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:50;max-width:80vw;margin:0;box-shadow:0 2px 20px #0002;}
-.reading-active #notice{position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:50;max-width:80vw;margin:0;box-shadow:0 2px 20px #0002;}
+.reading-active #operation-status{position:fixed;bottom:calc(var(--footer-height) + 12px);left:50%;transform:translateX(-50%);z-index:50;width:max-content;max-width:min(640px,calc(100vw - 32px));margin:0;box-shadow:0 2px 20px #0002;}
+.reading-active #notice{position:fixed;bottom:calc(var(--footer-height) + 12px);left:50%;transform:translateX(-50%);z-index:50;width:max-content;max-width:min(640px,calc(100vw - 32px));margin:0;box-shadow:0 2px 20px #0002;}
 .reading-active #notice:empty{display:none;}
 .reader-product .editor-pane{padding:12px;min-height:0;overflow:hidden;}
 .reader-product .editor-pane textarea{height:0;min-height:0;flex:1 1 0;white-space:pre;overflow:auto;resize:none;border-radius:var(--radius);}
@@ -361,4 +361,59 @@
 .reader-product button{border:1px solid CanvasText;}
 
 .choice-row.option-active{outline:1px solid Highlight;}
+}
+
+/* Preparation and handoff use the same Workbench surface and spacing roles. */
+.reader-product #tab-handoff{max-width:100%;}
+.handoff-sheet{border:1px solid var(--line);border-radius:var(--radius);background:var(--canvas);padding:var(--space-4);display:grid;gap:var(--space-4);}
+.handoff-summary h3{font-size:14px;margin:0 0 4px;font-weight:600;}
+.handoff-summary p{margin:0;font-size:12px;overflow-wrap:anywhere;}
+.handoff-identity summary{padding:4px 0;color:var(--muted);font-size:12px;}
+.handoff-preferences{border:1px solid var(--line);border-radius:var(--radius);padding:8px 12px;background:var(--canvas);margin:0 0 var(--space-4);}
+.handoff-preferences summary{display:block;cursor:pointer;overflow-wrap:anywhere;}
+.handoff-preferences .preference-fields{display:grid;gap:12px;padding-top:12px;}
+.handoff-preferences textarea{width:100%;}
+.handoff-preferences button{justify-self:start;}
+.handoff-sheet .mode-switch{display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:var(--radius);width:fit-content;margin:0;background:var(--surface);}
+.reader-product .handoff-sheet .mode-switch button{border:0;background:transparent;box-shadow:none;min-height:32px;padding:4px 12px;}
+.reader-product .handoff-sheet .mode-switch button[aria-selected=true]{background:var(--selected);color:var(--text);box-shadow:none;}
+#manual-upload-guide{display:grid;gap:12px;}
+#manual-upload-guide p{margin:0;}
+.handoff-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.handoff-actions svg{width:16px;height:16px;flex:none;}
+.handoff-actions button,.handoff-actions a{gap:8px;}
+.handoff-details{border-top:1px solid var(--line);padding-top:12px;display:grid;gap:4px;}
+.handoff-details summary{font-size:13px;color:var(--secondary);padding:4px 0;}
+.handoff-sheet #automatic-handoff{display:grid;gap:12px;}
+.handoff-sheet #automatic-handoff h3,.handoff-sheet #automatic-handoff p{margin:0;}
+.handoff-sheet #generate{justify-self:start;}
+.reader-product .tab-panel:not(#tab-result) .panel-heading h2{font-size:18px;line-height:1.5;}
+.reader-product .tab-panel:not(#tab-result) .panel-heading{margin-bottom:16px;}
+.reader-product .source-layout{gap:16px;grid-template-columns:repeat(2,minmax(0,1fr));}
+.reader-product #tab-material .card{padding:16px;min-width:0;}
+.reader-product #tab-material .source-tools,.reader-product .resource-tools,.reader-product .resource-bulk{flex-wrap:wrap;gap:8px;}
+#import-form>label{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
+#import-form .select-control,#import-form input,#import-form textarea{width:100%;min-width:0;}
+#import-status{display:grid;gap:8px;padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);color:var(--text);margin-top:12px;}
+#import-status strong{font-size:13px;}
+#import-status progress{width:100%;height:6px;accent-color:var(--secondary);}
+#import-status[data-state=error]{border-color:var(--danger);}
+#import-progress-detail{overflow-wrap:anywhere;}
+#import-recovery{flex-wrap:wrap;margin-top:12px;}
+.handoff-steps{margin:0 0 12px;padding-left:20px;display:grid;gap:6px;color:var(--secondary);font-size:13px;}
+.handoff-details details{margin:0;min-width:0;}
+.handoff-details .prompt{min-height:200px;margin:8px 0;}
+.reader-product .tab-panel:not(#tab-result) .panel-heading{flex-wrap:wrap;}
+.reader-product .resource-tools label{flex:1;min-width:100px;}
+.reader-product .resource-bulk{gap:8px;}
+.reader-product dialog .dialog-heading{gap:12px;}
+.reader-product dialog .dialog-heading h2{font-size:18px;line-height:1.5;}
+.reader-product dialog label>textarea,.reader-product dialog label>input:not([type=checkbox]){width:100%;}
+.reader-product dialog .dialog-actions{flex-wrap:wrap;}
+@container workbench (max-width:900px){.reader-product .source-layout{grid-template-columns:minmax(0,1fr);}}
+@container content-pane (max-width:620px){
+ .handoff-actions{display:grid;grid-template-columns:1fr;align-items:stretch;}
+ .handoff-actions>*{width:100%;}
+ .handoff-sheet{padding:12px;gap:12px;}
+ .handoff-preferences{padding:8px 12px;}
 }

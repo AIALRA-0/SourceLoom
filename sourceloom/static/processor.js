@@ -3,7 +3,8 @@ import { MaterialLibrary } from './processor_library.js?v=apcf-ui-20261009-1';
 import { LinkedReader } from './processor_reader.js?v=non-generation-baseline-20261002';
 import { ReadingWorkbench } from './processor_workbench.js?v=apcf-ui-20261009-1';
 import { IssueDrawer } from './processor_issues.js?v=official-golive-20261002';
-import { ManualHandoff } from './processor_manual_handoff.js?v=manual-handoff-20261001';
+import { ManualHandoff } from './processor_manual_handoff.js?v=import-experience-20261009-1';
+import { MaterialImport } from './processor_import.js?v=import-experience-20261009-1';
 import { webChannels, webGenerationChannel } from './processor_web_channels.js?v=web-only-20261003';
 import { readJSON } from './processor_read.js?v=loading-reliability-20261004';
 const $ = selector => document.querySelector(selector);
@@ -13,7 +14,7 @@ let dirty = false, selectedVersion = null, pollTimer = null, openEpoch = 0, lock
 let previewKey = '', markdownBlob = null, sourceMap = null, loadedVersion = null, sourcePage = 1, sourceZoom = 1;
 let mode = 'manual', resourceLimit = 60, selectedResourceIds = new Set(), resourceUndo = null, readweaveReceipt = null;
 let actionStarted = 0, actionTicker = null, currentOperation = '', readweaveURL = '';
-let preparationPoll = null;
+let operationTimer = null;
 let versionEpoch=0, versionSelectionEpoch=0;
 let openingProjectId=null;
 let templateWorkspace=null;
@@ -37,7 +38,7 @@ function operation(message, state = 'running') {
   const bar = $('#operation-status'); bar.hidden = false; bar.dataset.state = state;
   if (state === 'running' && $('#notice').classList.contains('error')) notice();
   $('#operation-message').textContent = message;
-  clearInterval(actionTicker);
+  clearInterval(actionTicker);clearTimeout(operationTimer);
   if (state === 'running') {
     actionStarted = performance.now(); currentOperation = message;
     actionTrace.push({action:message,step:'feedback_rendered',at:actionStarted});
@@ -45,24 +46,12 @@ function operation(message, state = 'running') {
   } else {
     $('#operation-elapsed').textContent = '';
     actionTrace.push({action:currentOperation,step:state,at:performance.now()});
+    if(state==='success')operationTimer=setTimeout(()=>{bar.hidden=true;},6000);
   }
 }
 function operationDone(message) {operation(message,'success');}
-function operationError(message) {operation(message,'error');notice(message,true);}
+function operationError(message) {operation(message,'error');notice();}
 function tracingRequest(path) {actionTrace.push({action:currentOperation,step:'request_sent',at:performance.now(),path});}
-function beginPreparationPoll(projectId) {
-  clearInterval(preparationPoll);
-  preparationPoll = setInterval(async()=>{
-    try{
-      const progress=await api(`${base}/projects/${encodeURIComponent(projectId)}/progress`);
-      const phases={saving_original:'正在保存原件',parsing_file:'正在解析材料',pdf_pages:'正在处理 PDF 原页',extracting_resources:'正在提取资源',complete:'材料准备完成',failed:'材料准备失败'};
-      const count=progress?.completed!=null ? ` · ${progress.completed}${progress.total!=null ? `/${progress.total}` : ''}` : '';
-      const message=`${phases[progress?.phase] || progress?.phase || '正在处理材料'}${count}${progress?.detail ? ` · ${progress.detail}` : ''}`;
-      if (project?.id !== projectId && currentOperation.startsWith('正在')) $('#operation-message').textContent=message;
-      if(['complete','failed'].includes(progress?.phase)) clearInterval(preparationPoll);
-    }catch{clearInterval(preparationPoll);}
-  },1200);
-}
 async function api(path, options = {}) {
   tracingRequest(path);
   if(!options.method||options.method.toUpperCase()==='GET')return readJSON(path,{...options,headers:{'X-SourceLoom':'1',...options.headers},onResponse:response=>actionTrace.push({action:currentOperation,step:'response_received',at:performance.now(),status:response.status})});
@@ -131,7 +120,7 @@ const workbench = new ReadingWorkbench({reader,issues:issueDrawer,api,notify:not
   context:()=>({projectId:project?.id,versionId:selectedVersion,readonly:project?.library?.readonly===true}),canProcessIssues:()=>!dirty,resources:resourceItems,
   preview:previewDocument,mappings:sourceMapEntries,representations:()=>loadedVersion?.representations||[]});
 const library = new MaterialLibrary({api,post,current:()=>project,open,refresh:refreshProjects,isDirty:()=>dirty,notify:notice,persist:()=>reader.persist(),tab:()=>showTab(currentTab),leaveReader:()=>workbench.tab('library'),metadataChanged:()=>renderAvailability()});
-const manualHandoff = new ManualHandoff({api,current:()=>project?.id,element,fileRow,copy:copyText,notify:notice,showResult:()=>showTab('result')});
+const manualHandoff = new ManualHandoff({api,current:()=>project?.id,element,fileRow,copy:copyText,notify:notice,showResult:chooseReturnedFile});
 $('#compare-page-number').addEventListener('change',event=>showSourcePage(event.target.value));
 $('#compare-page-number').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();showSourcePage(event.target.value);}});
 function documentStatus() {
@@ -599,8 +588,16 @@ async function copyText(text) {
   const copied = document.execCommand('copy'); field.remove();
   if (!copied) throw new Error('浏览器拒绝剪贴板写入；请展开任务说明并手动全选复制');
 }
-function showImport() {$('#import-form').reset(); $('#import-status').textContent = ''; $('#import-dialog').showModal();}
-$('#new-material').addEventListener('click',showImport); $('#empty-import').addEventListener('click',showImport); $('#open-import').addEventListener('click',showImport);
+const materialImport = new MaterialImport({api,post,
+  parent:()=>{const id=library.insertionParent;library.tree.importParent=null;return id;},
+  viewEpoch:()=>openEpoch,open:async id=>{if(project?.id===id)await refreshCurrent();else await open(id,'material');},
+  refresh:async parent=>{const tree=library.tree;if(tree.mode==='mine'&&!tree.query&&tree.cache.has('root'))await tree.refreshBranches([parent||'root'],tree.epoch);else await tree.refresh();},
+  start:operation,owns:message=>currentOperation===message,feedback:message=>{$('#operation-message').textContent=message;},done:operationDone,error:operationError});
+for(const id of ['new-material','empty-import','open-import'])$('#'+id).addEventListener('click',()=>materialImport.show());
+function chooseReturnedFile(){
+  if(!project||project.library?.readonly||project.trashed){notice('请在可编辑的材料或试用副本中上传成稿',true);return;}
+  showTab('result');notice('请选择 GPT 返回的完整 .md 或 .txt 成稿，然后点击保存图标');$('#markdown-file').click();
+}
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click',()=>button.closest('dialog').close());
 for (const button of document.querySelectorAll('[data-tab],[data-go]')) button.addEventListener('click',()=>showTab(button.dataset.tab || button.dataset.go));
 $('#refresh').addEventListener('click',protect(async()=>{operation('正在刷新材料与任务状态');await refreshProjects(); await refreshCurrent();await loadReadweaveStatus();operationDone('材料与任务状态已更新');}));
@@ -640,34 +637,6 @@ $('#result-preview').addEventListener('load',()=>{reader.attachPreview();workben
 $('#channel').addEventListener('change',renderAvailability);
 $('#copy-prompt').addEventListener('click',protect(async()=>{operation('正在复制任务说明');await copyText(manualHandoff.message() || $('#task-prompt').value);operationDone('开始指令已复制；上传完整任务包后在模型网页粘贴');}));
 $('#prepare-pack').addEventListener('click',protect(async()=>{operation('正在更新任务说明');setLocked(true); try {const response = await post(pidPath('/pack'),{preferences:$('#preferences').value}); pack = response.prompt ? response : await api(pidPath('/pack')); project = await api(pidPath('')); drawPack(); operationDone('任务说明已更新；旧成稿与旧请求保持原记录');} finally {setLocked(false);}}));
-$('#import-form').addEventListener('submit',protect(async event=>{
-  event.preventDefault(); const form = event.currentTarget, values = new FormData(form), files = [...form.elements.files.files], url = values.get('url').trim();
-  if (!files.length && !url) throw new Error('请选择原始文件或填写网页地址');
-  if (files.length && url) throw new Error('本次请选择文件或网页地址其中一种来源');
-  const submit = form.querySelector('[type=submit]'); submit.disabled = true;
-  operation('正在建立材料记录');$('#import-status').textContent = '正在建立材料记录…';
-  let created;
-  try {created = await post(`${base}/projects`,{title:values.get('title'),preferences:values.get('preferences')});beginPreparationPoll(created.id); if (files.length) {
-      const upload = new FormData(); for (const file of files) upload.append('files',file);
-      operation('正在上传原始文件');$('#import-status').textContent='正在上传原始文件…';
-      await uploadWithProgress(`${base}/projects/${created.id}/upload`,upload,(sent,total)=>{
-        const label=total ? `${(sent/1048576).toFixed(1)} / ${(total/1048576).toFixed(1)} MB` : `${(sent/1048576).toFixed(1)} MB`;
-        $('#operation-message').textContent=`正在上传原始文件 · ${label}`;
-      });
-    } else {operation('正在抓取与解析网页');await post(`${base}/projects/${created.id}/url`,{url});}
-    operation('正在读取解析结果');form.closest('dialog').close(); await refreshProjects(); await library.placeImported(created); await open(created.id);operationDone('原件与资源已保存，可以准备模型任务');
-  } catch (error) {$('#import-status').textContent = `导入尚未完成：${error.message}${created ? '。材料记录已保留，可从列表重新打开' : ''}`; await refreshProjects(); throw error;} finally {clearInterval(preparationPoll);submit.disabled = false;}
-}));
-function uploadWithProgress(path,body,onProgress) {
-  return new Promise((resolve,reject)=>{
-    const xhr=new XMLHttpRequest();xhr.open('POST',path);xhr.setRequestHeader('X-SourceLoom','1');
-    xhr.upload.onprogress=event=>onProgress(event.loaded,event.lengthComputable?event.total:0);
-    xhr.onerror=()=>reject(new Error('上传连接中断；已建立的材料记录仍可回查'));
-    xhr.onload=()=>{let payload;try{payload=JSON.parse(xhr.responseText);}catch{payload={};}
-      if(xhr.status>=200&&xhr.status<300)resolve(payload);else reject(new Error(payload?.error||payload?.detail||`上传未完成（${xhr.status}）`));};
-    xhr.send(body);
-  });
-}
 $('#generate').addEventListener('click',protect(async()=>{
   if (locked || requests().some(isPending)) return;
   const channel = webGenerationChannel(capabilities.channels, $('#channel').value, Boolean(pack?.requires_visual));
@@ -677,8 +646,8 @@ $('#generate').addEventListener('click',protect(async()=>{
   finally {setLocked(false); schedulePoll();}
 }));
 $('#result-markdown').addEventListener('input',()=>{dirty = true; $('#edit-state').textContent = '有未保存修改'; localStorage.setItem(`sourceloom-processor-edit:${project.id}`,$('#result-markdown').value); renderAvailability();});
-$('#import-markdown').addEventListener('click',()=>{notice('请选择要导回的 Markdown 成稿文件');$('#markdown-file').click();});
-$('#markdown-file').addEventListener('change',protect(async event=>{const file = event.target.files[0]; if (!file) return; if (file.size > 10 * 1024 * 1024) throw new Error('成稿超过 10 MB，请检查是否误选了原始文件');const epoch=openEpoch,pid=project?.id; operation('正在读取手动导回的成稿');const markdown=await file.text();event.target.value='';if(epoch!==openEpoch||pid!==project?.id)return;setMarkdown(markdown,true); localStorage.setItem(`sourceloom-processor-edit:${pid}`,$('#result-markdown').value); notice(`已载入 ${file.name}，点击“保存并预览”编译图文`);operationDone('手动成稿已载入，保存后会形成新版本');}));
+$('#import-markdown').addEventListener('click',chooseReturnedFile);
+$('#markdown-file').addEventListener('change',protect(async event=>{const file = event.target.files[0]; if (!file) return; if (file.size > 10 * 1024 * 1024) throw new Error('成稿超过 10 MB，请检查是否误选了原始文件');const epoch=openEpoch,pid=project?.id; operation('正在读取手动导回的成稿');const markdown=await file.text();event.target.value='';if(epoch!==openEpoch||pid!==project?.id)return;setMarkdown(markdown,true);setCompareLeft('editor'); localStorage.setItem(`sourceloom-processor-edit:${pid}`,$('#result-markdown').value); notice(`已载入 ${file.name}，点击“保存并预览”编译图文`);operationDone('手动成稿已载入，保存后会形成新版本');}));
 $('#save-result').addEventListener('click',protect(async()=>{
   if (!$('#result-markdown').value.trim()) throw new Error('请先粘贴或上传模型返回的正文');
   const epoch=openEpoch,pid=project.id,markdown=$('#result-markdown').value;
@@ -702,7 +671,8 @@ async function downloadPrepared(anchor) {
   if(reader){for(;;){const {done,value}=await reader.read();if(done)break;chunks.push(value);bytes+=value.byteLength;$('#operation-message').textContent=`正在接收文件 · ${(bytes/1048576).toFixed(1)} MB`;}}
   const blob=reader ? new Blob(chunks,{type:response.headers.get('Content-Type') || 'application/octet-stream'}) : await response.blob();
   const blobURL=URL.createObjectURL(blob),temporary=element('a');temporary.href=blobURL;
-  temporary.download=anchor.download || (anchor.id==='task-pack-download'?'SourceLoom-Task-Pack.zip':anchor.id==='export-package'?'SourceLoom-ReadWeave.zip':'SourceLoom-download');
+  const packageName=response.headers.get('Content-Disposition')?.match(/filename="(SourceLoom-[a-f0-9]{64}\.zip)"/i)?.[1];
+  temporary.download=anchor.id==='task-pack-download'&&packageName?packageName:anchor.download || (anchor.id==='export-package'?'SourceLoom-ReadWeave.zip':'SourceLoom-download');
   temporary.click();
   setTimeout(()=>URL.revokeObjectURL(blobURL),60000);operationDone('文件已准备好，下载已开始');
 }

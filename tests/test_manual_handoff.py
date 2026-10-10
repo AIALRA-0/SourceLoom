@@ -146,7 +146,8 @@ def test_default_manual_ui_has_three_actions_and_rejects_late_material_response(
     }
     const panel=new Element('section'),download=new Element('a'),copy=new Element('button');
     panel.append(download,copy);
-    const document={querySelector:s=>({'#manual-handoff':panel,'#task-pack-download':download,'#copy-prompt':copy}[s])};
+    const prompt=new Element('details'),attachments=new Element('details');panel.append(prompt,attachments);
+    const document={querySelector:s=>({'#manual-handoff':panel,'#task-pack-download':download,'#copy-prompt':copy,'#prompt-details':prompt,'#attachment-details':attachments}[s])};
     const source=fs.readFileSync(arg.root+'/sourceloom/static/processor_manual_handoff.js','utf8').replace(/export /g,'');
     const context={document,console};vm.createContext(context);vm.runInContext(source+';this.ManualHandoff=ManualHandoff;',context);
     let current='S6',resolve,returned=0;
@@ -160,7 +161,8 @@ def test_default_manual_ui_has_three_actions_and_rejects_late_material_response(
       const actions=guide.root.children.find(n=>n.tag==='div');
       if(actions.children.length!==3)throw Error('default workflow has extra actions');
       const back=actions.children[2];back.listeners.click();
-      const text=guide.root.children.map(n=>n.textContent).join('\n');
+      const text=guide.root.children.flatMap(n=>[n.textContent,...n.children.map(c=>c.textContent)]).join('\n');
+      if(prompt.parent!==attachments.parent)throw Error('existing details lost');
       process.stdout.write(JSON.stringify({data:guide.data,download:download.href||null,
         labels:actions.children.map(n=>n.textContent),message:guide.message(),text,returned}));
     })().catch(e=>{console.error(e);process.exit(1);});
@@ -169,9 +171,9 @@ def test_default_manual_ui_has_three_actions_and_rejects_late_material_response(
         root=str(Path(__file__).parents[1]),late_response=late_response)),text=True,encoding='utf8',capture_output=True,
         check=True,timeout=10)
     ui=json.loads(result.stdout)
-    assert ui['labels'][1:]==['复制开始指令','导回成稿']
+    assert ui['labels'][1:]==['复制开始指令','上传 GPT 成稿']
     assert ui['message']==START_MESSAGE
-    assert 'xhigh' in ui['text'] and 'Pro' not in ui['text']
+    assert 'GPT 对话中上传' in ui['text'] and '完整 .md 或 .txt' in ui['text']
     assert '第 1 组' not in ui['text']
     assert ui['returned']==1
     if late_response:

@@ -44,6 +44,10 @@ def register(app, store, config):
     app.state.processor_library = store
     from .processor_tree_api import register_tree
     register_tree(app, store)
+    from .processor_intake import MaterialIntake, ACTIVE_PHASES
+    intake = MaterialIntake(store)
+    app.state.processor_intake = intake
+    app.add_event_handler('shutdown', intake.close)
     presentations, compilations, previews, issue_views = (_ReadingDerivatives() for _ in range(4))
 
     @lru_cache(maxsize=512)
@@ -246,7 +250,8 @@ def register(app, store, config):
 
     @app.post(prefix)
     def create(body:dict):
-        return processor.create(store, str(body.get('title') or '未命名材料'), str(body.get('preferences') or ''))
+        return processor.create(store, str(body.get('title') or '未命名材料'), str(body.get('preferences') or ''),
+                                body.get('parent_id'))
 
     @app.get(prefix+'/{pid}')
     def get(pid:str, reading:bool=False):
@@ -257,12 +262,21 @@ def register(app, store, config):
 
     @app.get(prefix+'/{pid}/progress')
     def progress(pid:str):
-        p = processor.project(store,pid)
-        return p['processor'].get('intake_progress') or dict(phase='not_started')
+        with store.connect() as cx:
+            row = cx.execute("SELECT json_extract(body,'$.processor.intake_progress') FROM projects WHERE id=?", (pid,)).fetchone()
+        if not row:
+            raise KeyError(pid)
+        return json.loads(row[0]) if row[0] else dict(phase='not_started')
+
+    @app.post(prefix+'/{pid}/upload/resume')
+    def resume_upload(pid:str):
+        return JSONResponse(intake.submit(pid, resume=True), status_code=202)
 
     @app.post(prefix+'/{pid}/upload')
-    def upload(pid:str, files:list[UploadFile]=File(...)):
-        processor.project(store,pid)
+    def upload(pid:str, files:list[UploadFile]=File(...), background:bool=False):
+        current = processor.project(store,pid)
+        if (current['processor'].get('intake_progress') or {}).get('phase') in ACTIVE_PHASES:
+            raise Conflict('这份材料正在准备，请查询原进度，不要重复上传')
         if not 1 <= len(files) <= 100:
             raise ValueError('一次上传 1–100 个文件')
         uploads, total = [], 0
@@ -272,6 +286,8 @@ def register(app, store, config):
             if len(raw)>MAX_FILE or total>MAX_FILE*4:
                 raise ValueError('单文件最多 25 MB，本次最多 100 MB')
             uploads.append((Path(file.filename or 'material.txt').name, raw))
+        if background:
+            return JSONResponse(intake.submit(pid, uploads), status_code=202)
         processor.prepare(store,pid,uploads)
         return detail(pid)
 
@@ -312,8 +328,10 @@ def register(app, store, config):
 
     @app.get(prefix+'/{pid}/pack.zip')
     def download_pack(pid:str):
-        return Response(processor.pack_zip(store,pid),media_type='application/zip',
-            headers={'Content-Disposition':'attachment; filename="SourceLoom-Task-Pack.zip"'})
+        from .manual_handoff import pack_zip
+        pack = processor.task_pack(store, pid)
+        return Response(pack_zip(store,pid,pack=pack),media_type='application/zip',
+            headers={'Content-Disposition':f'attachment; filename="SourceLoom-{pack["digest"]}.zip"'})
 
     @app.get(prefix+'/{pid}/manual-handoff')
     def manual_handoff(pid: str):

@@ -159,13 +159,26 @@ def project(store, pid):
     return p
 
 
-def create(store, title, preferences=''):
+def create(store, title, preferences='', parent_id=None):
     if not title.strip() or len(title) > 180 or len(preferences) > 12000:
         raise ValueError('材料标题或阅读偏好超过范围')
-    p = store.create(title.strip(), budget=20)
-    return store.change(p['id'], lambda p: p.update(processor=dict(
-        schema='sourceloom-processor/1', preferences=preferences, versions=[], requests=[],
-        active_version=None, source_text='', source_map=[], resources=[], resource_usages={}, checks=[])))
+    if parent_id is not None and not isinstance(parent_id, str):
+        raise ValueError('目标目录身份必须是文字')
+    parent_id = parent_id or None
+    def initialize(p, cx):
+        if parent_id:
+            parent = cx.execute("SELECT id FROM library_folders WHERE id=? AND scope='processor' AND trashed=0", (parent_id,)).fetchone()
+            if not parent:
+                raise Conflict('目标目录不存在或在回收站中，请重新选择')
+            from .processor_tree import name_key
+            siblings = [r[0] for r in cx.execute('SELECT title FROM processor_material_meta WHERE parent=? AND trashed=0 AND archived=0', (parent_id,))]
+            siblings += [r[0] for r in cx.execute("SELECT name FROM library_folders WHERE scope='processor' AND parent=? AND trashed=0", (parent_id,))]
+            if any(name_key(value) == name_key(title) for value in siblings):
+                raise Conflict('目标目录已有同名材料或文件夹，请修改名称')
+        p.update(folder=parent_id, processor=dict(
+            schema='sourceloom-processor/1', preferences=preferences, versions=[], requests=[],
+            active_version=None, source_text='', source_map=[], resources=[], resource_usages={}, checks=[]))
+    return store.create(title.strip(), budget=20, initialize=initialize)
 
 
 def source_prose(obj, link_targets=None):
@@ -225,7 +238,7 @@ def prepare(store, pid, uploads, source_url=None, asset_aliases=None, web_manife
         raise Conflict('原件已冻结；不同材料请建立新项目，避免覆盖来源')
     def report(value):
         store.change(pid,lambda current:current['processor'].update(
-            intake_progress=dict(value,updated=time.time())))
+            intake_progress=dict(value,started=(current['processor'].get('intake_progress') or {}).get('started',time.time()),updated=time.time())))
     report(dict(phase='saving_original',completed=0,total=len(uploads)))
     try:
         inv = intake(store, uploads, source_url, asset_aliases, progress=report)
@@ -264,6 +277,8 @@ def prepare(store, pid, uploads, source_url=None, asset_aliases=None, web_manife
             pass
         try:
             for page_no, page in enumerate(reader.pages, 1):
+                report(dict(phase='extracting_resources',completed=page_no-1,total=len(reader.pages),
+                            detail=original['name'], page=page_no))
                 try:
                     images = list(page.images)
                 except Exception:
@@ -309,6 +324,7 @@ def prepare(store, pid, uploads, source_url=None, asset_aliases=None, web_manife
         finally:
             if geometry_doc is not None:
                 geometry_doc.close()
+        report(dict(phase='extracting_resources',completed=len(reader.pages),total=len(reader.pages),detail=original['name']))
     resources, locations = [], []
     object_index = {obj['id']:obj for obj in inv['objects']}
     excluded = {'site_chrome', 'source_metadata', 'layout_decorative'}
@@ -339,11 +355,14 @@ def prepare(store, pid, uploads, source_url=None, asset_aliases=None, web_manife
     inv['frozen'] = True
     inv['digest'] = digest({k: v for k, v in inv.items() if k != 'digest'})
     def commit(p):
+        if p.get('trashed'):
+            raise Conflict('材料已移至回收站，解析结果未恢复到活动目录')
         if p.get('inventory'):
             raise Conflict('另一项接入已完成，未覆盖冻结原件')
         p.update(inventory=inv, state='prepared')
         p['processor'].update(source_text=source_text, source_map=locations,
                               resources=resources, source_digest=inv['digest'])
+    report(dict(phase='building_index',detail='正在保存完整来源索引与任务说明'))
     p = store.change(pid, commit)
     pack = task_pack(store, pid)
     return store.change(pid, lambda p: p['processor'].update(
