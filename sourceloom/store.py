@@ -2,8 +2,10 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
@@ -345,8 +347,21 @@ class Store:
             if digest(path.read_bytes()) != key:
                 raise Conflict("原件摘要冲突")
         else:
-            with path.open("xb") as f:
-                f.write(raw)
+            # Publish only a complete immutable file. Exclusive creation of the
+            # final path exposed partial bytes and raced with identical uploads.
+            fd, temporary = tempfile.mkstemp(prefix='.blob-', dir=path.parent)
+            try:
+                with os.fdopen(fd, 'wb') as f:
+                    f.write(raw)
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.link(temporary, path)
+                except FileExistsError:
+                    if digest(path.read_bytes()) != key:
+                        raise Conflict("原件摘要冲突")
+            finally:
+                Path(temporary).unlink(missing_ok=True)
         return key
 
     def read_blob(self, key):
