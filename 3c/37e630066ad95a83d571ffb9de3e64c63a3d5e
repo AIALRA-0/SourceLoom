@@ -1,0 +1,43 @@
+docs/security/publication-risk-notes.md
+  s_36a381ab4bccf9::t_fc6ed7f4fe2dab 419-422
+sourceloom/processor_api.py
+  s_36a381ab4bccf9::t_d20afdb9f69641 529-533,535-543
+sourceloom/readweave.py
+  s_36a381ab4bccf9::t_48af24ba93140d 8,63-98,161,235,241-244
+sourceloom/static/processor.html
+  s_36a381ab4bccf9::t_6f2285a88eae29 7-9,11,13-16,18
+sourceloom/static/processor.js
+  s_36a381ab4bccf9::t_81cb5d696ee3ad 1-5,7-10,369,696-701,703,706-707,712,715
+sourceloom/static/processor_design.js
+  s_36a381ab4bccf9::t_6dac8e51011db2 5
+sourceloom/static/processor_pdf.css
+  s_36a381ab4bccf9::t_946e2032262d4a 17-19
+sourceloom/static/processor_pdf.js
+  s_36a381ab4bccf9::t_3b8459ca98e2b9 88,98-101,105-107,149,263-272,276,281-282,285
+sourceloom/static/processor_reader.js
+  s_36a381ab4bccf9::t_66a97c5b805f35 2
+sourceloom/static/processor_readweave.js
+  s_36a381ab4bccf9::t_03c8a4708a4aed 1-40
+sourceloom/static/processor_workbench.css
+  s_36a381ab4bccf9::t_2f8c8364ba7af4 438-445
+tests/test_processor_pdf_rendering.py
+  s_36a381ab4bccf9::t_9894a0e58929b1 81-85,99
+tests/test_readweave_destinations.py
+  s_36a381ab4bccf9::t_7cec0526fb03ee 1-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3c37e630066ad95a83d571ffb9de3e64c63a3d5e",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
