@@ -1,0 +1,23 @@
+sourceloom/store.py
+  s_36a381ab4bccf9::t_0787c74e0f9cfb 5,8,350-364
+tests/test_blob_publication.py
+  s_36a381ab4bccf9::t_0787c74e0f9cfb 1-37
+docs/security/publication-risk-notes.md
+  s_36a381ab4bccf9::t_4cf9a3baf4d735 415-418
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "acac75c560a70f0e897e81c24efcfa5e6a816a03",
+  "prompts": {},
+  "sessions": {
+    "s_36a381ab4bccf9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a1a6-6503-79c1-8d40-f56fe9691ee6",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "AIALRA-0 <71060413+AIALRA-0@users.noreply.github.com>"
+    }
+  }
+}
