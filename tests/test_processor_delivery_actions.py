@@ -17,7 +17,7 @@ def delivery(receipt, clear=False):
     const nodes={},q=id=>nodes[id]||(nodes[id]={hidden:false,removeAttribute(k){delete this[k];}});
     const ctx={URL,$:q,project:{library:{}},readweaveReceipt:null,readweaveURL:'',locked:false,
       capabilities:{},activeChecks:()=>({ok:true}),activeVersion:()=>({id:'v1',mechanical_pass:true}),processor:()=>({})};
-    vm.createContext(ctx);vm.runInContext(code,ctx);ctx.renderReadweaveStatus(arg.receipt);
+    vm.createContext(ctx);vm.runInContext(fs.readFileSync(arg.root+'/sourceloom/static/processor_readweave.js','utf8').replace(/export /g,''),ctx);vm.runInContext(code,ctx);ctx.renderReadweaveStatus(arg.receipt);
     if(arg.clear)ctx.renderReadweaveStatus(null);
     process.stdout.write(JSON.stringify({open:q('#open-readweave'),send:q('#send-readweave'),query:q('#query-readweave'),url:ctx.readweaveURL}));
     '''

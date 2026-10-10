@@ -1,4 +1,4 @@
-import { ReadWeaveImport } from './processor_readweave.js?v=pdf-readweave-20261009';
+import { ReadWeaveImport, readweaveEntryState } from './processor_readweave.js?v=readweave-button-20261010';
 import { initializeDesign } from './processor_design.js?v=pdf-readweave-20261009';
 import { MaterialLibrary } from './processor_library.js?v=pdf-readweave-20261009';
 import { LinkedReader } from './processor_reader.js?v=pdf-readweave-20261009';
@@ -322,8 +322,7 @@ function renderAvailability() {
   const version = activeVersion();
   const valid = hasVersion && (version.mechanical_pass ?? processor().mechanical_pass ?? checks.ok ?? checks.valid) === true;
   $('#export-package').setAttribute('aria-disabled', String(!valid)); $('#download-markdown').setAttribute('aria-disabled', String(!hasVersion));
-  $('#send-readweave').disabled = readonly || locked || !valid || capabilities.readweave_configured === false || ['submitted','imported','readback_passed','readback_gaps'].includes(readweaveReceipt?.status);
-  $('#send-readweave').title = capabilities.readweave_configured === false ? '尚未配置 ReadWeave，可先下载完整导入包；请检查本机 ReadWeave 连接配置' : '';
+  renderReadweaveAction();
   $('#save-result').disabled = readonly || locked || !project || !$('#result-markdown').value.trim();
   $('#prepare-pack').disabled = readonly || locked || !pack;
   for(const id of ['resource-bulk-apply','resource-undo'])$('#'+id).disabled=readonly||locked;
@@ -355,6 +354,10 @@ function drawRequests() {
 function activeVersion() {const summary=versions().find(version => version.id === (selectedVersion || processor().active_version)) || versions().at(-1) || {};return loadedVersion?.id === summary.id ? {...summary,...loadedVersion} : summary;}
 function activeChecks() {return activeVersion().checks || processor().checks || {};}
 const isWebURL = value => {try {const url = new URL(value); return ['http:','https:'].includes(url.protocol) ? url.href : null;} catch{return null;}};
+function renderReadweaveAction() {
+  const state=readweaveEntryState({readonly:project?.library?.readonly===true,locked,versionId:activeVersion().id,configured:capabilities.readweave_configured,status:readweaveReceipt?.status});
+  const button=$('#send-readweave');button.disabled=state.disabled;button.title=state.reason;
+}
 function renderReadweaveStatus(receipt) {
   const readonly=project?.library?.readonly===true;
   readweaveReceipt=receipt;
@@ -367,9 +370,7 @@ function renderReadweaveStatus(receipt) {
   const labels = {not_configured:'未配置 ReadWeave',not_ready:'成稿尚未具备导入条件',not_submitted:'尚未导入',submitted:'已提交，正在等待原操作结果；不会再次创建笔记',imported:'已创建笔记，等待读回核对',readback_passed:'已导入并读回核对',readback_gaps:'读回存在差异，请下载包回查'};
   const target=capabilities.readweave_target || {};
   $('#readweave-target').textContent = [labels[status] || status,target.instance_url ? `实例 ${target.instance_url}` : null,(receipt?.parent||target.parent_note_id) ? `父笔记 ${receipt?.parent||target.parent_note_id}` : null,receipt?.phase,receipt?.note_id ? `笔记 ${receipt.note_id}` : null].filter(Boolean).join(' · ');
-  const checks=activeChecks(),version=activeVersion();
-  const valid=(version.mechanical_pass ?? processor().mechanical_pass ?? checks.ok ?? checks.valid)===true;
-  $('#send-readweave').disabled = readonly || locked || !valid || !version.id || ['submitted','imported','readback_passed','readback_gaps'].includes(status);
+  renderReadweaveAction();
   $('#send-readweave').textContent = status === 'readback_passed' ? '已导入' : ['submitted','imported','readback_gaps'].includes(status) ? '导入待确认' : '导入 ReadWeave';
 }
 async function loadReadweaveStatus() {
@@ -695,7 +696,8 @@ document.addEventListener('click',event=>{const anchor=event.target.closest?.('a
 });
 const readweaveImport=new ReadWeaveImport({
   read:api,
-  context:()=>({id:project?.id,title:project?.title,version:activeVersion()?.id,sourceDigest:processor().source_digest,defaultId:capabilities.readweave_target?.parent_note_id}),
+  context:()=>({id:project?.id,title:project?.title,version:activeVersion()?.id,sourceDigest:processor().source_digest,activeVersion:processor().active_version,checks:activeChecks(),defaultId:capabilities.readweave_target?.parent_note_id}),
+  review:()=>$('#issue-trigger').click(),
   submit:(parent,snapshot)=>importReadweave(false,parent,snapshot)
 });
 async function importReadweave(queryOnly=false,parentId=null,snapshot=null) {

@@ -336,16 +336,16 @@ def test_only_source_presentation_changes_rebuild_source_controls(change,expecte
 
 @pytest.mark.parametrize('readonly,valid,status,disabled',[
     (False,True,'not_submitted',False),(True,True,'not_submitted',True),
-    (False,False,'not_submitted',True),(False,True,'readback_passed',True),
+    (False,False,'not_submitted',False),(False,True,'readback_passed',True),
 ])
 def test_readweave_status_uses_current_material_readonly_scope(readonly,valid,status,disabled):
     script=r"""
     const fs=require('node:fs'),vm=require('node:vm'),arg=JSON.parse(fs.readFileSync(0,'utf8'));
     const src=fs.readFileSync(arg.root+'/sourceloom/static/processor.js','utf8');
-    const fn=src.slice(src.indexOf('function renderReadweaveStatus('),src.indexOf('async function loadReadweaveStatus('));
+    const fn=src.slice(src.indexOf('function renderReadweaveAction('),src.indexOf('async function loadReadweaveStatus('));
     const nodes={};const ctx={project:{library:{readonly:arg.readonly}},readweaveReceipt:null,readweaveURL:'',capabilities:{},locked:false,
       isWebURL:v=>v,$:id=>(nodes[id]??={hidden:false,removeAttribute(){}}),activeChecks:()=>({}),activeVersion:()=>({id:'v1',mechanical_pass:arg.valid})};
-    vm.createContext(ctx);vm.runInContext(fn,ctx);ctx.renderReadweaveStatus({status:arg.status});
+    vm.createContext(ctx);vm.runInContext(fs.readFileSync(arg.root+'/sourceloom/static/processor_readweave.js','utf8').replace(/export /g,''),ctx);vm.runInContext(fn,ctx);ctx.renderReadweaveStatus({status:arg.status});
     process.stdout.write(JSON.stringify(nodes['#send-readweave'].disabled));
     """
     r=subprocess.run([shutil.which('node'),'-e',script],input=json.dumps({'root':str(ROOT),'readonly':readonly,'valid':valid,'status':status}),text=True,capture_output=True,check=True,timeout=10)

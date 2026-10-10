@@ -443,3 +443,6 @@
 .readweave-folders button:hover,.readweave-folders button:focus-visible{background:var(--hover);}
 .readweave-import-target{font-weight:600;overflow-wrap:anywhere;}
 .readweave-import-state{min-height:2em;color:var(--muted);}
+
+.readweave-import-blockers{padding:12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);overflow-wrap:anywhere;}
+.readweave-import-blockers ul{padding-left:20px;}
