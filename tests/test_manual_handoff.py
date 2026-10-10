@@ -133,7 +133,7 @@ def test_single_package_uses_current_requirements_instead_of_old_prepared_prompt
 
 
 @pytest.mark.parametrize('late_response', [False, True])
-def test_default_manual_ui_has_three_actions_and_rejects_late_material_response(late_response):
+def test_default_manual_ui_has_inline_upload_and_rejects_late_material_response(late_response):
     script=r'''
     const fs=require('node:fs'),vm=require('node:vm');
     const arg=JSON.parse(fs.readFileSync(0,'utf8'));
@@ -151,16 +151,16 @@ def test_default_manual_ui_has_three_actions_and_rejects_late_material_response(
     const source=fs.readFileSync(arg.root+'/sourceloom/static/processor_manual_handoff.js','utf8').replace(/export /g,'');
     const context={document,console};vm.createContext(context);vm.runInContext(source+';this.ManualHandoff=ManualHandoff;',context);
     let current='S6',resolve,returned=0;
+    const returnUpload={root:new Element('section','上传 GPT 成稿'),render(){returned++;}};
     const guide=new context.ManualHandoff({element:(tag,text)=>new Element(tag,text),current:()=>current,
-      api:()=>new Promise(r=>resolve=r),notify(){throw Error('unexpected warning');},showResult(){returned++;}});
+      api:()=>new Promise(r=>resolve=r),notify(){throw Error('unexpected warning');},returnUpload});
     const pending=guide.update('S6','digest6');
     if(arg.late_response)current='S5';
     resolve({pack_digest:'digest6',package_url:'/S6/pack.zip'});
     (async()=>{
       await pending;
       const actions=guide.root.children.find(n=>n.tag==='div');
-      if(actions.children.length!==3)throw Error('default workflow has extra actions');
-      const back=actions.children[2];back.listeners.click();
+      if(actions.children.length!==2||returnUpload.root.parent!==guide.root)throw Error('inline upload or handoff actions lost');
       const text=guide.root.children.flatMap(n=>[n.textContent,...n.children.map(c=>c.textContent)]).join('\n');
       if(prompt.parent!==attachments.parent)throw Error('existing details lost');
       process.stdout.write(JSON.stringify({data:guide.data,download:download.href||null,
@@ -171,11 +171,12 @@ def test_default_manual_ui_has_three_actions_and_rejects_late_material_response(
         root=str(Path(__file__).parents[1]),late_response=late_response)),text=True,encoding='utf8',capture_output=True,
         check=True,timeout=10)
     ui=json.loads(result.stdout)
-    assert ui['labels'][1:]==['复制开始指令','上传 GPT 成稿']
+    assert ui['labels'][1:]==['复制开始指令']
+    assert '上传 GPT 成稿' in ui['text']
     assert ui['message']==START_MESSAGE
     assert 'GPT 对话中上传' in ui['text'] and '完整 .md 或 .txt' in ui['text']
     assert '第 1 组' not in ui['text']
-    assert ui['returned']==1
+    assert ui['returned']>=2
     if late_response:
         assert ui['data'] is None and ui['download'] is None
     else:

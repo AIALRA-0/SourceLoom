@@ -266,11 +266,19 @@ def test_late_save_or_import_cannot_replace_a_different_material(event):
       $:id=>values[id]??={value:'old draft',addEventListener:(_,f)=>handlers[id]=f},protect:f=>f,
       setLocked(){},operation(){},setMarkdown(){writes.push('markdown')},notice(){},operationDone(){writes.push('status')},render(){writes.push('render')},processor:()=>({}),versions:()=>[],loadVersion:async()=>{},refreshProjects:async()=>{},
       post:()=>new Promise(r=>pending=r),localStorage:{getItem:k=>stored.get(k),setItem(){writes.push('storage')},removeItem:k=>stored.delete(k)}};
-    vm.createContext(ctx);vm.runInContext(code,ctx);
+    vm.createContext(ctx);
+    const uploadSource=fs.readFileSync(arg.root+'/sourceloom/static/processor_return_upload.js','utf8').replace(/export /g,'');
+    vm.runInContext(uploadSource+';this.ReturnUpload=ReturnUpload;',ctx);
+    const uploader=Object.create(ctx.ReturnUpload.prototype);uploader.states=new Map();uploader.render=()=>{};uploader.showError=()=>{throw Error('unexpected input error')};
+    ctx.crypto={randomUUID:()=> 'late-upload-fixture'};
+    uploader.deps={context:()=>({id:ctx.project.id,editable:true,version:'v1',sourceDigest:'source-old'}),allowUpload:()=>true,
+      upload:s=>{if(s.id!=='old'||s.version!=='v1')throw Error('upload target changed');return new Promise(r=>pending=r);},saved:()=>writes.push('saved')};
+    let uploadPromise;ctx.returnUpload={submit:(...args)=>uploadPromise=uploader.submit(...args)};
+    vm.runInContext(code,ctx);
     (async()=>{let promise;
-      if(arg.event==='markdown-file')promise=handlers['#markdown-file']({target:{value:'file',files:[{name:'draft.txt',size:3,text:()=>new Promise(r=>pending=r)}]}});
+      if(arg.event==='markdown-file'){handlers['#markdown-file']({target:{value:'file',files:[{name:'draft.txt',size:3}]}});promise=uploadPromise;}
       else promise=handlers['#save-result']();
-      ctx.openEpoch=2;ctx.project={id:'new'};pending(arg.event==='markdown-file'?'old text':{id:'old'});await promise;
+      ctx.openEpoch=2;ctx.project={id:'new'};pending({project:{id:'old'},version_id:'saved-old'});await promise;
       if(ctx.project.id!=='new'||writes.length)throw Error('old asynchronous result polluted new material');
       process.stdout.write('true');})().catch(e=>{console.error(e);process.exit(1)});
     '''

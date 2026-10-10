@@ -1,6 +1,7 @@
 """Native preview math and the target editor's documented storage form."""
 
 import html
+import re
 
 from bs4 import BeautifulSoup
 from latex2mathml.converter import convert
@@ -55,4 +56,24 @@ def markdown_renderer(target='preview'):
             md.add_render_rule(bracket_rule['name'],
                                lambda renderer, tokens, idx, options, env:
                                formula(tokens[idx].content, {'display_mode': True}))
+    # A return may wrap a complete display formula in a code container. Interpret
+    # only math-labelled fences or a whole delimited expression; programming
+    # fences and mixed prose remain literal. Stored Markdown is never rewritten.
+    for kind in ('fence', 'code_block'):
+        original = md.renderer.rules[kind]
+        def render_math_container(renderer, tokens, idx, options, env, fallback=original):
+            token = tokens[idx]
+            language = token.info.strip().lower()
+            content = token.content.strip()
+            delimited = re.fullmatch(r'\$\$\s*([\s\S]+?)\s*\$\$', content)
+            if not delimited:
+                delimited = re.fullmatch(r'\\\[\s*([\s\S]+?)\s*\\\]', content)
+            if language in ('math', 'latex', 'tex') or (not language and delimited):
+                expression = delimited.group(1) if delimited else content
+                try:
+                    return formula(expression, {'display_mode': True}) + '\n'
+                except ValueError:
+                    return '<div class="math-render-fallback" role="note">公式暂无法排版，保留原始表达式</div>' + fallback(tokens, idx, options, env)
+            return fallback(tokens, idx, options, env)
+        md.add_render_rule(kind, render_math_container)
     return md

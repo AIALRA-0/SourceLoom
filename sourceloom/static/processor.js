@@ -1,10 +1,12 @@
-import { initializeDesign } from './processor_design.js?v=apcf-ui-20261009-1';
-import { MaterialLibrary } from './processor_library.js?v=apcf-ui-20261009-1';
+import { initializeDesign } from './processor_design.js?v=return-ui-20261009';
+import { MaterialLibrary } from './processor_library.js?v=return-ui-20261009';
 import { LinkedReader } from './processor_reader.js?v=non-generation-baseline-20261002';
-import { ReadingWorkbench } from './processor_workbench.js?v=apcf-ui-20261009-1';
+import { ReadingWorkbench } from './processor_workbench.js?v=return-ui-20261009';
 import { IssueDrawer } from './processor_issues.js?v=official-golive-20261002';
-import { ManualHandoff } from './processor_manual_handoff.js?v=import-experience-20261009-1';
-import { MaterialImport } from './processor_import.js?v=import-experience-20261009-1';
+import { ManualHandoff } from './processor_manual_handoff.js?v=return-ui-20261009';
+import { Feedback } from './processor_feedback.js?v=return-ui-20261009';
+import { ReturnUpload, uploadReturn } from './processor_return_upload.js?v=return-ui-20261009';
+import { MaterialImport } from './processor_import.js?v=return-ui-20261009';
 import { webChannels, webGenerationChannel } from './processor_web_channels.js?v=web-only-20261003';
 import { readJSON } from './processor_read.js?v=loading-reliability-20261004';
 const $ = selector => document.querySelector(selector);
@@ -13,8 +15,7 @@ let projects = [], project = null, pack = null, capabilities = {}, currentTab = 
 let dirty = false, selectedVersion = null, pollTimer = null, openEpoch = 0, locked = false;
 let previewKey = '', markdownBlob = null, sourceMap = null, loadedVersion = null, sourcePage = 1, sourceZoom = 1;
 let mode = 'manual', resourceLimit = 60, selectedResourceIds = new Set(), resourceUndo = null, readweaveReceipt = null;
-let actionStarted = 0, actionTicker = null, currentOperation = '', readweaveURL = '';
-let operationTimer = null;
+let actionStarted = 0, currentOperation = '', readweaveURL = '';
 let versionEpoch=0, versionSelectionEpoch=0;
 let openingProjectId=null;
 let templateWorkspace=null;
@@ -32,22 +33,16 @@ const versions = () => items(processor().versions);
 const dateLabel = value => {if (!value) return ''; const date = new Date(typeof value === 'number' && value < 100000000000 ? value * 1000 : value); return isNaN(date) ? '' : date.toLocaleString('zh-CN', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});};
 const safeURL = value => {try {const url = new URL(value, location.origin); return url.origin === location.origin && ['http:','https:'].includes(url.protocol) ? url.href : null;} catch {return null;}};
 function element(tag, text, className) {const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node;}
-function notice(message = '', error = false) {$('#notice').hidden = !message; $('#notice').textContent = message; $('#notice').classList.toggle('error', error);}
+const feedback=new Feedback($('#operation-status'),$('#operation-message'),$('#operation-elapsed'));
+$('#notice').hidden=true;
+function notice(message = '', error = false) {if(message)feedback.show(message,error?'error':'success');}
 function protect(action) {return async event => {try {await action(event);} catch (error) {operationError(error.message || '操作未完成');}};}
 function operation(message, state = 'running') {
-  const bar = $('#operation-status'); bar.hidden = false; bar.dataset.state = state;
-  if (state === 'running' && $('#notice').classList.contains('error')) notice();
-  $('#operation-message').textContent = message;
-  clearInterval(actionTicker);clearTimeout(operationTimer);
-  if (state === 'running') {
-    actionStarted = performance.now(); currentOperation = message;
+  feedback.show(message,state);
+  if(state==='running') {
+    actionStarted=performance.now();currentOperation=message;
     actionTrace.push({action:message,step:'feedback_rendered',at:actionStarted});
-    actionTicker = setInterval(() => {$('#operation-elapsed').textContent = `已等待 ${Math.floor((performance.now()-actionStarted)/1000)} 秒`;},1000);
-  } else {
-    $('#operation-elapsed').textContent = '';
-    actionTrace.push({action:currentOperation,step:state,at:performance.now()});
-    if(state==='success')operationTimer=setTimeout(()=>{bar.hidden=true;},6000);
-  }
+  } else actionTrace.push({action:currentOperation,step:state,at:performance.now()});
 }
 function operationDone(message) {operation(message,'success');}
 function operationError(message) {operation(message,'error');notice();}
@@ -120,7 +115,20 @@ const workbench = new ReadingWorkbench({reader,issues:issueDrawer,api,notify:not
   context:()=>({projectId:project?.id,versionId:selectedVersion,readonly:project?.library?.readonly===true}),canProcessIssues:()=>!dirty,resources:resourceItems,
   preview:previewDocument,mappings:sourceMapEntries,representations:()=>loadedVersion?.representations||[]});
 const library = new MaterialLibrary({api,post,current:()=>project,open,refresh:refreshProjects,isDirty:()=>dirty,notify:notice,persist:()=>reader.persist(),tab:()=>showTab(currentTab),leaveReader:()=>workbench.tab('library'),metadataChanged:()=>renderAvailability()});
-const manualHandoff = new ManualHandoff({api,current:()=>project?.id,element,fileRow,copy:copyText,notify:notice,showResult:chooseReturnedFile});
+const returnUpload = new ReturnUpload({
+  context:()=>({id:project?.id,version:selectedVersion||processor().active_version||null,
+    sourceDigest:processor().source_digest,editable:!!project&&!!processor().source_digest&&!project.library?.readonly&&!project.trashed&&!locked,epoch:openEpoch}),
+  allowUpload:()=>!dirty||confirm('上传成稿将保存为新版本；当前未保存编辑仍保留在本机，是否继续？'),
+  upload:(s,progress)=>{s.epoch??=openEpoch;return uploadReturn(`${base}/projects/${encodeURIComponent(s.id)}/return-upload`,s.file,{upload_id:s.requestId,base_version:s.version,source_digest:s.sourceDigest},progress);},
+  saved:async(result,s)=>{
+    if(s.id!==project?.id||s.epoch!==openEpoch)return;
+    project=result.project;dirty=false;render();showTab('result');
+    await loadVersion(result.version_id);
+    if(s.id!==project?.id||s.epoch!==openEpoch)return;
+    operationDone(result.duplicate?'原上传已保存，已恢复同一次结果':'成稿已自动保存为新版本，图文预览已更新');
+  }
+});
+const manualHandoff = new ManualHandoff({api,current:()=>project?.id,element,fileRow,copy:copyText,notify:notice,returnUpload});
 $('#compare-page-number').addEventListener('change',event=>showSourcePage(event.target.value));
 $('#compare-page-number').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();showSourcePage(event.target.value);}});
 function documentStatus() {
@@ -297,6 +305,7 @@ function drawChannels() {
   renderAvailability();
 }
 function renderAvailability() {
+  returnUpload?.render();
   const readonly=project?.library?.readonly===true;
   const channel = getChannels().find(item => item.id === $('#channel').value);
   const visualUnsupported = Boolean(pack?.requires_visual && channel?.supports_visual !== true);
@@ -596,7 +605,8 @@ const materialImport = new MaterialImport({api,post,
 for(const id of ['new-material','empty-import','open-import'])$('#'+id).addEventListener('click',()=>materialImport.show());
 function chooseReturnedFile(){
   if(!project||project.library?.readonly||project.trashed){notice('请在可编辑的材料或试用副本中上传成稿',true);return;}
-  showTab('result');notice('请选择 GPT 返回的完整 .md 或 .txt 成稿，然后点击保存图标');$('#markdown-file').click();
+  showTab('handoff');setMode('manual');returnUpload.render();
+  returnUpload.root.scrollIntoView({block:'nearest'});returnUpload.button.focus({preventScroll:true});
 }
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click',()=>button.closest('dialog').close());
 for (const button of document.querySelectorAll('[data-tab],[data-go]')) button.addEventListener('click',()=>showTab(button.dataset.tab || button.dataset.go));
@@ -647,7 +657,7 @@ $('#generate').addEventListener('click',protect(async()=>{
 }));
 $('#result-markdown').addEventListener('input',()=>{dirty = true; $('#edit-state').textContent = '有未保存修改'; localStorage.setItem(`sourceloom-processor-edit:${project.id}`,$('#result-markdown').value); renderAvailability();});
 $('#import-markdown').addEventListener('click',chooseReturnedFile);
-$('#markdown-file').addEventListener('change',protect(async event=>{const file = event.target.files[0]; if (!file) return; if (file.size > 10 * 1024 * 1024) throw new Error('成稿超过 10 MB，请检查是否误选了原始文件');const epoch=openEpoch,pid=project?.id; operation('正在读取手动导回的成稿');const markdown=await file.text();event.target.value='';if(epoch!==openEpoch||pid!==project?.id)return;setMarkdown(markdown,true);setCompareLeft('editor'); localStorage.setItem(`sourceloom-processor-edit:${pid}`,$('#result-markdown').value); notice(`已载入 ${file.name}，点击“保存并预览”编译图文`);operationDone('手动成稿已载入，保存后会形成新版本');}));
+$('#markdown-file').addEventListener('change',event=>{const file=event.target.files[0];event.target.value='';if(file)void returnUpload.submit(file);});
 $('#save-result').addEventListener('click',protect(async()=>{
   if (!$('#result-markdown').value.trim()) throw new Error('请先粘贴或上传模型返回的正文');
   const epoch=openEpoch,pid=project.id,markdown=$('#result-markdown').value;

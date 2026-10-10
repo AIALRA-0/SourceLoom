@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.parse import urlsplit
 
-from fastapi import File, UploadFile
+from fastapi import File, Form, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from . import processor
@@ -351,7 +351,8 @@ def register(app, store, config):
             inv = p.get('inventory') or {}
             derived = [r for v in p['processor']['versions'] for r in v.get('derived_resources', [])
                        if r.get('source_digest') == p['processor']['source_digest']]
-            return {r['sha256']:r for r in inv.get('resources',[])+inv.get('originals',[])+derived if r.get('sha256')}
+            returns = p['processor'].get('manual_return_uploads', [])
+            return {r['sha256']:r for r in inv.get('resources',[])+inv.get('originals',[])+derived+returns if r.get('sha256')}
         indexed = asset_indexes.get((pid, snapshot_key), authorised_assets, clone=False)
         item = indexed.get(key)
         if not item or not re.fullmatch(r'[0-9a-f]{64}',key):
@@ -372,6 +373,58 @@ def register(app, store, config):
     def result(pid:str,body:dict):
         processor.save_result(store,pid,body.get('markdown'),origin='manual',base_version=body.get('base_version'))
         return detail(pid)
+
+    @app.get(prefix+'/{pid}/version-history')
+    def version_history(pid:str):
+        p = processor.project(store, pid)
+        fields = ('id', 'created', 'origin', 'label', 'digest')
+        return {'id':pid, 'active_version':p['processor'].get('active_version'),
+                'versions':[{k:v[k] for k in fields if k in v}
+                            for v in p['processor'].get('versions', [])]}
+
+    @app.post(prefix+'/{pid}/return-upload')
+    def return_upload(pid:str, file:UploadFile=File(...), upload_id:str=Form(...),
+                      source_digest:str=Form(...), base_version:str=Form('')):
+        if not re.fullmatch(r'[a-zA-Z0-9-]{16,80}', upload_id):
+            raise ValueError('上传身份无效')
+        name = Path((file.filename or '').replace('\\', '/')).name
+        if not re.search(r'\.(md|markdown|txt)$', name, re.I):
+            raise ValueError('请选择 .md 或 .txt 成稿文件')
+        raw = file.file.read(4*1024*1024+1)
+        if not raw or len(raw)>4*1024*1024:
+            raise ValueError('成稿须非空且不超过 4 MB')
+        try:
+            markdown = raw.decode('utf-8-sig')
+        except UnicodeDecodeError as exc:
+            raise ValueError('成稿不是 UTF-8 文本，请导出为 UTF-8 后上传') from exc
+        if not markdown.strip() or '\x00' in markdown:
+            raise ValueError('文件没有可读正文，请检查是否误选原件')
+        p = processor.project(store, pid)
+        fingerprint = digest(raw)
+        for v in p['processor'].get('versions', []):
+            previous = v.get('manual_return') or {}
+            if previous.get('id') == upload_id:
+                if previous.get('sha256') != fingerprint:
+                    raise Conflict('同一次上传的文件内容不同，未保存')
+                return {'project':reading_detail(pid), 'version_id':v['id'], 'duplicate':True}
+        receipt = dict(id=upload_id, name=name, sha256=fingerprint, size=len(raw),
+                       source_digest=source_digest, base_version=base_version or None)
+        def retain(current):
+            state=current['processor']
+            uploads=state.setdefault('manual_return_uploads', [])
+            previous=next((u for u in uploads if u['id']==upload_id),None)
+            if previous and previous!=receipt:
+                raise Conflict('同一次上传的内容或目标不同，未保存')
+            if state.get('source_digest') != source_digest:
+                raise Conflict('原件已经变化，请重新打开对应材料后上传')
+            if not previous:uploads.append(receipt)
+        store.blob(raw)
+        store.change(pid,retain)
+        saved=processor.save_result(store,pid,markdown,origin='manual',
+                                    base_version=base_version or None,manual_return=receipt)
+        version=next(v for v in saved['processor']['versions']
+                     if (v.get('manual_return') or {}).get('id')==upload_id)
+        return {'project':reading_detail(pid), 'version_id':version['id'], 'duplicate':False}
 
     @app.get(prefix+'/{pid}/versions/{vid}')
     def version(pid:str,vid:str):

@@ -34,8 +34,7 @@ export class ManualHandoff {
     const actions=el('div',undefined,'handoff-actions');
     if(this.data)this.download.href=this.data.package_url;
     actions.append(this.download,this.copy);
-    const back=el('button','上传 GPT 成稿');back.type='button';
-    back.addEventListener('click',this.deps.showResult);actions.append(back);
-    this.root.append(actions,el('p','上传后检查预览，并点击保存图标保存新版本。任务包按内容生成唯一索引；下载成功不代表模型已读完附件。','muted'));
+    this.root.append(actions,this.deps.returnUpload.root,el('p','任务包按内容生成唯一索引，上传完整成稿后自动保存；下载成功不代表模型已读完附件。','muted'));
+    this.deps.returnUpload.render();
   }
 }

@@ -1025,7 +1025,8 @@ def confirm_representation(store, pid, vid, body):
     return store.change(pid,commit)
 
 
-def save_result(store, pid, markdown, origin='manual', base_version=None, request_id=None):
+def save_result(store, pid, markdown, origin='manual', base_version=None, request_id=None,
+                manual_return=None):
     p = project(store, pid)
     if not p.get('inventory'):
         raise Conflict('请先准备原件')
@@ -1048,6 +1049,8 @@ def save_result(store, pid, markdown, origin='manual', base_version=None, reques
                    checks=compiled['checks'], mechanical_pass=compiled['mechanical_pass'],
                    semantic_status='not_reviewed', source_map=compiled['source_map'], representations=[],
                    derived_resources=group_resources)
+    if manual_return:
+        version['manual_return'] = copy.deepcopy(manual_return)
     if base_version:
         parent = active_version(p, base_version)
         if parent.get('source_digest') == p['processor']['source_digest']:
@@ -1080,6 +1083,17 @@ def save_result(store, pid, markdown, origin='manual', base_version=None, reques
                            source_map=compiled['source_map'])
     def commit(current):
         state = current['processor']
+        if manual_return:
+            previous = next((v for v in state['versions'] if
+                (v.get('manual_return') or {}).get('id') == manual_return['id']), None)
+            if previous:
+                if previous['manual_return']['sha256'] != manual_return['sha256']:
+                    raise Conflict('同一次上传的文件内容不同，未保存')
+                return
+            if state.get('source_digest') != manual_return['source_digest']:
+                raise Conflict('原件已经变化，成稿原文件已保留，请重新核对目标材料')
+            if state['active_version'] != base_version:
+                raise Conflict('当前版本已经变化，成稿原文件已保留，未覆盖另一份编辑')
         if request_id and any(v.get('request_id')==request_id for v in state['versions']):
             return
         if base_version is not None and state['active_version'] != base_version:

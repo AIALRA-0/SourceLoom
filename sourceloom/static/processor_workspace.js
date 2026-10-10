@@ -63,7 +63,7 @@ export class TemplateWorkspace{
   syncStatus(){q('#workspace-save-state').textContent=this.active?q('#edit-state')?.textContent||'原件已保存':'尚未打开材料';const active=q('#document-tabs .doc-tab.active');if(active){active.classList.toggle('dirty',this.deps.isDirty());active.querySelector('.tab-open').setAttribute('aria-label',active.querySelector('.tab-open').textContent+(this.deps.isDirty()?'，未保存修改':''));}const p=this.deps.current();q('#workspace-main-meta').textContent=this.active?(p?.processor?.versions?.length||Object.keys(p?.processor?.versions||{}).length||0)+' 个成稿版本':'';}
   async updateInspector(){
     const tree=this.deps.library.tree,ids=[...tree.selected],nodes=ids.map(id=>tree.getNode(id)).filter(Boolean),current=this.deps.current();
-    const target=nodes.length===1?nodes[0]:nodes.length?null:current;const signature=JSON.stringify([nodes.map(n=>[n.id,n.title,n.revision,n.path]),current?.id,current?.library?.display_name,current?.title,current?.processor?.active_version,Object.keys(current?.processor?.versions||{}),this.deps.library.mode]);if(signature===this.inspectorSignature)return;this.inspectorSignature=signature;const epoch=++this.inspectorEpoch;
+    const target=nodes.length===1?nodes[0]:nodes.length?null:current;const signature=JSON.stringify([nodes.map(n=>[n.id,n.title,n.revision,n.path]),current?.id,current?.library?.display_name,current?.title,current?.processor?.active_version,Object.keys(current?.processor?.versions||{}),this.deps.library.mode,this.inspectorTab]);if(signature===this.inspectorSignature)return;this.inspectorSignature=signature;const epoch=++this.inspectorEpoch;
     q('#workspace-selection-state').textContent=nodes.length?`已选择 ${nodes.length} 项`:current?'正在阅读：'+(current.library?.display_name||current.title):'尚未选择材料';
     q('#workspace-space-state').textContent={mine:'我的材料',examples:'示例库',archives:'已归档',trash:'回收站'}[this.deps.library.mode]||'我的材料';
     const properties=q('#inspector-properties'),history=q('#inspector-versions');properties.replaceChildren();history.replaceChildren();
@@ -73,20 +73,21 @@ export class TemplateWorkspace{
     else if(nodes.length){field('选择',nodes.map(n=>n.title).join('、'));field('管理','使用材料树菜单批量移动或回收，不影响当前正文');}
     properties.append(dl);history.append(make('p','muted',target?.kind==='folder'?'文件夹没有成稿版本':nodes.length>1?'选择一份材料查看版本':'正在读取版本…'));
     if(!target||target.kind==='folder')return;
+    if(this.inspectorTab!=='versions'){history.replaceChildren(make('p','muted','选择版本页签查看保存记录'));return;}
     let detail=target.id===current?.id?current:null;
-    try{if(!detail)detail=await this.deps.api(`/api/processor/projects/${encodeURIComponent(target.id)}?reading=true`);if(epoch!==this.inspectorEpoch)return;}
+    try{if(!detail)detail=await this.deps.api(`/api/processor/projects/${encodeURIComponent(target.id)}/version-history`);if(epoch!==this.inspectorEpoch)return;}
     catch(e){if(epoch===this.inspectorEpoch){this.inspectorSignature=null;history.replaceChildren(make('p','muted',e.message||'版本未能读取'));}return;}
-    history.replaceChildren();const versions=Object.values(detail.processor?.versions||{});
+    history.replaceChildren();const versions=Object.values(detail.processor?.versions||detail.versions||{});
     if(!versions.length)history.append(make('p','muted','尚无成稿版本，原件已独立保存'));
     for(const version of versions.slice().reverse()){const b=make('button','version-row',version.label||version.title||`版本 ${version.id}`);b.type='button';b.onclick=async()=>{await this.activate(target.id);if(this.deps.current()?.id!==target.id)return;const select=q('#version-picker');if(![...select.options].some(o=>o.value===version.id))return;select.value=version.id;select.dispatchEvent(new Event('change',{bubbles:true}));};history.append(b);}
   }
   bind(){
     q('#workbench-sidebar').onclick=()=>this.toggleSide('left');q('#workbench-inspector').onclick=()=>this.toggleSide('right');q('#sidebar-toggle').onclick=()=>this.toggleView('explorer');q('#tab-import').onclick=()=>q('#new-material').click();
     document.addEventListener('workbench-panel-request',e=>e.detail.action==='hide'?this.hide(e.detail.view):this.toggleView(e.detail.view));
-    let queued=false;document.addEventListener('workbench-tree-selection',()=>{if(queued)return;queued=true;queueMicrotask(()=>{queued=false;this.updateInspector();});});
+    let queued=false;document.addEventListener('workbench-tree-selection',()=>{if(queued)return;queued=true;requestAnimationFrame(()=>setTimeout(()=>{queued=false;this.updateInspector();},0));});
     for(const b of document.querySelectorAll('[data-panel-swap]'))b.onclick=()=>this.swap(b.dataset.panelSwap,this.side(b.dataset.panelSwap)==='left'?'right':'left');
     for(const b of document.querySelectorAll('[data-panel-hide]'))b.onclick=()=>this.hide(b.dataset.panelHide);
-    for(const b of document.querySelectorAll('[data-inspector-tab]'))b.onclick=()=>{this.inspectorTab=b.dataset.inspectorTab;for(const t of document.querySelectorAll('[data-inspector-tab]'))t.setAttribute('aria-selected',String(t===b));q('#inspector-properties').hidden=this.inspectorTab!=='properties';q('#inspector-versions').hidden=this.inspectorTab!=='versions';};
+    for(const b of document.querySelectorAll('[data-inspector-tab]'))b.onclick=()=>{this.inspectorTab=b.dataset.inspectorTab;for(const t of document.querySelectorAll('[data-inspector-tab]'))t.setAttribute('aria-selected',String(t===b));q('#inspector-properties').hidden=this.inspectorTab!=='properties';q('#inspector-versions').hidden=this.inspectorTab!=='versions';void this.updateInspector();};
     this.drawer.addEventListener('cancel',e=>{e.preventDefault();this.closeDrawer();});this.drawer.addEventListener('click',e=>{if(e.target===this.drawer)this.closeDrawer();});
     window.addEventListener('resize',()=>{if(this.drawer.open)this.closeDrawer();this.changeLayout(()=>{});});
     for(const side of ['left','right'])this.installResize(side);

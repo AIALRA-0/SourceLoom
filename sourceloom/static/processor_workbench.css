@@ -142,8 +142,8 @@
 .result-layout.preview-only .compare-left-pane{display:none;}
 .result-layout.preview-only #compare-divider{display:none;}
 .reading-active #operation-status{position:fixed;bottom:calc(var(--footer-height) + 12px);left:50%;transform:translateX(-50%);z-index:50;width:max-content;max-width:min(640px,calc(100vw - 32px));margin:0;box-shadow:0 2px 20px #0002;}
-.reading-active #notice{position:fixed;bottom:calc(var(--footer-height) + 12px);left:50%;transform:translateX(-50%);z-index:50;width:max-content;max-width:min(640px,calc(100vw - 32px));margin:0;box-shadow:0 2px 20px #0002;}
-.reading-active #notice:empty{display:none;}
+
+
 .reader-product .editor-pane{padding:12px;min-height:0;overflow:hidden;}
 .reader-product .editor-pane textarea{height:0;min-height:0;flex:1 1 0;white-space:pre;overflow:auto;resize:none;border-radius:var(--radius);}
 .reader-product .editor-pane p{flex:none;font-size:12px;line-height:18px;margin:8px 0 0;}
@@ -417,3 +417,21 @@
  .handoff-sheet{padding:12px;gap:12px;}
  .handoff-preferences{padding:8px 12px;}
 }
+
+/* File return and global feedback share existing theme roles and real layout slots. */
+.return-upload{display:grid;gap:12px;margin:16px 0 0;min-width:0;}
+.return-upload-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:13px;}
+.return-dropzone{display:flex;align-items:center;gap:12px;padding:16px;border:1px dashed var(--input-line);border-radius:var(--radius);background:var(--surface);min-width:0;}
+.return-dropzone.dragover{border-style:solid;background:var(--selected);}
+.return-dropzone[aria-disabled=true]{opacity:.65;}
+.return-upload-icon{font-size:24px;line-height:1;flex:none;}
+.return-dropzone>div{min-width:0;flex:1;}
+.return-dropzone strong{font-size:13px;}.return-dropzone p{margin:4px 0 0;font-size:12px;}
+.return-file-button{flex:none;}
+.return-upload-state{display:flex;align-items:center;flex-wrap:wrap;gap:10px;font-size:13px;overflow-wrap:anywhere;}
+.return-upload-state progress{width:100%;height:4px;accent-color:var(--text);}
+.operation-status{gap:10px;align-items:center;}
+#operation-message{min-width:0;overflow-wrap:anywhere;}
+#operation-elapsed{flex:none;font-size:12px;}
+.reader-product .feedback-close{flex:none;min-width:28px;min-height:28px;padding:0;}
+@media(max-width:600px){.return-dropzone{flex-wrap:wrap;}.return-file-button{width:100%;}.reading-active #operation-status{width:calc(100vw - 32px);}.operation-status{flex-wrap:wrap;}.feedback-close{margin-left:auto;}}

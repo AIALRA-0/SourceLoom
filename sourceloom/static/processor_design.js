@@ -2,7 +2,7 @@
 // existing controllers. Preferences never enter model tasks or exported drafts.
 import './processor_icons.js';
 import './processor_select.js';
-import { TemplateWorkspace } from './processor_workspace.js?v=apcf-ui-20261009-1';
+import { TemplateWorkspace } from './processor_workspace.js?v=return-ui-20261009';
 import {readPreferences, applyTheme, appearanceKey as KEY} from './processor_appearance.js';
 
 export function initializeDesign(deps) {
